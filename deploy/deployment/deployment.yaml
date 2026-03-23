@@ -1,0 +1,116 @@
+# 5-Spot Controller Deployment
+# Uses Deployment (not StatefulSet) with leader election via kube-lease
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: 5spot-controller
+  namespace: 5spot-system
+  labels:
+    app: 5spot-controller
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: controller
+spec:
+  # Number of controller replicas
+  # For high availability, set to 2 or 3
+  # Leader election ensures only one instance is active at a time
+  # Non-leader instances stand by for automatic failover (~15s)
+  replicas: 1
+  selector:
+    matchLabels:
+      app: 5spot-controller
+  template:
+    metadata:
+      labels:
+        app: 5spot-controller
+        app.kubernetes.io/name: 5spot
+        app.kubernetes.io/component: controller
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: 5spot-controller
+      securityContext:
+        fsGroup: 65534
+        runAsNonRoot: true
+      containers:
+        - name: controller
+          #image: ghcr.io/firestoned/5-spot:latest
+          image: docker-sc90-dev.artifactory.fg.rbc.com/5-spot:latest-dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: RUST_LOG
+              value: "debug"
+            - name: RUST_LOG_FORMAT
+              value: "text"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # Leader election configuration
+            - name: ENABLE_LEADER_ELECTION
+              value: "true"
+            - name: LEASE_NAME
+              value: "5spot-leader"
+            - name: LEASE_DURATION_SECONDS
+              value: "15"
+            - name: LEASE_RENEW_DEADLINE_SECONDS
+              value: "10"
+            - name: LEASE_RETRY_PERIOD_SECONDS
+              value: "2"
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - 5spot-controller
+                topologyKey: kubernetes.io/hostname

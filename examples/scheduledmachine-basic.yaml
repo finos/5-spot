@@ -1,0 +1,58 @@
+# Example ScheduledMachine resource
+# This machine will be active Monday-Friday, 9am-5pm Eastern Time
+# The controller will create:
+#   1. A K0sWorkerConfig bootstrap resource
+#   2. A RemoteMachine infrastructure resource
+#   3. A CAPI Machine referencing both
+
+apiVersion: 5spot.io/v1alpha1
+kind: ScheduledMachine
+metadata:
+  name: business-hours-worker
+  namespace: default
+spec:
+  # Name of the CAPI Cluster this machine will join
+  clusterName: my-k0s-cluster
+
+  # Schedule configuration (using day/hour format)
+  schedule:
+    daysOfWeek:
+      - mon-fri
+    hoursOfDay:
+      - "9-17"
+    timezone: America/New_York
+    enabled: true
+
+  # Inline bootstrap specification (creates K0sWorkerConfig)
+  # Name is auto-generated as: business-hours-worker-bootstrap
+  bootstrapSpec:
+    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    kind: K0sWorkerConfig
+    spec:
+      version: v1.30.0+k0s.0
+      # Add any K0sWorkerConfig-specific fields here
+
+  # Inline infrastructure specification (creates RemoteMachine)
+  # Name is auto-generated as: business-hours-worker-infra
+  infrastructureSpec:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: RemoteMachine
+    spec:
+      address: 192.168.1.100
+      port: 22
+      user: admin
+      # Add any RemoteMachine-specific fields here
+
+  # Optional: Labels and annotations for the created CAPI Machine
+  machineTemplate:
+    labels:
+      node-role.kubernetes.io/worker: ""
+      topology.kubernetes.io/zone: zone-a
+    annotations:
+      5spot.io/scheduled-by: business-hours-worker
+
+  # Lifecycle settings
+  priority: 50
+  gracefulShutdownTimeout: 5m
+  nodeDrainTimeout: 5m
+  killSwitch: false

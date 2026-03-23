@@ -1,0 +1,42 @@
+# Example ScheduledMachine with weekend schedule
+# This machine will be active Saturday-Sunday, 24 hours
+# Uses cron expression format as an alternative to daysOfWeek/hoursOfDay
+
+apiVersion: 5spot.io/v1alpha1
+kind: ScheduledMachine
+metadata:
+  name: weekend-worker
+  namespace: default
+spec:
+  # Name of the CAPI Cluster this machine will join
+  clusterName: my-k0s-cluster
+
+  # Schedule configuration (using cron format)
+  # Cron: minute hour day-of-month month day-of-week
+  # This runs all hours (*) on Saturday (6) and Sunday (0)
+  schedule:
+    cron: "* * * * 0,6"
+    timezone: UTC
+    enabled: true
+
+  # Inline bootstrap specification (creates K0sWorkerConfig)
+  bootstrapSpec:
+    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    kind: K0sWorkerConfig
+    spec:
+      version: v1.30.0+k0s.0
+
+  # Inline infrastructure specification (creates RemoteMachine)
+  infrastructureSpec:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: RemoteMachine
+    spec:
+      address: 192.168.1.101
+      port: 22
+      user: admin
+
+  # Higher priority than weekday workers
+  priority: 75
+  gracefulShutdownTimeout: 10m
+  nodeDrainTimeout: 10m
+  killSwitch: false

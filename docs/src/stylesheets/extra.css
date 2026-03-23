@@ -1,0 +1,292 @@
+/* Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
+ * SPDX-License-Identifier: MIT
+ */
+
+/**
+ * 5Spot Documentation - Custom Styles for MkDocs Material
+ *
+ * Color Palette: Time/Scheduling themed
+ * - Primary (Indigo): #3F51B5 - time/scheduling concept
+ * - Accent (Teal): #009688 - active/running states
+ * - Success (Green): #4CAF50 - machine active
+ * - Warning (Orange): #FF9800 - removing/transitioning
+ */
+
+/* ============================================
+   Custom Color Overrides - 5Spot Theme
+   ============================================ */
+
+:root {
+    /* Light mode colors */
+    --md-primary-fg-color: #3F51B5;        /* Indigo - scheduling */
+    --md-primary-fg-color--light: #5C6BC0; /* Lighter indigo */
+    --md-primary-fg-color--dark: #303F9F;  /* Darker indigo */
+    --md-accent-fg-color: #009688;         /* Teal - active states */
+    --md-accent-fg-color--transparent: rgba(0, 150, 136, 0.1);
+}
+
+[data-md-color-scheme="slate"] {
+    /* Dark mode colors - adjusted for readability */
+    --md-primary-fg-color: #7986CB;        /* Lighter indigo for dark mode */
+    --md-primary-fg-color--light: #9FA8DA; /* Even lighter indigo */
+    --md-primary-fg-color--dark: #5C6BC0;  /* Medium indigo */
+    --md-accent-fg-color: #4DB6AC;         /* Softer teal for dark mode */
+    --md-accent-fg-color--transparent: rgba(77, 182, 172, 0.1);
+}
+
+/* ============================================
+   Right-side Page TOC (Table of Contents)
+   ============================================ */
+
+.md-sidebar--secondary .md-sidebar__scrollwrap {
+    /* Scrollbar styling */
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+}
+
+.md-sidebar--secondary .md-sidebar__scrollwrap::-webkit-scrollbar {
+    width: 6px;
+}
+
+.md-sidebar--secondary .md-sidebar__scrollwrap::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.md-sidebar--secondary .md-sidebar__scrollwrap::-webkit-scrollbar-thumb {
+    background-color: rgba(0, 0, 0, 0.2);
+    border-radius: 3px;
+}
+
+.md-sidebar--secondary .md-sidebar__scrollwrap::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(0, 0, 0, 0.3);
+}
+
+/* TOC link styling */
+.md-nav--secondary .md-nav__link {
+    transition: all 0.15s ease;
+}
+
+.md-nav--secondary .md-nav__link:hover {
+    color: var(--md-accent-fg-color);
+}
+
+.md-nav--secondary .md-nav__link.md-nav__link--active {
+    font-weight: 500;
+    color: var(--md-accent-fg-color);
+}
+
+/* ============================================
+   Mermaid Diagram Enhancements
+   ============================================ */
+
+/* Enable better display for Mermaid diagrams */
+.mermaid {
+    text-align: center;
+    margin: 1.5rem 0;
+}
+
+/* Allow diagrams to be scrollable if too wide */
+.mermaid svg {
+    max-width: 100%;
+    height: auto;
+}
+
+/* Mermaid container with overflow handling */
+pre.mermaid {
+    overflow-x: auto;
+    padding: 1rem;
+    border-radius: 0.2rem;
+    background-color: var(--md-code-bg-color);
+}
+
+/* Dark mode adjustments for Mermaid */
+[data-md-color-scheme="slate"] .mermaid {
+    filter: invert(0.9) hue-rotate(180deg);
+}
+
+/* ============================================
+   Code Block Enhancements
+   ============================================ */
+
+/* Ensure code blocks have consistent styling */
+.highlight pre {
+    padding: 1rem;
+    overflow-x: auto;
+    line-height: 1.5;
+}
+
+/* Copy button positioning */
+.md-clipboard {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
+}
+
+/* ============================================
+   Admonition Customization
+   ============================================ */
+
+/* Ensure admonitions have appropriate spacing */
+.admonition {
+    margin: 1.5rem 0;
+}
+
+/* ============================================
+   Table Styling
+   ============================================ */
+
+/* Ensure tables are responsive */
+.md-typeset table:not([class]) {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+}
+
+.md-typeset table:not([class]) th {
+    font-weight: 600;
+    border-bottom: 2px solid var(--md-default-fg-color--lighter);
+}
+
+/* ============================================
+   Navigation Enhancements
+   ============================================ */
+
+/* Improve tab navigation visibility */
+.md-tabs {
+    background-color: var(--md-primary-fg-color);
+}
+
+.md-tabs__link {
+    transition: background-color 0.2s ease;
+}
+
+.md-tabs__link:hover {
+    background-color: rgba(0, 0, 0, 0.1);
+}
+
+/* ============================================
+   Mobile Responsiveness
+   ============================================ */
+
+/* Hide secondary sidebar on smaller screens (Material handles this by default) */
+@media screen and (max-width: 76.1875em) {
+    .md-sidebar--secondary {
+        display: none;
+    }
+}
+
+/* ============================================
+   Print Styles
+   ============================================ */
+
+@media print {
+    /* Hide navigation elements when printing */
+    .md-header,
+    .md-tabs,
+    .md-sidebar,
+    .md-footer {
+        display: none !important;
+    }
+
+    /* Ensure content is full width when printing */
+    .md-content {
+        max-width: 100% !important;
+    }
+
+    /* Improve code block printing */
+    .highlight pre {
+        white-space: pre-wrap;
+        word-wrap: break-word;
+    }
+}
+
+/* ============================================
+   Custom Improvements
+   ============================================ */
+
+/* Add smooth scrolling */
+html {
+    scroll-behavior: smooth;
+}
+
+/* Improve link hover effects */
+.md-content a:hover {
+    text-decoration: underline;
+}
+
+/* Better focus indicators for accessibility */
+a:focus,
+button:focus {
+    outline: 2px solid var(--md-accent-fg-color);
+    outline-offset: 2px;
+}
+
+/* Improve heading anchor links */
+.headerlink {
+    opacity: 0;
+    transition: opacity 0.2s ease;
+    margin-left: 0.5rem;
+}
+
+h1:hover .headerlink,
+h2:hover .headerlink,
+h3:hover .headerlink,
+h4:hover .headerlink,
+h5:hover .headerlink,
+h6:hover .headerlink {
+    opacity: 1;
+}
+
+/* ============================================
+   Version Banner (for future use)
+   ============================================ */
+
+.version-banner {
+    background-color: var(--md-accent-fg-color);
+    color: white;
+    padding: 0.75rem 1rem;
+    text-align: center;
+    font-weight: 500;
+}
+
+.version-banner a {
+    color: white;
+    text-decoration: underline;
+}
+
+.version-banner a:hover {
+    opacity: 0.9;
+}
+
+/* ============================================
+   Machine Phase Status Colors
+   ============================================ */
+
+.phase-pending {
+    color: #9E9E9E;
+}
+
+.phase-scheduled {
+    color: #2196F3;
+}
+
+.phase-active {
+    color: #4CAF50;
+}
+
+.phase-removing {
+    color: #FF9800;
+}
+
+.phase-inactive {
+    color: #607D8B;
+}
+
+.phase-unscheduled {
+    color: #9C27B0;
+}
+
+.phase-error {
+    color: #F44336;
+}

@@ -1,0 +1,52 @@
+# Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
+# SPDX-License-Identifier: MIT
+
+# CHAINGUARD PRODUCTION DOCKERFILE - Uses pre-built binaries
+#
+# This Dockerfile uses Chainguard's hardened, zero-CVE base images designed for
+# regulated environments (SOX, NIST 800-53, PCI-DSS, FedRAMP).
+#
+# This Dockerfile expects pre-built binaries. Build binaries using:
+#
+#   # Cross-compile (requires 'cross' tool: cargo install cross)
+#   cross build --release --target x86_64-unknown-linux-gnu
+#   cross build --release --target aarch64-unknown-linux-gnu
+#   mkdir -p binaries/amd64 binaries/arm64
+#   cp target/x86_64-unknown-linux-gnu/release/5spot binaries/amd64/
+#   cp target/aarch64-unknown-linux-gnu/release/5spot binaries/arm64/
+#
+#   # Or use Makefile
+#   make prepare-binaries
+#   make docker-buildx-chainguard
+#
+# Benefits:
+# - Zero known CVEs (Chainguard rebuilds daily with security patches)
+# - FIPS-validated images available (cgr.dev/chainguard/glibc-dynamic:latest-fips)
+# - Included SBOMs for supply chain security
+# - ~20MB image size (glibc binary)
+# - Non-root by default
+
+ARG BASE_IMAGE=cgr.dev/chainguard/glibc-dynamic:latest
+
+FROM ${BASE_IMAGE}
+
+ARG TARGETARCH
+ARG VERSION
+ARG GIT_SHA
+
+LABEL org.opencontainers.image.source="https://github.com/RBC/5-spot" \
+      org.opencontainers.image.description="5-Spot Machine Scheduler - Kubernetes Controller for Time-Based Machine Scheduling (Chainguard - Zero CVEs)" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${GIT_SHA}" \
+      org.opencontainers.image.base.name="${BASE_IMAGE}"
+
+# Copy the pre-built binary for the target architecture
+# TARGETARCH is automatically set by BuildKit (amd64 or arm64)
+COPY --chmod=755 binaries/${TARGETARCH}/5spot /5spot
+
+USER 65532:65532
+
+EXPOSE 8080
+
+ENTRYPOINT ["/5spot"]

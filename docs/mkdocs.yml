@@ -1,0 +1,233 @@
+# Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
+# SPDX-License-Identifier: MIT
+
+# 5-Spot Documentation - MkDocs Material Configuration
+
+site_name: 5-Spot - Kubernetes Machine Scheduler Operator
+site_url: https://firestoned.github.io/5-spot/
+site_description: A cloud-native Kubernetes controller for managing time-based machine scheduling on physical nodes using Cluster API (CAPI).
+site_author: Erick Bourgeois
+
+# Repository
+repo_url: https://github.com/firestoned/5-spot
+repo_name: firestoned/5-spot
+edit_uri: edit/main/docs/src/
+
+# Documentation source directory (relative to mkdocs.yml location)
+docs_dir: src
+site_dir: site
+
+# Copyright
+copyright: Copyright &copy; 2025 Erick Bourgeois
+
+# Configuration
+theme:
+  name: material
+  language: en
+
+  # Color palette with dark mode support
+  # Colors for 5-Spot: blue/indigo for scheduling/time, green for active states
+  palette:
+    # Light mode
+    - scheme: default
+      primary: indigo
+      accent: teal
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+
+    # Dark mode
+    - scheme: slate
+      primary: indigo
+      accent: teal
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+  # Font configuration
+  font:
+    text: Roboto
+    code: Roboto Mono
+
+  # Features
+  features:
+    # Navigation
+    - navigation.instant       # Instant loading (SPA-like)
+    - navigation.instant.progress  # Show loading progress
+    - navigation.tracking      # Update URL with active anchor
+    - navigation.tabs          # Top-level tabs
+    - navigation.tabs.sticky   # Sticky tabs
+    - navigation.sections      # Expand sections in sidebar
+    - navigation.expand        # Expand all sections by default
+    - navigation.path          # Show breadcrumb path
+    - navigation.indexes       # Section index pages
+    - navigation.top           # Back to top button
+
+    # Table of contents
+    - toc.follow               # TOC follows scroll
+    # - toc.integrate          # Integrate TOC into navigation (disabled to show right sidebar)
+
+    # Search
+    - search.suggest           # Search suggestions
+    - search.highlight         # Highlight search terms
+    - search.share             # Share search results
+
+    # Header
+    - header.autohide          # Auto-hide header on scroll
+
+    # Content
+    - content.code.copy        # Copy button for code blocks
+    - content.code.annotate    # Code annotations
+    - content.tabs.link        # Link content tabs
+    - content.tooltips         # Improved tooltips
+
+  # Logo and favicon
+  logo: images/favicons/favicon.png
+  favicon: images/favicons/favicon.png
+  icon:
+    repo: fontawesome/brands/github
+    edit: material/pencil
+    view: material/eye
+
+# Plugins
+plugins:
+  # Search with advanced features
+  - search:
+      lang: en
+      separator: '[\s\-,:!=\[\]()"/]+|(?!\b)(?=[A-Z][a-z])|\.(?!\d)|&[lg]t;'
+
+  # Git revision date (last updated)
+  - git-revision-date-localized:
+      enable_creation_date: true
+      type: timeago
+      fallback_to_build_date: true
+      enable_git_follow: false
+
+  # Minification for production
+  # Can be enabled if needed (no longer conflicts with Mermaid)
+  # - minify:
+  #     minify_html: true
+  #     minify_js: true
+  #     minify_css: true
+  #     htmlmin_opts:
+  #       remove_comments: true
+  #     cache_safe: true
+
+# Extensions
+markdown_extensions:
+  # Python Markdown
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      permalink_title: Anchor link to this section
+      toc_depth: 3
+
+  # PyMdown Extensions
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_div_format
+  - pymdownx.tabbed:
+      alternate_style: true
+      combine_header_slug: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+# Extra CSS
+# Note: Paths are relative to docs_dir (src/)
+extra_css:
+  - stylesheets/extra.css
+
+# Extra JavaScript
+# Note: Paths are relative to docs_dir (src/)
+extra_javascript:
+  - https://unpkg.com/mermaid@11.12.2/dist/mermaid.min.js
+  - javascripts/mermaid-init.js
+
+# Extra configuration
+extra:
+  # Social links
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/firestoned/5-spot
+      name: 5-Spot on GitHub
+
+  # Analytics (optional - uncomment if needed)
+  # analytics:
+  #   provider: google
+  #   property: G-XXXXXXXXXX
+
+  # Version selector (for future use with mike)
+  # version:
+  #   provider: mike
+
+  # Generator notice
+  generator: true
+
+# Navigation structure
+nav:
+  - Home: index.md
+
+  - Getting Started:
+      - Quick Start: installation/quickstart.md
+      - Prerequisites: installation/prerequisites.md
+      - Installing CRDs: installation/crds.md
+      - Deploying Operator: installation/controller.md
+
+  - Concepts:
+      - Overview: concepts/index.md
+      - Architecture: concepts/architecture.md
+      - ScheduledMachine: concepts/scheduled-machine.md
+      - Machine Lifecycle: concepts/machine-lifecycle.md
+      - Schedule Configuration: concepts/schedules.md
+
+  - Operations:
+      - Configuration: operations/configuration.md
+      - Monitoring: operations/monitoring.md
+      - Troubleshooting: operations/troubleshooting.md
+      - Multi-Instance: operations/multi-instance.md
+
+  - Advanced Topics:
+      - High Availability: advanced/ha.md
+      - Resource Distribution: advanced/resource-distribution.md
+      - Integration with CAPI: advanced/capi-integration.md
+
+  - Developer Guide:
+      - Development Setup: development/setup.md
+      - Building: development/building.md
+      - Testing: development/testing.md
+      - Contributing: development/contributing.md
+
+  - Reference:
+      - API Reference: reference/api.md
+      - CLI Reference: reference/cli.md
+      - Changelog: changelog.md
+      - License: license.md
+
+  - Roadmaps:
+      - Project Roadmap 2026: roadmaps/project-roadmap-2026.md

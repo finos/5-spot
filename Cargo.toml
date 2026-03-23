@@ -1,0 +1,58 @@
+[package]
+name = "five_spot"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+authors = ["Erick Bourgeois<erick.bourgeois@rbccm.com>"]
+description = "A cloud-native Kubernetes controller for managing machine scheduling on physical nodes"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/RBC/5-spot"
+
+[[bin]]
+name = "5spot"
+path = "src/main.rs"
+
+[[bin]]
+name = "crdgen"
+path = "src/bin/crdgen.rs"
+
+[[bin]]
+name = "crddoc"
+path = "src/bin/crddoc.rs"
+
+[dependencies]
+kube = { version = "0.99", features = ["runtime", "derive", "client", "ws"] }
+k8s-openapi = { version = "0.24", features = ["latest"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+schemars = "0.8"
+futures = "0.3"
+async-trait = "0.1"
+clap = { version = "4", features = ["derive", "env"] }
+prometheus = { version = "0.13", features = ["process"] }
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+http-body-util = "0.1"
+tower = "0.5"
+regex = "1"
+lazy_static = "1.5"
+warp = "0.3"
+
+[dev-dependencies]
+tokio-test = "0.4"
+mockall = "0.13"
+test-log = "0.2"
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

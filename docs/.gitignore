@@ -1,0 +1,18 @@
+# Documentation build artifacts
+site/
+target/
+book/
+
+# Python virtual environment
+.venv/
+__pycache__/
+
+# mdBook build output (not the source!)
+# Note: book source is in docs/src/ and should be tracked
+# Only ignore the build output in docs/target/ and docs/book/
+# (mdbook serve creates book/ despite build-dir setting)
+
+# Temporary files
+*.tmp
+*.swp
+*~

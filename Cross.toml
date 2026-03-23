@@ -1,0 +1,10 @@
+# Cross-compilation configuration
+# https://github.com/cross-rs/cross
+
+[build.env]
+# Suppress jemalloc MADV_DONTNEED warning under QEMU emulation
+passthrough = ["MALLOC_CONF"]
+
+[target.x86_64-unknown-linux-gnu]
+
+[target.aarch64-unknown-linux-gnu]

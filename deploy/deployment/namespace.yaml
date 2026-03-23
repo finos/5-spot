@@ -1,0 +1,8 @@
+# 5-Spot Controller Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: 5spot-system
+  labels:
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: controller

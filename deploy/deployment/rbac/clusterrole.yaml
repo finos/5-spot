@@ -1,0 +1,61 @@
+# 5-Spot Controller ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: 5spot-controller
+  labels:
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: controller
+rules:
+  # ScheduledMachine CRD management
+  - apiGroups: ["5spot.io"]
+    resources: ["scheduledmachines", "scheduledmachines/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # CAPI Machine management
+  - apiGroups: ["cluster.x-k8s.io"]
+    resources: ["machines", "machines/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Bootstrap provider resources (create from inline specs)
+  - apiGroups: ["bootstrap.cluster.x-k8s.io"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Infrastructure provider resources (create from inline specs)
+  - apiGroups: ["infrastructure.cluster.x-k8s.io"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # k0smotron bootstrap resources
+  - apiGroups: ["k0smotron.io"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Events for recording reconciliation events
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+
+  # Secrets for SSH keys and bootstrap data
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+
+  # Nodes for drain operations
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+
+  # Pods for eviction during drain
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
+
+  # Leases for leader election (no delete needed for HA)
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update", "patch"]

@@ -1,0 +1,32 @@
+# Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
+# SPDX-License-Identifier: MIT
+
+[tool.poetry]
+name = "5spot-docs"
+version = "0.1.0"
+description = "Documentation dependencies for 5Spot - Kubernetes Machine Scheduler Operator"
+authors = ["Erick Bourgeois <erick@firestoned.io>"]
+license = "MIT"
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.10"
+
+# Core MkDocs - pin to 1.x to avoid breaking changes in 2.0
+# See: https://squidfunk.github.io/mkdocs-material/blog/2026/02/18/mkdocs-2.0/
+mkdocs = ">=1.6.0,<2.0"
+mkdocs-material = "^9.5.0"
+
+# MkDocs plugins
+mkdocs-git-revision-date-localized-plugin = "^1.2.4"
+mkdocs-minify-plugin = "^0.8.0"
+mkdocs-redirects = "^1.2.1"
+mkdocs-macros-plugin = "^1.0.5"
+
+# Markdown extensions
+pymdown-extensions = "^10.7"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
