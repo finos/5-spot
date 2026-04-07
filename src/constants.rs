@@ -137,6 +137,15 @@ pub const REASON_FILE_RESOLUTION_FAILED: &str = "FileResolutionFailed";
 /// Reason: Schedule disabled
 pub const REASON_SCHEDULE_DISABLED: &str = "ScheduleDisabled";
 
+/// Reason: Node draining
+pub const REASON_NODE_DRAINING: &str = "NodeDraining";
+
+/// Reason: Node drained
+pub const REASON_NODE_DRAINED: &str = "NodeDrained";
+
+/// Reason: Node drain failed
+pub const REASON_NODE_DRAIN_FAILED: &str = "NodeDrainFailed";
+
 // ============================================================================
 // SSH and Machine Defaults
 // ============================================================================
@@ -218,6 +227,25 @@ pub const CAPI_CLUSTER_NAME_LABEL: &str = "cluster.x-k8s.io/cluster-name";
 
 /// CAPI Machine resource plural name
 pub const CAPI_RESOURCE_MACHINES: &str = "machines";
+
+// ============================================================================
+// Kubernetes Core API Constants
+// ============================================================================
+
+/// Kubernetes Node resource kind
+pub const KIND_NODE: &str = "Node";
+
+/// Kubernetes Node resource plural name
+pub const RESOURCE_NODES: &str = "nodes";
+
+/// Kubernetes Pod resource kind
+pub const KIND_POD: &str = "Pod";
+
+/// Kubernetes Pod resource plural name
+pub const RESOURCE_PODS: &str = "pods";
+
+/// Pod eviction grace period (seconds)
+pub const POD_EVICTION_GRACE_PERIOD_SECS: i64 = 30;
 
 // ============================================================================
 // Metrics Constants

@@ -21,8 +21,8 @@ name = "crddoc"
 path = "src/bin/crddoc.rs"
 
 [dependencies]
-kube = { version = "0.99", features = ["runtime", "derive", "client", "ws"] }
-k8s-openapi = { version = "0.24", features = ["latest"] }
+kube = { version = "3.1", features = ["runtime", "derive", "client", "ws"] }
+k8s-openapi = { version = "0.27", features = ["latest"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -33,11 +33,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
-schemars = "0.8"
+schemars = "1"
 futures = "0.3"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive", "env"] }
-prometheus = { version = "0.13", features = ["process"] }
+prometheus = { version = "0.14", features = ["process"] }
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }
 http-body-util = "0.1"

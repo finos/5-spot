@@ -37,7 +37,7 @@ A cloud-native Kubernetes controller for managing time-based machine scheduling 
 
 - ⏰ **Time-based scheduling** with timezone support
 - 📅 **Flexible schedules** - Support for day ranges (mon-fri) and hour ranges (9-17)
-- 🔄 **Graceful shutdown** - Configurable grace periods for safe machine removal
+- 🔄 **Graceful shutdown** - Configurable grace periods with automatic node draining
 - 🎯 **Priority-based** - Resource distribution across controller instances
 - 🚨 **Kill switch** - Emergency immediate removal capability
 - 📊 **Multi-instance** - Horizontal scaling with consistent hashing
@@ -255,10 +255,27 @@ src/
 1. **Pending** → Initial state, evaluating schedule
 2. **Scheduled** → Within time window, being added to cluster
 3. **Active** → Running and part of cluster
-4. **Removing** → Grace period, preparing for removal
+4. **Removing** → Grace period, node draining, preparing for removal
 5. **Inactive** → Removed from cluster
 6. **UnScheduled** → Outside time window
 7. **Error** → Recoverable error state
+
+### Node Draining
+
+During the **Removing** phase, the controller performs automatic node draining:
+
+1. **Cordon** - Marks the node as unschedulable
+2. **Evict pods** - Gracefully evicts all pods (except DaemonSets)
+3. **Timeout** - Respects `nodeDrainTimeout` configuration
+4. **Delete** - Removes the CAPI Machine after drain completes
+
+Configure drain behavior in your `ScheduledMachine`:
+
+```yaml
+spec:
+  gracefulShutdownTimeout: 5m  # Grace period before draining starts
+  nodeDrainTimeout: 5m         # Maximum time for node drain
+```
 
 ### Schedule Evaluation
 

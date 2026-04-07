@@ -176,23 +176,10 @@ pub struct EmbeddedResource {
 }
 
 /// Schema for arbitrary JSON object
-fn arbitrary_object_schema(gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-    let _ = gen;
-    schemars::schema::Schema::Object(schemars::schema::SchemaObject {
-        instance_type: Some(schemars::schema::InstanceType::Object.into()),
-        object: Some(Box::new(schemars::schema::ObjectValidation {
-            additional_properties: Some(Box::new(schemars::schema::Schema::Bool(true))),
-            ..Default::default()
-        })),
-        extensions: {
-            let mut map = schemars::Map::new();
-            map.insert(
-                "x-kubernetes-preserve-unknown-fields".to_string(),
-                serde_json::json!(true),
-            );
-            map
-        },
-        ..Default::default()
+fn arbitrary_object_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "object",
+        "x-kubernetes-preserve-unknown-fields": true
     })
 }
 

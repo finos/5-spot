@@ -1,0 +1,53 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+
+name: 'Prepare Docker Binaries'
+description: 'Downloads artifacts and prepares binaries for multi-arch Docker build'
+
+runs:
+  using: composite
+  steps:
+    - name: Download all binary artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: ./artifacts
+        pattern: 5spot-linux-*
+
+    - name: Prepare binaries for Docker build
+      shell: bash
+      run: |
+        mkdir -p binaries/amd64 binaries/arm64
+
+        # Debug: Show what was downloaded
+        echo "Downloaded artifacts:"
+        find artifacts/ -type f -name "5spot" -o -name "*.cdx.*"
+
+        # Copy x86_64 binary
+        AMD64_BINARY=$(find artifacts/5spot-linux-amd64 -type f -name "5spot" | head -1)
+        if [ -n "$AMD64_BINARY" ] && [ -f "$AMD64_BINARY" ]; then
+          cp "$AMD64_BINARY" binaries/amd64/5spot
+          chmod +x binaries/amd64/5spot
+          echo "Copied x86_64 binary from $AMD64_BINARY"
+        else
+          echo "ERROR: x86_64 binary not found"
+          echo "Contents of artifacts/5spot-linux-amd64:"
+          find artifacts/5spot-linux-amd64 -ls || echo "Directory does not exist"
+          exit 1
+        fi
+
+        # Copy ARM64 binary
+        ARM64_BINARY=$(find artifacts/5spot-linux-arm64 -type f -name "5spot" | head -1)
+        if [ -n "$ARM64_BINARY" ] && [ -f "$ARM64_BINARY" ]; then
+          cp "$ARM64_BINARY" binaries/arm64/5spot
+          chmod +x binaries/arm64/5spot
+          echo "Copied ARM64 binary from $ARM64_BINARY"
+        else
+          echo "ERROR: ARM64 binary not found"
+          echo "Contents of artifacts/5spot-linux-arm64:"
+          find artifacts/5spot-linux-arm64 -ls || echo "Directory does not exist"
+          exit 1
+        fi
+
+        # Verify binaries
+        ls -lh binaries/amd64/5spot binaries/arm64/5spot
+        file binaries/amd64/5spot binaries/arm64/5spot

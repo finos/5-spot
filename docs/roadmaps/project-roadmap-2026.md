@@ -47,6 +47,15 @@
 | CI/CD pipeline | High | GitHub Actions |
 | E2E tests | High | Kind-based testing |
 
+### 🔴 Current Limitations
+
+| Limitation | Impact | Priority | Notes |
+|------------|--------|----------|-------|
+| Cron expressions not implemented | Medium | Medium | Spec field exists but returns error when used |
+| ~~Node draining logic missing~~ | ~~High~~ | ~~High~~ | ✅ **IMPLEMENTED** - Node drain with timeout in ShuttingDown phase |
+| Next activation/cleanup not calculated | Low | Low | Status fields `nextActivation`/`nextCleanup` not populated |
+| Limited metrics implementation | Medium | High | Basic metrics server exists but specific metrics missing |
+
 ---
 
 ## Phase 1: Production Readiness (Priority: Critical)

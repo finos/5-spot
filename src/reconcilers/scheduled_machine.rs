@@ -309,9 +309,52 @@ async fn handle_shutting_down_phase(
     let grace_period_elapsed = check_grace_period_elapsed(&resource)?;
 
     if grace_period_elapsed {
-        info!(resource = %name, namespace = %namespace, "Grace period elapsed - removing machine");
+        info!(resource = %name, namespace = %namespace, "Grace period elapsed - draining node and removing machine");
 
-        // Delete CAPI Machine
+        // Step 1: Drain the node if it exists
+        let machine_name = format!("{name}-machine");
+        if let Some(node_name) =
+            get_node_from_machine(&ctx.client, &namespace, &machine_name).await?
+        {
+            info!(
+                resource = %name,
+                namespace = %namespace,
+                node = %node_name,
+                "Node found - initiating drain"
+            );
+
+            // Parse drain timeout
+            let drain_timeout = parse_duration(&resource.spec.node_drain_timeout)?;
+
+            // Attempt to drain the node
+            match drain_node_with_timeout(&ctx.client, &node_name, drain_timeout).await {
+                Ok(()) => {
+                    info!(
+                        resource = %name,
+                        node = %node_name,
+                        "Node drained successfully"
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        resource = %name,
+                        node = %node_name,
+                        error = %e,
+                        "Node drain failed - proceeding with machine deletion anyway"
+                    );
+                    // Continue with deletion even if drain fails
+                    // This ensures we don't get stuck if drain has issues
+                }
+            }
+        } else {
+            debug!(
+                resource = %name,
+                namespace = %namespace,
+                "No node found for machine - skipping drain"
+            );
+        }
+
+        // Step 2: Delete CAPI Machine
         if let Err(e) = remove_machine_from_cluster(&resource, &ctx.client, &namespace).await {
             error!(resource = %name, error = %e, "Failed to delete CAPI Machine");
             update_phase(
@@ -443,9 +486,10 @@ async fn handle_error_phase(
 
 // Re-export helper functions for use in this module
 use super::helpers::{
-    add_finalizer, add_machine_to_cluster, check_grace_period_elapsed, evaluate_schedule,
-    handle_deletion, handle_kill_switch, has_finalizer, remove_machine_from_cluster,
-    should_process_resource, update_phase, update_phase_with_grace_period,
+    add_finalizer, add_machine_to_cluster, check_grace_period_elapsed, drain_node_with_timeout,
+    evaluate_schedule, get_node_from_machine, handle_deletion, handle_kill_switch, has_finalizer,
+    parse_duration, remove_machine_from_cluster, should_process_resource, update_phase,
+    update_phase_with_grace_period,
 };
 
 #[cfg(test)]

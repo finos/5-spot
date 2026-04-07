@@ -220,16 +220,16 @@ docs-deploy: docs ## Build and deploy documentation to GitHub Pages
 # Docker (requires binaries to be built first with prepare-binaries)
 # ============================================================
 
-docker-build: ## Build Docker image (distroless, single platform)
-	@test -d binaries/amd64 || { echo "ERROR: Run 'make prepare-binaries' first"; exit 1; }
+
+docker-build: prepare-binaries ## Build Docker image (distroless, single platform)
 	$(CONTAINER_TOOL) build --platform $(PLATFORM) -t $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG) \
 		--build-arg VERSION="$(VERSION)" \
 		--build-arg GIT_SHA="$(GIT_SHA)" \
 		--build-arg BASE_IMAGE="$(BASE_IMAGE)" \
 		.
 
-docker-build-chainguard: ## Build Docker image (Chainguard - zero CVEs)
-	@test -d binaries/amd64 || { echo "ERROR: Run 'make prepare-binaries' first"; exit 1; }
+
+docker-build-chainguard: prepare-binaries ## Build Docker image (Chainguard - zero CVEs)
 	$(CONTAINER_TOOL) build --platform $(PLATFORM) -f Dockerfile.chainguard -t $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)-chainguard \
 		--build-arg VERSION="$(VERSION)" \
 		--build-arg GIT_SHA="$(GIT_SHA)" \

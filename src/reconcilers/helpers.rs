@@ -7,8 +7,8 @@ use crate::constants::{
     CAPI_MACHINE_API_VERSION_FULL, CAPI_RESOURCE_MACHINES, CONDITION_STATUS_TRUE,
     CONDITION_TYPE_READY, DEFAULT_INSTANCE_ID, ENV_OPERATOR_INSTANCE_ID, ERROR_REQUEUE_SECS,
     FINALIZER_SCHEDULED_MACHINE, PHASE_ACTIVE, PHASE_INACTIVE, PHASE_SHUTTING_DOWN,
-    PHASE_TERMINATED, REASON_GRACE_PERIOD, REASON_KILL_SWITCH, REASON_RECONCILE_SUCCEEDED,
-    TIMER_REQUEUE_SECS,
+    PHASE_TERMINATED, POD_EVICTION_GRACE_PERIOD_SECS, REASON_GRACE_PERIOD, REASON_KILL_SWITCH,
+    REASON_RECONCILE_SUCCEEDED, TIMER_REQUEUE_SECS,
 };
 use crate::crd::{Condition, ScheduledMachine, ScheduledMachineStatus};
 use chrono::{DateTime, Datelike, Timelike, Utc};
@@ -752,6 +752,199 @@ pub async fn remove_machine_from_cluster(
             "Failed to delete Machine {machine_name}: {e}"
         ))),
     }
+}
+
+// ============================================================================
+// Node Draining
+// ============================================================================
+
+/// Get the Kubernetes Node associated with a CAPI Machine
+///
+/// # Errors
+/// Returns error if Machine not found, has no nodeRef, or Node lookup fails
+pub async fn get_node_from_machine(
+    client: &Client,
+    namespace: &str,
+    machine_name: &str,
+) -> Result<Option<String>, ReconcilerError> {
+    let machines: Api<kube::core::DynamicObject> = Api::namespaced_with(
+        client.clone(),
+        namespace,
+        &kube::discovery::ApiResource {
+            group: CAPI_GROUP.to_string(),
+            version: CAPI_MACHINE_API_VERSION.to_string(),
+            kind: "Machine".to_string(),
+            plural: CAPI_RESOURCE_MACHINES.to_string(),
+            api_version: CAPI_MACHINE_API_VERSION_FULL.to_string(),
+        },
+    );
+
+    match machines.get(machine_name).await {
+        Ok(machine) => {
+            // Extract nodeRef from Machine status
+            if let Some(status) = machine.data.get("status") {
+                if let Some(node_ref) = status.get("nodeRef") {
+                    if let Some(node_name) = node_ref.get("name") {
+                        if let Some(name_str) = node_name.as_str() {
+                            debug!(
+                                machine = %machine_name,
+                                node = %name_str,
+                                "Found Node reference in Machine status"
+                            );
+                            return Ok(Some(name_str.to_string()));
+                        }
+                    }
+                }
+            }
+            debug!(
+                machine = %machine_name,
+                "Machine has no nodeRef in status yet"
+            );
+            Ok(None)
+        }
+        Err(kube::Error::Api(e)) if e.code == 404 => {
+            debug!(machine = %machine_name, "Machine not found");
+            Ok(None)
+        }
+        Err(e) => Err(ReconcilerError::CapiError(format!(
+            "Failed to get Machine {machine_name}: {e}"
+        ))),
+    }
+}
+
+/// Cordon a Kubernetes Node (mark as unschedulable)
+///
+/// # Errors
+/// Returns error if Node not found or update fails
+async fn cordon_node(client: &Client, node_name: &str) -> Result<(), ReconcilerError> {
+    use k8s_openapi::api::core::v1::Node;
+
+    let nodes: Api<Node> = Api::all(client.clone());
+
+    info!(node = %node_name, "Cordoning node");
+
+    let patch = json!({
+        "spec": {
+            "unschedulable": true
+        }
+    });
+
+    nodes
+        .patch(node_name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await
+        .map_err(|e| {
+            ReconcilerError::CapiError(format!("Failed to cordon node {node_name}: {e}"))
+        })?;
+
+    info!(node = %node_name, "Node cordoned successfully");
+    Ok(())
+}
+
+/// Check if a pod should be evicted during node drain
+pub fn should_evict_pod(pod: &k8s_openapi::api::core::v1::Pod) -> bool {
+    // Skip pods that are already terminating or completed
+    if let Some(status) = &pod.status {
+        if let Some(phase) = &status.phase {
+            if phase == "Succeeded" || phase == "Failed" {
+                return false;
+            }
+        }
+    }
+    // Skip DaemonSet pods (they will be recreated on other nodes)
+    if let Some(owner_refs) = &pod.metadata.owner_references {
+        if owner_refs.iter().any(|owner| owner.kind == "DaemonSet") {
+            return false;
+        }
+    }
+    true
+}
+
+/// Evict a single pod with graceful deletion
+async fn evict_pod(
+    client: &Client,
+    pod_name: &str,
+    pod_namespace: &str,
+    node_name: &str,
+) -> Result<(), ReconcilerError> {
+    use k8s_openapi::api::core::v1::Pod;
+
+    let pods_ns: Api<Pod> = Api::namespaced(client.clone(), pod_namespace);
+    let delete_params = kube::api::DeleteParams {
+        grace_period_seconds: Some(u32::try_from(POD_EVICTION_GRACE_PERIOD_SECS).unwrap_or(30)),
+        ..Default::default()
+    };
+
+    match pods_ns.delete(pod_name, &delete_params).await {
+        Ok(_) => debug!(pod = %pod_name, namespace = %pod_namespace, "Pod eviction initiated"),
+        Err(kube::Error::Api(e)) if e.code == 404 => {
+            debug!(pod = %pod_name, namespace = %pod_namespace, "Pod already deleted");
+        }
+        Err(kube::Error::Api(e)) if e.code == 429 => {
+            info!(pod = %pod_name, namespace = %pod_namespace, "Pod eviction blocked by PDB");
+        }
+        Err(e) => {
+            error!(pod = %pod_name, namespace = %pod_namespace, error = %e, "Failed to evict pod");
+            return Err(ReconcilerError::CapiError(format!(
+                "Failed to evict pod {pod_name} from node {node_name}: {e}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Drain a Kubernetes Node by evicting all pods with timeout
+///
+/// # Errors
+/// Returns error if cordoning fails, pod listing fails, or eviction fails
+pub async fn drain_node_with_timeout(
+    client: &Client,
+    node_name: &str,
+    timeout: Duration,
+) -> Result<(), ReconcilerError> {
+    use k8s_openapi::api::core::v1::Pod;
+
+    info!(node = %node_name, timeout_secs = timeout.as_secs(), "Starting node drain");
+
+    cordon_node(client, node_name).await?;
+
+    let pods: Api<Pod> = Api::all(client.clone());
+    let list_params =
+        kube::api::ListParams::default().fields(&format!("spec.nodeName={node_name}"));
+
+    let pod_list = pods.list(&list_params).await.map_err(|e| {
+        ReconcilerError::CapiError(format!("Failed to list pods on node {node_name}: {e}"))
+    })?;
+
+    let pods_to_evict: Vec<_> = pod_list
+        .items
+        .iter()
+        .filter(|p| should_evict_pod(p))
+        .collect();
+
+    if pods_to_evict.is_empty() {
+        info!(node = %node_name, "No pods to evict on node");
+        return Ok(());
+    }
+
+    info!(node = %node_name, pod_count = pods_to_evict.len(), "Found pods to evict");
+
+    let start_time = std::time::Instant::now();
+    for pod in pods_to_evict {
+        if start_time.elapsed() >= timeout {
+            return Err(ReconcilerError::CapiError(format!(
+                "Node drain timeout exceeded for {node_name}"
+            )));
+        }
+
+        let pod_name = pod.metadata.name.as_deref().unwrap_or("unknown");
+        let pod_namespace = pod.metadata.namespace.as_deref().unwrap_or("default");
+
+        debug!(node = %node_name, pod = %pod_name, namespace = %pod_namespace, "Evicting pod");
+        evict_pod(client, pod_name, pod_namespace, node_name).await?;
+    }
+
+    info!(node = %node_name, elapsed_secs = start_time.elapsed().as_secs(), "Node drain completed");
+    Ok(())
 }
 
 // ============================================================================
