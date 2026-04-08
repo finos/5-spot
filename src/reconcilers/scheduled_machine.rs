@@ -67,6 +67,12 @@ pub enum ReconcilerError {
     #[error("Reference validation failed: {0}")]
     ReferenceValidationError(String),
 
+    #[error("Security validation failed: {0}")]
+    ValidationError(String),
+
+    #[error("Operation timed out: {0}")]
+    TimeoutError(String),
+
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -163,6 +169,8 @@ fn record_reconciliation_result(
                 ReconcilerError::ReferenceValidationError(_) => {
                     record_error("reference_validation");
                 }
+                ReconcilerError::ValidationError(_) => record_error("validation"),
+                ReconcilerError::TimeoutError(_) => record_error("timeout"),
                 ReconcilerError::Other(_) => record_error("other"),
             }
         }

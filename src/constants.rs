@@ -288,3 +288,31 @@ pub const DEFAULT_INSTANCE_COUNT: u32 = 1;
 
 /// Field manager name for server-side apply
 pub const FIELD_MANAGER: &str = "5spot-controller";
+
+// ============================================================================
+// Security Constants
+// ============================================================================
+
+/// Maximum allowed duration for timeout fields (24 hours in seconds)
+pub const MAX_DURATION_SECS: u64 = 86_400;
+
+/// Maximum allowed timezone string length
+pub const MAX_TIMEZONE_LEN: usize = 64;
+
+/// Timeout for finalizer cleanup operations (10 minutes in seconds)
+pub const FINALIZER_CLEANUP_TIMEOUT_SECS: u64 = 600;
+
+/// Reserved label/annotation key prefixes that users cannot inject into system resources
+pub const RESERVED_LABEL_PREFIXES: &[&str] = &[
+    "kubernetes.io/",
+    "k8s.io/",
+    "cluster.x-k8s.io/",
+    "5spot.io/",
+];
+
+/// Allowed API groups for bootstrap embedded resources
+pub const ALLOWED_BOOTSTRAP_API_GROUPS: &[&str] = &["bootstrap.cluster.x-k8s.io", "k0smotron.io"];
+
+/// Allowed API groups for infrastructure embedded resources
+pub const ALLOWED_INFRASTRUCTURE_API_GROUPS: &[&str] =
+    &["infrastructure.cluster.x-k8s.io", "k0smotron.io"];

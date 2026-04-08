@@ -1,6 +1,7 @@
 // Helper functions for ScheduledMachine reconciliation
 // This file contains utility functions separated from the main reconciler logic
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,12 +17,13 @@ use tracing::{debug, error, info};
 
 use super::{Context, ReconcilerError};
 use crate::constants::{
-    API_VERSION_FULL, CAPI_CLUSTER_NAME_LABEL, CAPI_GROUP, CAPI_MACHINE_API_VERSION,
-    CAPI_MACHINE_API_VERSION_FULL, CAPI_RESOURCE_MACHINES, CONDITION_STATUS_TRUE,
-    CONDITION_TYPE_READY, DEFAULT_INSTANCE_ID, ENV_OPERATOR_INSTANCE_ID, ERROR_REQUEUE_SECS,
-    FINALIZER_SCHEDULED_MACHINE, PHASE_ACTIVE, PHASE_INACTIVE, PHASE_SHUTTING_DOWN,
-    PHASE_TERMINATED, POD_EVICTION_GRACE_PERIOD_SECS, REASON_GRACE_PERIOD, REASON_KILL_SWITCH,
-    REASON_RECONCILE_SUCCEEDED, TIMER_REQUEUE_SECS,
+    ALLOWED_BOOTSTRAP_API_GROUPS, ALLOWED_INFRASTRUCTURE_API_GROUPS, API_VERSION_FULL,
+    CAPI_CLUSTER_NAME_LABEL, CAPI_GROUP, CAPI_MACHINE_API_VERSION, CAPI_MACHINE_API_VERSION_FULL,
+    CAPI_RESOURCE_MACHINES, CONDITION_STATUS_TRUE, CONDITION_TYPE_READY, DEFAULT_INSTANCE_ID,
+    ENV_OPERATOR_INSTANCE_ID, ERROR_REQUEUE_SECS, FINALIZER_CLEANUP_TIMEOUT_SECS,
+    FINALIZER_SCHEDULED_MACHINE, MAX_DURATION_SECS, PHASE_ACTIVE, PHASE_INACTIVE,
+    PHASE_SHUTTING_DOWN, PHASE_TERMINATED, POD_EVICTION_GRACE_PERIOD_SECS, REASON_GRACE_PERIOD,
+    REASON_KILL_SWITCH, REASON_RECONCILE_SUCCEEDED, RESERVED_LABEL_PREFIXES, TIMER_REQUEUE_SECS,
 };
 use crate::crd::{Condition, ScheduledMachine, ScheduledMachineStatus};
 use crate::metrics::{record_node_drain, record_pod_eviction};
@@ -199,7 +201,9 @@ pub async fn handle_deletion(
         "Handling deletion"
     );
 
-    // Check if machine is still in cluster
+    // Wrap machine removal in a hard timeout so a hung removal cannot block
+    // namespace deletion or cluster upgrades indefinitely.
+    let cleanup_timeout = Duration::from_secs(FINALIZER_CLEANUP_TIMEOUT_SECS);
     let current_phase = resource.status.as_ref().and_then(|s| s.phase.as_deref());
 
     if let Some(phase) = current_phase {
@@ -207,10 +211,20 @@ pub async fn handle_deletion(
             info!(
                 resource = %name,
                 namespace = %namespace,
+                timeout_secs = FINALIZER_CLEANUP_TIMEOUT_SECS,
                 "Removing machine from cluster before deletion"
             );
 
-            remove_machine_from_cluster(&resource, &ctx.client, &namespace).await?;
+            tokio::time::timeout(
+                cleanup_timeout,
+                remove_machine_from_cluster(&resource, &ctx.client, &namespace),
+            )
+            .await
+            .map_err(|_| {
+                ReconcilerError::TimeoutError(format!(
+                    "Finalizer cleanup timed out after {FINALIZER_CLEANUP_TIMEOUT_SECS}s for {name}"
+                ))
+            })??;
         }
     }
 
@@ -325,6 +339,9 @@ pub fn check_grace_period_elapsed(resource: &ScheduledMachine) -> Result<bool, R
 }
 
 /// Parse duration string (e.g., "5m", "10s", "1h")
+///
+/// # Errors
+/// Returns error on empty input, invalid format, integer overflow, or values exceeding 24 hours.
 pub fn parse_duration(duration_str: &str) -> Result<Duration, ReconcilerError> {
     let duration_str = duration_str.trim();
 
@@ -339,16 +356,28 @@ pub fn parse_duration(duration_str: &str) -> Result<Duration, ReconcilerError> {
         ReconcilerError::InvalidConfig(format!("Invalid duration value: {duration_str}"))
     })?;
 
-    let seconds = match unit {
-        "s" => value,
-        "m" => value * 60,
-        "h" => value * 3600,
+    let multiplier: u64 = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3600,
         _ => {
             return Err(ReconcilerError::InvalidConfig(format!(
-                "Invalid duration unit: {unit}. Use 's', 'm', or 'h'"
+                "Invalid duration unit: '{unit}'. Use 's', 'm', or 'h'"
             )))
         }
     };
+
+    let seconds = value.checked_mul(multiplier).ok_or_else(|| {
+        ReconcilerError::InvalidConfig(format!(
+            "Duration overflow: '{duration_str}' exceeds representable range"
+        ))
+    })?;
+
+    if seconds > MAX_DURATION_SECS {
+        return Err(ReconcilerError::InvalidConfig(format!(
+            "Duration {seconds}s exceeds maximum of {MAX_DURATION_SECS}s (24h)"
+        )));
+    }
 
     Ok(Duration::from_secs(seconds))
 }
@@ -465,6 +494,52 @@ pub async fn update_phase_with_grace_period(
 }
 
 // ============================================================================
+// Security validation helpers
+// ============================================================================
+
+/// Reject label/annotation maps that contain reserved key prefixes.
+///
+/// Users must not be able to override system labels such as
+/// `cluster.x-k8s.io/cluster-name` or `kubernetes.io/*` via `machineTemplate`.
+pub fn validate_labels(
+    labels: &BTreeMap<String, String>,
+    field: &str,
+) -> Result<(), ReconcilerError> {
+    for key in labels.keys() {
+        for prefix in RESERVED_LABEL_PREFIXES {
+            if key.starts_with(prefix) {
+                return Err(ReconcilerError::ValidationError(format!(
+                    "{field} key '{key}' uses reserved prefix '{prefix}'"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validate that an apiVersion string belongs to an allowed API group.
+///
+/// Core Kubernetes API versions (no `/`) are always rejected for CAPI resources.
+pub fn validate_api_group(
+    api_version: &str,
+    allowed_groups: &[&str],
+    resource_type: &str,
+) -> Result<(), ReconcilerError> {
+    let group = api_version.rfind('/').map(|idx| &api_version[..idx]).ok_or_else(|| {
+        ReconcilerError::ValidationError(format!(
+            "{resource_type} apiVersion '{api_version}' must use a namespaced API group (e.g. 'bootstrap.cluster.x-k8s.io/v1beta1')"
+        ))
+    })?;
+
+    if !allowed_groups.contains(&group) {
+        return Err(ReconcilerError::ValidationError(format!(
+            "{resource_type} API group '{group}' is not allowed. Permitted groups: {allowed_groups:?}"
+        )));
+    }
+    Ok(())
+}
+
+// ============================================================================
 // CAPI Resource Creation
 // ============================================================================
 
@@ -512,6 +587,24 @@ pub async fn add_machine_to_cluster(
         "Creating CAPI resources from inline specs"
     );
 
+    // Validate API groups before creating any resources
+    validate_api_group(
+        &resource.spec.bootstrap_spec.api_version,
+        ALLOWED_BOOTSTRAP_API_GROUPS,
+        "bootstrap",
+    )?;
+    validate_api_group(
+        &resource.spec.infrastructure_spec.api_version,
+        ALLOWED_INFRASTRUCTURE_API_GROUPS,
+        "infrastructure",
+    )?;
+
+    // Validate user-supplied labels and annotations do not use reserved prefixes
+    if let Some(template) = &resource.spec.machine_template {
+        validate_labels(&template.labels, "machineTemplate.labels")?;
+        validate_labels(&template.annotations, "machineTemplate.annotations")?;
+    }
+
     let owner_ref = json!({
         "apiVersion": API_VERSION_FULL,
         "kind": "ScheduledMachine",
@@ -523,19 +616,10 @@ pub async fn add_machine_to_cluster(
         "blockOwnerDeletion": true,
     });
 
-    // Determine namespaces for resources
-    let bootstrap_ns = resource
-        .spec
-        .bootstrap_spec
-        .namespace
-        .as_deref()
-        .unwrap_or(namespace);
-    let infra_ns = resource
-        .spec
-        .infrastructure_spec
-        .namespace
-        .as_deref()
-        .unwrap_or(namespace);
+    // Bootstrap and infrastructure resources are always created in the same namespace
+    // as the ScheduledMachine — cross-namespace resource creation is not permitted.
+    let bootstrap_ns = namespace;
+    let infra_ns = namespace;
 
     // 1. Create bootstrap resource
     let bootstrap_spec = &resource.spec.bootstrap_spec;
@@ -957,3 +1041,7 @@ pub fn error_policy(
     error!(error = %error, "Reconciliation error");
     Action::requeue(Duration::from_secs(ERROR_REQUEUE_SECS))
 }
+
+#[cfg(test)]
+#[path = "helpers_tests.rs"]
+mod helpers_tests;

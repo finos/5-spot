@@ -24,13 +24,11 @@ mod tests {
             bootstrap_spec: crate::crd::EmbeddedResource {
                 api_version: "bootstrap.cluster.x-k8s.io/v1beta1".to_string(),
                 kind: "K0sWorkerConfig".to_string(),
-                namespace: None,
                 spec: json!({"args": []}),
             },
             infrastructure_spec: crate::crd::EmbeddedResource {
                 api_version: "infrastructure.cluster.x-k8s.io/v1beta1".to_string(),
                 kind: "RemoteMachine".to_string(),
-                namespace: None,
                 spec: json!({"address": "192.168.1.100", "port": 22}),
             },
             machine_template: None,

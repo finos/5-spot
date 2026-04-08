@@ -102,7 +102,9 @@ pub struct ScheduleSpec {
     pub hours_of_day: Vec<String>,
 
     /// Timezone for the schedule (e.g., "UTC", "America/New\_York")
+    /// Maximum length of 64 characters.
     #[serde(default = "default_timezone")]
+    #[schemars(schema_with = "timezone_schema")]
     pub timezone: String,
 
     /// Whether the schedule is enabled
@@ -165,14 +167,19 @@ pub struct EmbeddedResource {
     /// Kind of the resource (e.g., `K0sWorkerConfig`, `RemoteMachine`)
     pub kind: String,
 
-    /// Namespace for the created resource (defaults to `ScheduledMachine` namespace)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub namespace: Option<String>,
-
     /// The spec of the resource (provider-specific)
     /// This is an arbitrary JSON object whose schema depends on the kind
     #[schemars(schema_with = "arbitrary_object_schema")]
     pub spec: Value,
+}
+
+/// Schema for the timezone field — bounded string to prevent log injection
+fn timezone_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "string",
+        "maxLength": 64,
+        "pattern": "^[A-Za-z][A-Za-z0-9_+\\-/]*$"
+    })
 }
 
 /// Schema for arbitrary JSON object

@@ -1,3 +1,6 @@
+   Compiling five_spot v0.1.0 (/Users/erick/dev/5-spot)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.32s
+     Running `target/debug/crdgen`
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -9,302 +12,311 @@ spec:
     kind: ScheduledMachine
     plural: scheduledmachines
     shortNames:
-      - sm
+    - sm
     singular: scheduledmachine
   scope: Namespaced
   versions:
-    - additionalPrinterColumns:
-        - jsonPath: .status.phase
-          name: Phase
-          type: string
-        - jsonPath: .status.inSchedule
-          name: InSchedule
-          type: boolean
-        - jsonPath: .spec.schedule.enabled
-          name: Enabled
-          type: boolean
-        - jsonPath: .spec.killSwitch
-          name: KillSwitch
-          type: boolean
-        - jsonPath: .metadata.creationTimestamp
-          name: Age
-          type: date
-      name: v1alpha1
-      schema:
-        openAPIV3Schema:
-          description: Auto-generated derived type for ScheduledMachineSpec via `CustomResource`
-          properties:
-            spec:
-              properties:
-                bootstrapSpec:
-                  description: Inline bootstrap configuration spec (e.g., `K0sWorkerConfig`) This resource will be created
-                    when the schedule is active
-                  properties:
-                    apiVersion:
-                      description: API version of the resource (e.g., "bootstrap.cluster.x-k8s.io/v1beta1")
-                      type: string
-                    kind:
-                      description: Kind of the resource (e.g., `K0sWorkerConfig`, `RemoteMachine`)
-                      type: string
-                    namespace:
-                      description: Namespace for the created resource (defaults to `ScheduledMachine` namespace)
-                      nullable: true
-                      type: string
-                    spec:
-                      additionalProperties: true
-                      description: The spec of the resource (provider-specific) This is an arbitrary JSON object whose schema
-                        depends on the kind
-                      type: object
-                      x-kubernetes-preserve-unknown-fields: true
-                  required:
-                    - apiVersion
-                    - kind
-                    - spec
-                  type: object
-                clusterName:
-                  description: Name of the CAPI cluster this machine belongs to
-                  type: string
-                gracefulShutdownTimeout:
-                  default: 5m
-                  description: Timeout for graceful machine shutdown (e.g., "5m", "10s")
-                  type: string
-                infrastructureSpec:
-                  description: Inline infrastructure configuration spec (e.g., `RemoteMachine`) This resource will be created
-                    when the schedule is active
-                  properties:
-                    apiVersion:
-                      description: API version of the resource (e.g., "bootstrap.cluster.x-k8s.io/v1beta1")
-                      type: string
-                    kind:
-                      description: Kind of the resource (e.g., `K0sWorkerConfig`, `RemoteMachine`)
-                      type: string
-                    namespace:
-                      description: Namespace for the created resource (defaults to `ScheduledMachine` namespace)
-                      nullable: true
-                      type: string
-                    spec:
-                      additionalProperties: true
-                      description: The spec of the resource (provider-specific) This is an arbitrary JSON object whose schema
-                        depends on the kind
-                      type: object
-                      x-kubernetes-preserve-unknown-fields: true
-                  required:
-                    - apiVersion
-                    - kind
-                    - spec
-                  type: object
-                killSwitch:
-                  default: false
-                  description: When true, immediately removes the machine from cluster
-                  type: boolean
-                machineTemplate:
-                  description: Optional configuration for the created CAPI Machine If not specified, creates a Machine with
-                    default labels/annotations
-                  nullable: true
-                  properties:
-                    annotations:
-                      additionalProperties:
-                        type: string
-                      default: {}
-                      description: Annotations to apply to the created Machine
-                      type: object
-                    labels:
-                      additionalProperties:
-                        type: string
-                      default: {}
-                      description: Labels to apply to the created Machine
-                      type: object
-                  type: object
-                nodeDrainTimeout:
-                  default: 5m
-                  description: Timeout for draining the node before deletion (e.g., "5m", "10m")
-                  type: string
-                priority:
-                  default: 50
-                  description: Priority for machine scheduling (higher values = higher priority)
-                  format: uint8
-                  minimum: 0.0
-                  type: integer
-                schedule:
-                  description: Machine scheduling configuration
-                  properties:
-                    cron:
-                      description: Cron expression for the schedule (e.g., "0 9-17 * * 1-5" for Mon-Fri 9am-5pm) If specified,
-                        takes precedence over daysOfWeek/hoursOfDay
-                      nullable: true
-                      type: string
-                    daysOfWeek:
-                      default: []
-                      description: 'Days of the week when machine should be active Supports: individual days (mon), ranges
-                        (mon-fri), combinations (mon-wed,fri-sun) Ignored if cron is specified'
-                      items:
-                        type: string
-                      type: array
-                    enabled:
-                      default: true
-                      description: Whether the schedule is enabled
-                      type: boolean
-                    hoursOfDay:
-                      default: []
-                      description: 'Hours when machine should be active (0-23) Supports: individual hours (9), ranges (9-17),
-                        combinations (0-9,18-23) Ignored if cron is specified'
-                      items:
-                        type: string
-                      type: array
-                    timezone:
-                      default: UTC
-                      description: Timezone for the schedule (e.g., "UTC", "America/New\_York")
-                      type: string
-                  type: object
-              required:
-                - bootstrapSpec
-                - clusterName
-                - infrastructureSpec
-                - schedule
-              type: object
-            status:
-              nullable: true
-              properties:
-                bootstrapRef:
-                  description: Reference to the created bootstrap resource
-                  nullable: true
-                  properties:
-                    apiVersion:
-                      description: API version of the referenced object
-                      type: string
-                    kind:
-                      description: Kind of the referenced object
-                      type: string
-                    name:
-                      description: Name of the referenced object
-                      type: string
-                    namespace:
-                      description: Namespace of the referenced object
-                      nullable: true
-                      type: string
-                  required:
-                    - apiVersion
-                    - kind
-                    - name
-                  type: object
-                conditions:
-                  default: []
-                  description: Standard Kubernetes conditions
-                  items:
-                    properties:
-                      lastTransitionTime:
-                        description: Last transition time (RFC3339 format)
-                        type: string
-                      message:
-                        description: Human-readable message
-                        type: string
-                      reason:
-                        description: One-word reason in CamelCase
-                        type: string
-                      status:
-                        description: 'Status: "True", "False", or "Unknown"'
-                        type: string
-                      type:
-                        description: Type of condition (e.g., "Ready", "`MachineReady`", "`ReferencesValid`")
-                        type: string
-                    required:
-                      - lastTransitionTime
-                      - message
-                      - reason
-                      - status
-                      - type
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.inSchedule
+      name: InSchedule
+      type: boolean
+    - jsonPath: .spec.schedule.enabled
+      name: Enabled
+      type: boolean
+    - jsonPath: .spec.killSwitch
+      name: KillSwitch
+      type: boolean
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ScheduledMachineSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              bootstrapSpec:
+                description: |-
+                  Inline bootstrap configuration spec (e.g., `K0sWorkerConfig`)
+                  This resource will be created when the schedule is active
+                properties:
+                  apiVersion:
+                    description: API version of the resource (e.g., "bootstrap.cluster.x-k8s.io/v1beta1")
+                    type: string
+                  kind:
+                    description: Kind of the resource (e.g., `K0sWorkerConfig`, `RemoteMachine`)
+                    type: string
+                  spec:
+                    additionalProperties: true
+                    description: |-
+                      The spec of the resource (provider-specific)
+                      This is an arbitrary JSON object whose schema depends on the kind
                     type: object
-                  type: array
-                inSchedule:
-                  default: false
-                  description: Whether machine is currently in scheduled window
-                  type: boolean
-                infrastructureRef:
-                  description: Reference to the created infrastructure resource
-                  nullable: true
+                    x-kubernetes-preserve-unknown-fields: true
+                required:
+                - apiVersion
+                - kind
+                - spec
+                type: object
+              clusterName:
+                description: Name of the CAPI cluster this machine belongs to
+                type: string
+              gracefulShutdownTimeout:
+                default: 5m
+                description: Timeout for graceful machine shutdown (e.g., "5m", "10s")
+                type: string
+              infrastructureSpec:
+                description: |-
+                  Inline infrastructure configuration spec (e.g., `RemoteMachine`)
+                  This resource will be created when the schedule is active
+                properties:
+                  apiVersion:
+                    description: API version of the resource (e.g., "bootstrap.cluster.x-k8s.io/v1beta1")
+                    type: string
+                  kind:
+                    description: Kind of the resource (e.g., `K0sWorkerConfig`, `RemoteMachine`)
+                    type: string
+                  spec:
+                    additionalProperties: true
+                    description: |-
+                      The spec of the resource (provider-specific)
+                      This is an arbitrary JSON object whose schema depends on the kind
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                required:
+                - apiVersion
+                - kind
+                - spec
+                type: object
+              killSwitch:
+                default: false
+                description: When true, immediately removes the machine from cluster
+                type: boolean
+              machineTemplate:
+                description: |-
+                  Optional configuration for the created CAPI Machine
+                  If not specified, creates a Machine with default labels/annotations
+                nullable: true
+                properties:
+                  annotations:
+                    additionalProperties:
+                      type: string
+                    default: {}
+                    description: Annotations to apply to the created Machine
+                    type: object
+                  labels:
+                    additionalProperties:
+                      type: string
+                    default: {}
+                    description: Labels to apply to the created Machine
+                    type: object
+                type: object
+              nodeDrainTimeout:
+                default: 5m
+                description: Timeout for draining the node before deletion (e.g., "5m", "10m")
+                type: string
+              priority:
+                default: 50
+                description: Priority for machine scheduling (higher values = higher priority)
+                format: uint8
+                maximum: 255.0
+                minimum: 0.0
+                type: integer
+              schedule:
+                description: Machine scheduling configuration
+                properties:
+                  cron:
+                    description: |-
+                      Cron expression for the schedule (e.g., "0 9-17 * * 1-5" for Mon-Fri 9am-5pm)
+                      If specified, takes precedence over daysOfWeek/hoursOfDay
+                    nullable: true
+                    type: string
+                  daysOfWeek:
+                    default: []
+                    description: |-
+                      Days of the week when machine should be active
+                      Supports: individual days (mon), ranges (mon-fri), combinations (mon-wed,fri-sun)
+                      Ignored if cron is specified
+                    items:
+                      type: string
+                    type: array
+                  enabled:
+                    default: true
+                    description: Whether the schedule is enabled
+                    type: boolean
+                  hoursOfDay:
+                    default: []
+                    description: |-
+                      Hours when machine should be active (0-23)
+                      Supports: individual hours (9), ranges (9-17), combinations (0-9,18-23)
+                      Ignored if cron is specified
+                    items:
+                      type: string
+                    type: array
+                  timezone:
+                    default: UTC
+                    description: |-
+                      Timezone for the schedule (e.g., "UTC", "America/New\_York")
+                      Maximum length of 64 characters.
+                    maxLength: 64
+                    pattern: ^[A-Za-z][A-Za-z0-9_+\-/]*$
+                    type: string
+                type: object
+            required:
+            - bootstrapSpec
+            - clusterName
+            - infrastructureSpec
+            - schedule
+            type: object
+          status:
+            nullable: true
+            properties:
+              bootstrapRef:
+                description: Reference to the created bootstrap resource
+                nullable: true
+                properties:
+                  apiVersion:
+                    description: API version of the referenced object
+                    type: string
+                  kind:
+                    description: Kind of the referenced object
+                    type: string
+                  name:
+                    description: Name of the referenced object
+                    type: string
+                  namespace:
+                    description: Namespace of the referenced object
+                    nullable: true
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                type: object
+              conditions:
+                default: []
+                description: Standard Kubernetes conditions
+                items:
                   properties:
-                    apiVersion:
-                      description: API version of the referenced object
+                    lastTransitionTime:
+                      description: Last transition time (RFC3339 format)
                       type: string
-                    kind:
-                      description: Kind of the referenced object
+                    message:
+                      description: Human-readable message
                       type: string
-                    name:
-                      description: Name of the referenced object
+                    reason:
+                      description: One-word reason in CamelCase
                       type: string
-                    namespace:
-                      description: Namespace of the referenced object
-                      nullable: true
+                    status:
+                      description: 'Status: "True", "False", or "Unknown"'
+                      type: string
+                    type:
+                      description: Type of condition (e.g., "Ready", "`MachineReady`", "`ReferencesValid`")
                       type: string
                   required:
-                    - apiVersion
-                    - kind
-                    - name
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
                   type: object
-                lastScheduledTime:
-                  description: Last time a machine was created (RFC3339 format)
-                  nullable: true
-                  type: string
-                machineRef:
-                  description: Reference to the created CAPI Machine
-                  nullable: true
-                  properties:
-                    apiVersion:
-                      description: API version of the referenced object
-                      type: string
-                    kind:
-                      description: Kind of the referenced object
-                      type: string
-                    name:
-                      description: Name of the referenced object
-                      type: string
-                    namespace:
-                      description: Namespace of the referenced object
-                      nullable: true
-                      type: string
-                  required:
-                    - apiVersion
-                    - kind
-                    - name
-                  type: object
-                message:
-                  description: Human-readable status message
-                  nullable: true
-                  type: string
-                nextActivation:
-                  description: Next scheduled activation time (RFC3339 format)
-                  nullable: true
-                  type: string
-                nextCleanup:
-                  description: Time when machine will be cleaned up (RFC3339 format)
-                  nullable: true
-                  type: string
-                nodeRef:
-                  description: Reference to the Kubernetes Node (once provisioned)
-                  nullable: true
-                  properties:
-                    name:
-                      description: Name of the referenced object
-                      type: string
-                  required:
-                    - name
-                  type: object
-                observedGeneration:
-                  description: Observed generation for change detection
-                  format: int64
-                  nullable: true
-                  type: integer
-                phase:
-                  description: 'Current phase of the machine lifecycle Values: Pending, Active, `ShuttingDown`, Inactive,
-                    Disabled, Terminated, Error'
-                  nullable: true
-                  type: string
-              type: object
-          required:
-            - spec
-          title: ScheduledMachine
-          type: object
-      served: true
-      storage: true
-      subresources:
-        status: {}
+                type: array
+              inSchedule:
+                default: false
+                description: Whether machine is currently in scheduled window
+                type: boolean
+              infrastructureRef:
+                description: Reference to the created infrastructure resource
+                nullable: true
+                properties:
+                  apiVersion:
+                    description: API version of the referenced object
+                    type: string
+                  kind:
+                    description: Kind of the referenced object
+                    type: string
+                  name:
+                    description: Name of the referenced object
+                    type: string
+                  namespace:
+                    description: Namespace of the referenced object
+                    nullable: true
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                type: object
+              lastScheduledTime:
+                description: Last time a machine was created (RFC3339 format)
+                nullable: true
+                type: string
+              machineRef:
+                description: Reference to the created CAPI Machine
+                nullable: true
+                properties:
+                  apiVersion:
+                    description: API version of the referenced object
+                    type: string
+                  kind:
+                    description: Kind of the referenced object
+                    type: string
+                  name:
+                    description: Name of the referenced object
+                    type: string
+                  namespace:
+                    description: Namespace of the referenced object
+                    nullable: true
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                type: object
+              message:
+                description: Human-readable status message
+                nullable: true
+                type: string
+              nextActivation:
+                description: Next scheduled activation time (RFC3339 format)
+                nullable: true
+                type: string
+              nextCleanup:
+                description: Time when machine will be cleaned up (RFC3339 format)
+                nullable: true
+                type: string
+              nodeRef:
+                description: Reference to the Kubernetes Node (once provisioned)
+                nullable: true
+                properties:
+                  name:
+                    description: Name of the referenced object
+                    type: string
+                required:
+                - name
+                type: object
+              observedGeneration:
+                description: Observed generation for change detection
+                format: int64
+                nullable: true
+                type: integer
+              phase:
+                description: |-
+                  Current phase of the machine lifecycle
+                  Values: Pending, Active, `ShuttingDown`, Inactive, Disabled, Terminated, Error
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: ScheduledMachine
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+

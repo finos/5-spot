@@ -17,19 +17,24 @@ rules:
     resources: ["machines", "machines/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
-  # Bootstrap provider resources (create from inline specs)
+  # Bootstrap provider resources (wildcard required — controller is provider-agnostic
+  # and must support any CAPI bootstrap provider installed in the cluster)
   - apiGroups: ["bootstrap.cluster.x-k8s.io"]
     resources: ["*"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
-  # Infrastructure provider resources (create from inline specs)
+  # Infrastructure provider resources (wildcard required — provider-agnostic)
   - apiGroups: ["infrastructure.cluster.x-k8s.io"]
     resources: ["*"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
-  # k0smotron bootstrap resources
+  # k0smotron resources — explicitly enumerated (known provider)
   - apiGroups: ["k0smotron.io"]
-    resources: ["*"]
+    resources:
+      - "k0sworkerconfigs"
+      - "k0sworkerconfigs/status"
+      - "remotemachines"
+      - "remotemachines/status"
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
   # Events for recording reconciliation events
