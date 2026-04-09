@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
+// SPDX-License-Identifier: MIT
 //! # Global constants
 //!
 //! All named constants used across the controller.  No magic numbers are

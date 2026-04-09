@@ -1,6 +1,8 @@
-//! # five_spot — library crate
+// Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
+// SPDX-License-Identifier: MIT
+//! # `five_spot` — library crate
 //!
-//! Public API surface for the 5-Spot ScheduledMachine controller.
+//! Public API surface for the 5-Spot `ScheduledMachine` controller.
 //!
 //! Modules:
 //! - [`constants`] — all named constants (timing, labels, phases, CAPI API strings)

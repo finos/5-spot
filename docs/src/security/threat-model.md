@@ -256,7 +256,7 @@ flowchart LR
 | Control | Recommendation |
 |---|---|
 | Kubernetes ResourceQuota | Limit `ScheduledMachine` count per namespace (e.g., max 50) |
-| Admission webhook | Validate `bootstrapSpec.apiVersion` and `kind` at admission time (in addition to runtime) |
+| `ValidatingAdmissionPolicy` ✅ deployed 2026-04-08 | Validates `bootstrapSpec.apiVersion`, `infrastructureSpec.apiVersion`, `kind` fields, duration format, cron XOR days/hours, and day/hour item format at admission time — see `deploy/admission/` |
 | NetworkPolicy | Restrict controller pod egress to Kubernetes API server only |
 | Audit logging | Enable API server audit log at `RequestResponse` level for `scheduledmachines` resources |
 | RBAC for SM creation | Only grant `create` on `scheduledmachines` to trusted identities; do not grant to end users directly |

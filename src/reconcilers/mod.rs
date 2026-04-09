@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
+// SPDX-License-Identifier: MIT
 //! # Reconcilers
 //!
 //! This module contains all reconciliation logic for 5-Spot custom resources.

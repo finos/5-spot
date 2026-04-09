@@ -156,15 +156,20 @@
 **Timeline:** 4-6 weeks
 **Goal:** Enterprise-ready features
 
-### 3.1 Admission Webhooks
+### 3.1 Admission Validation
 
-- [ ] Validating webhook:
-  - Schedule syntax validation
-  - Timezone validation
-  - Reference existence checks
-- [ ] Mutating webhook:
-  - Default values injection
+- [x] `ValidatingAdmissionPolicy` (serverless — no webhook binary or TLS certificate required):
+  - [x] `gracefulShutdownTimeout` / `nodeDrainTimeout` duration format (`^\d+[smh]$`)
+  - [x] `cron` XOR `daysOfWeek`/`hoursOfDay` mutual exclusivity
+  - [x] `daysOfWeek` item day-name / range format
+  - [x] `hoursOfDay` item hour / range format
+  - [x] `bootstrapSpec.apiVersion` / `infrastructureSpec.apiVersion` namespaced-group and provider allowlist
+  - [x] `clusterName`, `bootstrapSpec.kind`, `infrastructureSpec.kind` non-empty
+  - Deployed: `deploy/admission/` ✅ 2026-04-08
+- [ ] Mutating webhook (future — requires TLS + webhook server):
+  - Default values injection (low value; CRD defaults cover most cases)
   - Label standardization
+- [ ] Reference existence checks (future — requires runtime lookup, cannot be done in CEL)
 
 ### 3.2 Multi-Cluster Support
 

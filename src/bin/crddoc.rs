@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
+// SPDX-License-Identifier: MIT
 //! # CRD API documentation generator
 //!
 //! Offline tool that emits a Markdown API reference for the `ScheduledMachine`

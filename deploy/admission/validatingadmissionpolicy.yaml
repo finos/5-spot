@@ -1,0 +1,151 @@
+# ValidatingAdmissionPolicy for ScheduledMachine resources.
+#
+# Enforces spec constraints at admission time (CREATE / UPDATE) so that invalid
+# resources are rejected before the controller ever sees them — satisfying
+# NIST 800-53 CM-5 (Access Restrictions for Change).
+#
+# Requires Kubernetes >= 1.26 (alpha), >= 1.28 (beta), >= 1.30 (GA).
+# The policy mirrors the runtime validation in src/reconcilers/helpers.rs
+# (parse_duration, validate_labels, validate_api_group) to create a defence-
+# in-depth posture: invalid specs are caught at admission rather than
+# only at reconciliation time.
+#
+# Apply with:
+#   kubectl apply -f deploy/admission/validatingadmissionpolicy.yaml
+#   kubectl apply -f deploy/admission/validatingadmissionpolicybinding.yaml
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: scheduledmachine-validation
+  labels:
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: admission
+    app.kubernetes.io/managed-by: 5spot-controller
+spec:
+  # Reject the request outright; do not silently accept invalid specs.
+  failurePolicy: Fail
+
+  matchConstraints:
+    resourceRules:
+      - apiGroups:   ["capi.5spot.io"]
+        apiVersions: ["v1alpha1"]
+        resources:   ["scheduledmachines"]
+        operations:  ["CREATE", "UPDATE"]
+
+  validations:
+
+    # ── 1. clusterName ────────────────────────────────────────────────────────
+    - expression: "object.spec.clusterName.size() > 0"
+      message: "spec.clusterName must not be empty"
+      reason: Invalid
+
+    # ── 2. gracefulShutdownTimeout duration format ────────────────────────────
+    # Must be <positive-integer><unit> where unit ∈ {s, m, h}.
+    # Mirrors the parse_duration() check in src/reconcilers/helpers.rs.
+    - expression: "object.spec.gracefulShutdownTimeout.matches('^[0-9]+[smh]$')"
+      message: >-
+        spec.gracefulShutdownTimeout must be a duration string such as '5m', '30s', or '1h'
+        (format: <positive integer> followed by s, m, or h)
+      reason: Invalid
+
+    # ── 3. nodeDrainTimeout duration format ───────────────────────────────────
+    - expression: "object.spec.nodeDrainTimeout.matches('^[0-9]+[smh]$')"
+      message: >-
+        spec.nodeDrainTimeout must be a duration string such as '5m', '30s', or '1h'
+        (format: <positive integer> followed by s, m, or h)
+      reason: Invalid
+
+    # ── 4. Cron XOR explicit day/hour windows ────────────────────────────────
+    # Using cron together with daysOfWeek or hoursOfDay is ambiguous.
+    # The controller silently ignores daysOfWeek/hoursOfDay when cron is set;
+    # we reject the spec at admission to prevent silent data loss.
+    - expression: |
+        !has(object.spec.schedule.cron) ||
+        (object.spec.schedule.daysOfWeek.size() == 0 &&
+         object.spec.schedule.hoursOfDay.size() == 0)
+      message: >-
+        spec.schedule: cron is mutually exclusive with daysOfWeek and hoursOfDay —
+        set one or the other, not both
+      reason: Invalid
+
+    # ── 5. Without cron, both day and hour windows must be provided ───────────
+    - expression: |
+        has(object.spec.schedule.cron) ||
+        (object.spec.schedule.daysOfWeek.size() > 0 &&
+         object.spec.schedule.hoursOfDay.size() > 0)
+      message: >-
+        spec.schedule: when cron is not set, both daysOfWeek and hoursOfDay must be
+        non-empty to define an active window
+      reason: Invalid
+
+    # ── 6. daysOfWeek item format ─────────────────────────────────────────────
+    # Each element must be a day name (mon…sun), an inclusive range (mon-fri),
+    # or a comma-separated combination (mon-wed,fri-sun).
+    # Trivially true for empty arrays (cron path).
+    - expression: |
+        object.spec.schedule.daysOfWeek.all(d,
+          d.matches('^(mon|tue|wed|thu|fri|sat|sun)(-(mon|tue|wed|thu|fri|sat|sun))?(,(mon|tue|wed|thu|fri|sat|sun)(-(mon|tue|wed|thu|fri|sat|sun))?)*$'))
+      message: >-
+        spec.schedule.daysOfWeek items must be day names or ranges
+        (e.g. 'mon', 'mon-fri', 'mon-wed,fri-sun')
+      reason: Invalid
+
+    # ── 7. hoursOfDay item format ─────────────────────────────────────────────
+    # Each element must be a 1-2 digit hour, a range (9-17), or a comma-
+    # separated combination (0-9,18-23).  Numeric bounds (0-23) are enforced
+    # at runtime by the schedule evaluator.
+    # Trivially true for empty arrays (cron path).
+    - expression: |
+        object.spec.schedule.hoursOfDay.all(h,
+          h.matches('^[0-9]{1,2}(-[0-9]{1,2})?(,[0-9]{1,2}(-[0-9]{1,2})?)*$'))
+      message: >-
+        spec.schedule.hoursOfDay items must be hours or ranges
+        (e.g. '9', '9-17', '0-9,18-23')
+      reason: Invalid
+
+    # ── 8. bootstrapSpec.apiVersion must use a namespaced API group ───────────
+    # Core API versions (e.g. "v1") have no '/' and must never be used for
+    # bootstrap resources — rejects the same case as validate_api_group() at runtime.
+    - expression: "object.spec.bootstrapSpec.apiVersion.contains('/')"
+      message: >-
+        spec.bootstrapSpec.apiVersion must use a namespaced API group
+        (e.g. 'bootstrap.cluster.x-k8s.io/v1beta1') — core API versions are not permitted
+      reason: Invalid
+
+    # ── 9. bootstrapSpec.apiVersion must be from an allowed provider group ────
+    # Mirrors ALLOWED_BOOTSTRAP_API_GROUPS in src/constants.rs.
+    - expression: |
+        object.spec.bootstrapSpec.apiVersion.startsWith('bootstrap.cluster.x-k8s.io/') ||
+        object.spec.bootstrapSpec.apiVersion.startsWith('k0smotron.io/')
+      message: >-
+        spec.bootstrapSpec.apiVersion must be from an allowed group:
+        bootstrap.cluster.x-k8s.io or k0smotron.io
+      reason: Invalid
+
+    # ── 10. bootstrapSpec.kind must not be empty ──────────────────────────────
+    - expression: "object.spec.bootstrapSpec.kind.size() > 0"
+      message: "spec.bootstrapSpec.kind must not be empty"
+      reason: Invalid
+
+    # ── 11. infrastructureSpec.apiVersion must use a namespaced API group ─────
+    - expression: "object.spec.infrastructureSpec.apiVersion.contains('/')"
+      message: >-
+        spec.infrastructureSpec.apiVersion must use a namespaced API group
+        (e.g. 'infrastructure.cluster.x-k8s.io/v1beta1') — core API versions are not permitted
+      reason: Invalid
+
+    # ── 12. infrastructureSpec.apiVersion must be from an allowed provider group
+    # Mirrors ALLOWED_INFRASTRUCTURE_API_GROUPS in src/constants.rs.
+    - expression: |
+        object.spec.infrastructureSpec.apiVersion.startsWith('infrastructure.cluster.x-k8s.io/') ||
+        object.spec.infrastructureSpec.apiVersion.startsWith('k0smotron.io/')
+      message: >-
+        spec.infrastructureSpec.apiVersion must be from an allowed group:
+        infrastructure.cluster.x-k8s.io or k0smotron.io
+      reason: Invalid
+
+    # ── 13. infrastructureSpec.kind must not be empty ─────────────────────────
+    - expression: "object.spec.infrastructureSpec.kind.size() > 0"
+      message: "spec.infrastructureSpec.kind must not be empty"
+      reason: Invalid

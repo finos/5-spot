@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
+// SPDX-License-Identifier: MIT
 //! # Prometheus metrics
 //!
 //! Observability metrics for monitoring the controller's health, performance,

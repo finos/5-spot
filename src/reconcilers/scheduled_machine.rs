@@ -1,4 +1,6 @@
-//! # ScheduledMachine reconciler
+// Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
+// SPDX-License-Identifier: MIT
+//! # `ScheduledMachine` reconciler
 //!
 //! Implements the Kubernetes controller reconciliation loop for
 //! [`ScheduledMachine`] custom resources.

@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
+// SPDX-License-Identifier: MIT
 //! # Standard Kubernetes labels
 //!
 //! Label key constants and helper functions for building consistent

@@ -217,6 +217,11 @@ nav:
       - Resource Distribution: advanced/resource-distribution.md
       - Integration with CAPI: advanced/capi-integration.md
 
+  - Security:
+      - Overview: security/index.md
+      - Admission Validation: security/admission-validation.md
+      - Threat Model: security/threat-model.md
+
   - Developer Guide:
       - Development Setup: development/setup.md
       - Building: development/building.md

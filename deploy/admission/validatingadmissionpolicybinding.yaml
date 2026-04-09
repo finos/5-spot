@@ -1,0 +1,31 @@
+# ValidatingAdmissionPolicyBinding — activates the scheduledmachine-validation
+# policy cluster-wide for all CREATE and UPDATE operations on ScheduledMachine
+# resources in any namespace.
+#
+# The binding sets validationActions: [Deny] so that resources that fail any
+# CEL validation rule in the policy are hard-rejected by the API server with
+# HTTP 422 (Unprocessable Entity) before they are persisted to etcd.
+#
+# Apply after the ValidatingAdmissionPolicy:
+#   kubectl apply -f deploy/admission/validatingadmissionpolicy.yaml
+#   kubectl apply -f deploy/admission/validatingadmissionpolicybinding.yaml
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: scheduledmachine-validation-binding
+  labels:
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: admission
+    app.kubernetes.io/managed-by: 5spot-controller
+spec:
+  # Reference the policy defined in validatingadmissionpolicy.yaml.
+  policyName: scheduledmachine-validation
+
+  # Deny rejects the request; use [Audit] during rollout to log without blocking.
+  validationActions: [Deny]
+
+  # Apply to ScheduledMachine resources in all namespaces.
+  # Narrow this to specific namespaces by adding a namespaceSelector if needed.
+  matchResources:
+    namespaceSelector: {}

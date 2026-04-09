@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
+// SPDX-License-Identifier: MIT
 //! # Reconciliation helper functions
 //!
 //! Pure utility functions used by the [`scheduled_machine`](super::scheduled_machine)
@@ -1175,8 +1177,8 @@ async fn cordon_node(client: &Client, node_name: &str) -> Result<(), ReconcilerE
 ///
 /// Pods are skipped when:
 /// - Their phase is `Succeeded` or `Failed` — they are already done.
-/// - They are owned by a `DaemonSet` — DaemonSet pods are automatically
-///   re-scheduled by the DaemonSet controller and should not be evicted
+/// - They are owned by a `DaemonSet` — `DaemonSet` pods are automatically
+///   re-scheduled by the `DaemonSet` controller and should not be evicted
 ///   manually; doing so would cause needless churn.
 pub fn should_evict_pod(pod: &k8s_openapi::api::core::v1::Pod) -> bool {
     // Skip pods that are already terminating or completed
@@ -1200,13 +1202,12 @@ pub fn should_evict_pod(pod: &k8s_openapi::api::core::v1::Pod) -> bool {
 ///
 /// Uses [`POD_EVICTION_GRACE_PERIOD_SECS`] as the `gracePeriodSeconds` so
 /// the pod's `preStop` hooks and SIGTERM handlers have time to run.
-/// PDB-blocked evictions (HTTP 429) are logged but do not return an error —
-/// the drain loop records the failure in metrics and moves on; the
-/// grace period timeout in [`drain_node_with_timeout`] acts as the final
-/// safety net.
 ///
 /// # Errors
-/// Returns [`ReconcilerError::CapiError`] for unexpected non-404/non-429 failures.
+/// Returns [`ReconcilerError::CapiError`] if eviction fails for any reason,
+/// including PDB-blocked evictions (HTTP 429). Only 404 (pod already gone)
+/// is treated as a non-error condition. The caller is responsible for
+/// deciding whether to retry or abort the drain.
 async fn evict_pod(
     client: &Client,
     pod_name: &str,
@@ -1231,8 +1232,11 @@ async fn evict_pod(
             record_pod_eviction(true);
         }
         Err(kube::Error::Api(e)) if e.code == 429 => {
-            info!(pod = %pod_name, namespace = %pod_namespace, "Pod eviction blocked by PDB");
+            warn!(pod = %pod_name, namespace = %pod_namespace, "Pod eviction blocked by PDB (HTTP 429)");
             record_pod_eviction(false);
+            return Err(ReconcilerError::CapiError(format!(
+                "Pod {pod_name} eviction blocked by PodDisruptionBudget (HTTP 429) on node {node_name}"
+            )));
         }
         Err(e) => {
             error!(pod = %pod_name, namespace = %pod_namespace, error = %e, "Failed to evict pod");

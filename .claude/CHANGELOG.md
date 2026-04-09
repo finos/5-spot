@@ -9,6 +9,79 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-04-08 15:00] - Add Security section to MkDocs with Admission Validation guide
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/src/security/index.md`: New security section landing page — security posture at a glance table, compliance mapping summary, and links to sub-pages
+- `docs/src/security/admission-validation.md`: Comprehensive user-facing guide for the `ValidatingAdmissionPolicy` covering: VAP vs. webhook comparison table, Mermaid admission flow sequence diagram, full 13-rule reference table with per-rule detail and examples, deployment instructions, rollout strategy (Audit → Deny → AuditAndDeny), four concrete kubectl test examples, namespace scoping guidance, and Kubernetes version compatibility table
+- `docs/mkdocs.yml`: Added `Security` top-level nav section (between Advanced Topics and Developer Guide) containing Overview, Admission Validation, and Threat Model pages
+
+### Why
+The `ValidatingAdmissionPolicy` deployed in the previous entry had no user-facing documentation. Operators need to know what is validated, how to deploy it, how to do a safe rollout, and how to test it. The new Security section also surfaces the threat model in the main navigation — previously it existed only in the repo but was not reachable from the docs site.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
+## [2026-04-08 14:00] - Phase 2 (P2-6/P2-8/P2-9/P2-10): eviction correctness, JSON logging, supply-chain provenance
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/helpers.rs`: Fixed P2-6 — `evict_pod` 429 PDB-blocked arm now returns `Err(ReconcilerError::CapiError(...))` instead of silently returning `Ok(())`; log level raised from `info` to `warn`; doc comment updated to remove the incorrect "429 is not an error" statement
+- `src/reconcilers/helpers_tests.rs`: Added 5 TDD mock API tests for `evict_pod` covering: success (200), already-deleted (404 → Ok), PDB-blocked (429 → CapiError), server error (500 → CapiError), and forbidden (403 → CapiError)
+- `src/main.rs`: Wired P2-8 — added `--log-format` CLI arg mapped to `RUST_LOG_FORMAT` env var (default `"json"`); tracing subscriber now uses `.json()` layer for `json` and plain text layer for `text`/anything else
+- `deploy/deployment/deployment.yaml`: Changed `RUST_LOG_FORMAT` default from `"text"` to `"json"` so production pods emit structured JSON for SIEM ingestion
+- `src/**/*.rs` (all 18 files): Added P2-10 SPDX supply-chain provenance headers to every Rust source file:
+  ```
+  // Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
+  // SPDX-License-Identifier: MIT
+  ```
+
+### Why
+- **P2-6**: A PDB-blocked eviction (HTTP 429) was silently treated as success, causing the drain loop to believe the pod was evicted when it wasn't — a data-integrity bug that could leave a node non-empty. Now propagated as `CapiError` so the caller can decide to retry or abort.
+- **P2-8**: Structured JSON logging is required for SIEM ingestion and NIST AU-3 compliance; `text` format was only appropriate for local development.
+- **P2-9**: `cargo-audit 0.22.0` was already running via `firestoned/github-actions/rust/security-scan@v1.3.6` on all PRs and main — no code change required, marked ✅ in roadmap.
+- **P2-10**: SPDX headers enable automated license scanning and supply-chain provenance tracking per NIST SA-4.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — `RUST_LOG_FORMAT=json` default; existing log parsers expecting plain text must be updated
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
+## [2026-04-08 13:00] - Add ValidatingAdmissionPolicy for ScheduledMachine (NIST CM-5)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `deploy/admission/validatingadmissionpolicy.yaml`: `ValidatingAdmissionPolicy` with 13 CEL validation rules covering: `clusterName` non-empty; `gracefulShutdownTimeout`/`nodeDrainTimeout` duration format (`^\d+[smh]$`); `cron` XOR `daysOfWeek`/`hoursOfDay` mutual exclusivity; `daysOfWeek` day-name/range item format; `hoursOfDay` hour/range item format; `bootstrapSpec`/`infrastructureSpec` apiVersion namespaced-group requirement; bootstrap/infrastructure provider API group allowlist (mirrors `ALLOWED_BOOTSTRAP_API_GROUPS` / `ALLOWED_INFRASTRUCTURE_API_GROUPS` in `src/constants.rs`); `bootstrapSpec.kind`/`infrastructureSpec.kind` non-empty
+- `deploy/admission/validatingadmissionpolicybinding.yaml`: `ValidatingAdmissionPolicyBinding` with `validationActions: [Deny]` applied cluster-wide
+
+### Changed
+- `docs/roadmaps/compliance-sox-basel3-nist.md`: Marked P3-4, CM-5, and all CRD schema validation gaps as resolved; updated gap table and compliance control mapping
+- `docs/roadmaps/project-roadmap-2026.md`: Updated Phase 3.1 Admission Webhooks → Admission Validation; checked off all implemented rules; noted future mutating webhook and reference-existence check as separate items
+- `docs/src/security/threat-model.md`: Updated Deployment-Layer Controls table to reflect VAP deployed (was a recommendation)
+
+### Why
+`ValidatingAdmissionPolicy` (Kubernetes ≥ 1.26) enforces spec constraints at API-server admission time without requiring a separate webhook server, TLS certificate, or additional binary. Closes the NIST CM-5 gap: invalid specs that previously reached the reconciler are now rejected before being persisted to etcd.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — apply `deploy/admission/` manifests; requires Kubernetes ≥ 1.26 (alpha), ≥ 1.28 (beta), ≥ 1.30 (GA)
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
 ## [2026-04-08 12:00] - Complete rustdoc coverage across all Rust source files
 
 **Author:** Erick Bourgeois

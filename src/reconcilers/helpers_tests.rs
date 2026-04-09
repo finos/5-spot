@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
+// SPDX-License-Identifier: MIT
 #[cfg(test)]
 #[allow(clippy::module_inception)]
 mod tests {
@@ -392,7 +394,7 @@ mod tests {
         crate::reconcilers::Context::new(client, 0, 1)
     }
 
-    /// Minimal ScheduledMachine JSON for patch_status responses.
+    /// Minimal `ScheduledMachine` JSON for `patch_status` responses.
     fn sm_response_body(name: &str, namespace: &str, phase: &str) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "apiVersion": "5spot.io/v1alpha1",
@@ -687,8 +689,7 @@ mod tests {
         .await;
         assert!(
             result.is_ok(),
-            "event failure must not abort phase transition, got: {:?}",
-            result
+            "event failure must not abort phase transition, got: {result:?}",
         );
 
         srv.await.unwrap();
@@ -849,5 +850,177 @@ mod tests {
     fn test_controller_name_constant_is_correct() {
         use crate::reconcilers::scheduled_machine::CONTROLLER_NAME;
         assert_eq!(CONTROLLER_NAME, "5spot-controller");
+    }
+
+    // ========================================================================
+    // evict_pod — P2-6 mock API tests (TDD)
+    // ========================================================================
+
+    /// Minimal Pod JSON body — used as the success response for a DELETE pod call.
+    fn pod_response_body(name: &str, namespace: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": name,
+                "namespace": namespace,
+                "resourceVersion": "1"
+            },
+            "spec": { "containers": [] },
+            "status": {}
+        }))
+        .unwrap()
+    }
+
+    // ---- Positive: successful eviction (200) ----
+
+    #[tokio::test]
+    async fn test_evict_pod_success_returns_ok() {
+        let (client, handle) = mock_client_pair();
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (req, send) = h.next_request().await.expect("expected DELETE pod call");
+            assert_eq!(req.method(), http::Method::DELETE);
+            assert!(
+                req.uri().path().contains("/pods/test-pod"),
+                "should target the pod, got: {}",
+                req.uri().path()
+            );
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(pod_response_body("test-pod", "test-ns")))
+                    .unwrap(),
+            );
+        });
+
+        super::super::evict_pod(&client, "test-pod", "test-ns", "test-node")
+            .await
+            .expect("successful eviction should return Ok");
+
+        srv.await.unwrap();
+    }
+
+    // ---- Positive: 404 means pod already gone — treat as success ----
+
+    #[tokio::test]
+    async fn test_evict_pod_404_already_deleted_returns_ok() {
+        let (client, handle) = mock_client_pair();
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("expected DELETE pod call");
+            send.send_response(
+                Response::builder()
+                    .status(404)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_error_body(
+                        404,
+                        "pods \"test-pod\" not found",
+                    )))
+                    .unwrap(),
+            );
+        });
+
+        super::super::evict_pod(&client, "test-pod", "test-ns", "test-node")
+            .await
+            .expect("404 (already deleted) should return Ok");
+
+        srv.await.unwrap();
+    }
+
+    // ---- Negative: 429 PDB-blocked eviction MUST propagate as CapiError ----
+
+    #[tokio::test]
+    async fn test_evict_pod_429_pdb_blocked_returns_capi_error() {
+        let (client, handle) = mock_client_pair();
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("expected DELETE pod call");
+            send.send_response(
+                Response::builder()
+                    .status(429)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_error_body(
+                        429,
+                        "cannot evict pod as it would violate the pod's disruption budget",
+                    )))
+                    .unwrap(),
+            );
+        });
+
+        let result = super::super::evict_pod(&client, "test-pod", "test-ns", "test-node").await;
+        assert!(
+            result.is_err(),
+            "429 PDB-blocked eviction must return Err, not Ok"
+        );
+        assert!(
+            matches!(result.unwrap_err(), ReconcilerError::CapiError(_)),
+            "error variant should be CapiError for 429"
+        );
+
+        srv.await.unwrap();
+    }
+
+    // ---- Negative: unexpected 500 server error propagates as CapiError ----
+
+    #[tokio::test]
+    async fn test_evict_pod_500_server_error_returns_capi_error() {
+        let (client, handle) = mock_client_pair();
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("expected DELETE pod call");
+            send.send_response(
+                Response::builder()
+                    .status(500)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_error_body(500, "internal server error")))
+                    .unwrap(),
+            );
+        });
+
+        let result = super::super::evict_pod(&client, "test-pod", "test-ns", "test-node").await;
+        assert!(result.is_err(), "500 error should return Err");
+        assert!(
+            matches!(result.unwrap_err(), ReconcilerError::CapiError(_)),
+            "error variant should be CapiError for unexpected API error"
+        );
+
+        srv.await.unwrap();
+    }
+
+    // ---- Exception: 403 Forbidden also propagates as CapiError ----
+
+    #[tokio::test]
+    async fn test_evict_pod_403_forbidden_returns_capi_error() {
+        let (client, handle) = mock_client_pair();
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("expected DELETE pod call");
+            send.send_response(
+                Response::builder()
+                    .status(403)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_error_body(
+                        403,
+                        "forbidden: User cannot delete pods",
+                    )))
+                    .unwrap(),
+            );
+        });
+
+        let result = super::super::evict_pod(&client, "test-pod", "test-ns", "test-node").await;
+        assert!(result.is_err(), "403 forbidden should return Err");
+        assert!(
+            matches!(result.unwrap_err(), ReconcilerError::CapiError(_)),
+            "error variant should be CapiError for 403"
+        );
+
+        srv.await.unwrap();
     }
 }

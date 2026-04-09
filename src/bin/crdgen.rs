@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
+// SPDX-License-Identifier: MIT
 //! # CRD YAML generator
 //!
 //! Offline tool that serialises the `ScheduledMachine` Custom Resource Definition

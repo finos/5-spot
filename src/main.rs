@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
+// SPDX-License-Identifier: MIT
 //! # 5-Spot Machine Scheduler — Entry Point
 //!
 //! This binary starts the controller process. It:
@@ -58,6 +60,10 @@ struct Cli {
     /// Enable verbose logging
     #[clap(short, long)]
     verbose: bool,
+
+    /// Log format: "json" for structured JSON (SIEM/production), "text" for human-readable (local dev)
+    #[clap(long, env = "RUST_LOG_FORMAT", default_value = "json")]
+    log_format: String,
 }
 
 /// Async entry point.
@@ -77,13 +83,20 @@ async fn main() -> Result<()> {
         "info,kube=warn,hyper=warn,tower=warn"
     };
 
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| log_level.into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    let env_filter =
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| log_level.into());
+
+    if cli.log_format.eq_ignore_ascii_case("json") {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(tracing_subscriber::fmt::layer().json())
+            .init();
+    } else {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(tracing_subscriber::fmt::layer())
+            .init();
+    }
 
     info!(
         instance_id = cli.instance_id,
