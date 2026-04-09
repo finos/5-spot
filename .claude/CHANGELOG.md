@@ -9,6 +9,51 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-04-09 01:00] - Phase 2 (P2-5): exponential back-off in error policy
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/constants.rs`: Added `MAX_RECONCILE_RETRIES: u32 = 10` constant
+- `src/reconcilers/scheduled_machine.rs`: Added `retry_counts: Arc<Mutex<HashMap<String, u32>>>` to `Context`; updated `Context::new` to initialise it; updated `reconcile_guarded` to clear the retry count on successful reconciliation
+- `src/reconcilers/helpers.rs`: Added `compute_backoff_secs(retry_count: u32) -> u64` (pure, capped exponential); replaced fixed-delay `error_policy` with retry-count-aware implementation that increments the per-resource counter and computes `ERROR_REQUEUE_SECS * 2^n` capped at `MAX_BACKOFF_SECS`
+- `src/reconcilers/helpers_tests.rs`: Added 5 TDD tests for `compute_backoff_secs` (base, doubling, cap at retry 4, cap at MAX_RECONCILE_RETRIES, large count)
+
+### Why
+Basel III HA resilience (P2-5): a fixed 30 s retry interval can cause thundering-herd pressure when many resources fail simultaneously. Bounded exponential back-off distributes retry load while ensuring eventual recovery. Retry counts are cleared on success so transient failures do not permanently elevate delay. Aligns with NIST SI-2 flaw remediation by limiting retry storms.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
+## [2026-04-09 00:00] - Phase 2 (P2-3/P2-7): reconciliation correlation IDs and Condition status enum
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/scheduled_machine.rs`: Added `generate_reconcile_id()` — derives a short correlation ID from the resource's UID last segment + nanosecond hex timestamp; refactored `reconcile_scheduled_machine` into `reconcile_guarded` wrapped in a `tracing::info_span!` carrying `reconcile_id`, `resource`, and `namespace` — every log line in a reconciliation now carries these fields in JSON output (NIST AU-3 / SOX §404 P2-3)
+- `src/reconcilers/scheduled_machine_tests.rs`: Added 5 TDD tests for `generate_reconcile_id()` covering non-empty output, UID-last-segment prefix, hex timestamp suffix, unknown-fallback when no UID, and uniqueness across calls
+- `src/crd.rs`: Added `condition_status_schema()` and wired it to `Condition.status` via `#[schemars(schema_with = "...")]` — constrains the CRD field to `enum: [True, False, Unknown]` (NIST CM-5 / P2-7)
+- `src/crd_tests.rs`: Added 5 TDD tests for `Condition.status` schema enum: constraint exists, all three values present, and runtime `Condition::new()` still accepts string status unchanged
+- `deploy/crds/scheduledmachine.yaml`: Regenerated — `Condition.status` now has `enum: [True, False, Unknown]` in the CRD OpenAPI schema
+- `docs/reference/api.md`: Regenerated to reflect schema change
+
+### Why
+- **P2-3**: Every reconciliation now emits a unique `reconcile_id` on all log lines via a `tracing` span, enabling full end-to-end correlation in a SIEM or log aggregation platform. Closes the NIST AU-3 / SOX §404 correlation ID gap.
+- **P2-7**: The `Condition.status` field previously accepted any string; the CRD schema now enforces the Kubernetes-standard `True`/`False`/`Unknown` enum as required by NIST CM-5 configuration change control. Runtime behaviour is unchanged — the constraint is schema-only.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — CRD must be reapplied (`kubectl apply -f deploy/crds/scheduledmachine.yaml`); existing CRs with valid status values are unaffected
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
 ## [2026-04-08 15:00] - Add Security section to MkDocs with Admission Validation guide
 
 **Author:** Erick Bourgeois

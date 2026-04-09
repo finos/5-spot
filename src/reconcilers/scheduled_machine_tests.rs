@@ -903,4 +903,84 @@ mod tests {
             "Empty namespace with single instance should process"
         );
     }
+
+    // ========================================================================
+    // generate_reconcile_id — P2-3 correlation ID tests (TDD)
+    // ========================================================================
+
+    fn make_sm_with_uid(uid: &str) -> ScheduledMachine {
+        let mut sm = ScheduledMachine::new("test-sm", create_test_spec());
+        sm.metadata.uid = Some(uid.to_string());
+        sm.metadata.namespace = Some("default".to_string());
+        sm
+    }
+
+    fn make_sm_without_uid() -> ScheduledMachine {
+        let mut sm = ScheduledMachine::new("test-sm", create_test_spec());
+        sm.metadata.uid = None;
+        sm.metadata.namespace = Some("default".to_string());
+        sm
+    }
+
+    // ---- Positive: well-formed ID ----
+
+    #[test]
+    fn test_generate_reconcile_id_is_non_empty() {
+        let sm = make_sm_with_uid("a1b2c3d4-0000-0000-0000-abcdef123456");
+        let id = generate_reconcile_id(&sm);
+        assert!(!id.is_empty(), "reconcile_id must not be empty");
+    }
+
+    #[test]
+    fn test_generate_reconcile_id_uses_uid_last_segment() {
+        // Last '-'-separated segment of the UID must be the ID prefix
+        let sm = make_sm_with_uid("a1b2c3d4-0000-0000-0000-deadbeef0001");
+        let id = generate_reconcile_id(&sm);
+        assert!(
+            id.starts_with("deadbeef0001-"),
+            "reconcile_id should start with last UID segment, got: {id}"
+        );
+    }
+
+    #[test]
+    fn test_generate_reconcile_id_suffix_is_hex() {
+        // The timestamp portion (after the UID prefix) must be lowercase hex
+        let sm = make_sm_with_uid("aaaabbbb-0000-0000-0000-ccccddddeeee");
+        let id = generate_reconcile_id(&sm);
+        // Format: "{uid_last_segment}-{hex_timestamp}"
+        let hex_part = id
+            .split_once('-')
+            .map(|x| x.1)
+            .expect("reconcile_id must contain a '-' separator");
+        assert!(
+            hex_part.chars().all(|c| c.is_ascii_hexdigit()),
+            "timestamp portion should be hex digits, got: {hex_part}"
+        );
+    }
+
+    // ---- Negative: no UID falls back to "unknown" ----
+
+    #[test]
+    fn test_generate_reconcile_id_falls_back_to_unknown_when_no_uid() {
+        let sm = make_sm_without_uid();
+        let id = generate_reconcile_id(&sm);
+        assert!(
+            id.starts_with("unknown-"),
+            "reconcile_id should start with 'unknown' when UID is absent, got: {id}"
+        );
+    }
+
+    // ---- Exception: uniqueness across calls ----
+
+    #[tokio::test]
+    async fn test_generate_reconcile_id_is_unique_across_calls() {
+        let sm = make_sm_with_uid("aaaabbbb-0000-0000-0000-111122223333");
+        let id1 = generate_reconcile_id(&sm);
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        let id2 = generate_reconcile_id(&sm);
+        assert_ne!(
+            id1, id2,
+            "Each reconciliation must produce a distinct correlation ID"
+        );
+    }
 }

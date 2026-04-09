@@ -210,6 +210,10 @@ spec:
                       type: string
                     status:
                       description: 'Status: "True", "False", or "Unknown"'
+                      enum:
+                      - 'True'
+                      - 'False'
+                      - Unknown
                       type: string
                     type:
                       description: Type of condition (e.g., "Ready", "`MachineReady`", "`ReferencesValid`")

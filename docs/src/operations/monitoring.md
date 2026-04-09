@@ -125,23 +125,130 @@ histogram_quantile(0.99, rate(five_spot_reconciliation_duration_seconds_bucket[5
 rate(five_spot_reconciliations_total{result="error"}[5m])
 ```
 
-## Kubernetes Events
+## Structured Logging
 
-5-Spot creates Kubernetes events for important state changes:
+### Log Format
+
+Logs are emitted as structured JSON by default (controlled by `RUST_LOG_FORMAT`). Every log line carries standard fields including a **`reconcile_id`** correlation field that is unique per reconciliation attempt:
+
+```json
+{
+  "timestamp": "2026-04-09T00:00:00.123456Z",
+  "level": "INFO",
+  "fields": {
+    "message": "Starting reconciliation",
+    "reconcile_id": "deadbeef0001-17f3e2a1b",
+    "resource": "my-machine",
+    "namespace": "production"
+  },
+  "target": "five_spot::reconcilers::scheduled_machine",
+  "span": { "name": "reconcile" }
+}
+```
+
+### Correlation IDs
+
+The `reconcile_id` field ties together every log line produced during a single reconciliation. Use it to trace a full reconciliation end-to-end in your log aggregation platform:
 
 ```bash
+# Follow all log lines for a specific reconciliation (jq)
+kubectl logs -n 5spot-system -l app=5spot-controller | \
+  jq -c 'select(.fields.reconcile_id == "deadbeef0001-17f3e2a1b")'
+
+# Find all reconciliations for a specific resource
+kubectl logs -n 5spot-system -l app=5spot-controller | \
+  jq -c 'select(.fields.resource == "my-machine")'
+
+# Find all error-phase transitions
+kubectl logs -n 5spot-system -l app=5spot-controller | \
+  jq -c 'select(.fields.to_phase == "Error")'
+```
+
+### Phase Transition Logs
+
+Every phase transition logs both the before (`from_phase`) and after (`to_phase`) values:
+
+```json
+{
+  "level": "INFO",
+  "fields": {
+    "message": "Phase transition",
+    "from_phase": "Pending",
+    "to_phase": "Active",
+    "reconcile_id": "deadbeef0001-17f3e2a1b",
+    "resource": "my-machine",
+    "namespace": "production"
+  }
+}
+```
+
+### Error Back-off Log Fields
+
+When a reconciliation fails, the error policy emits an `error`-level log line with two additional fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `retry_count` | u32 | How many consecutive failures have occurred for this resource |
+| `backoff_secs` | u64 | Requeue delay chosen for this retry (30 s → 60 → 120 → 240 → 300 s cap) |
+
+```json
+{
+  "level": "ERROR",
+  "fields": {
+    "message": "Reconciliation error — requeuing with exponential back-off",
+    "error": "CAPI operation failed: ...",
+    "retry_count": 3,
+    "backoff_secs": 240,
+    "resource": "my-machine",
+    "namespace": "production"
+  }
+}
+```
+
+The retry count resets to 0 after a successful reconciliation, so a resource that recovers starts fresh on the next failure.
+
+### Log Levels
+
+| Level | Use |
+|-------|-----|
+| `error` | Unrecoverable failures — always investigate |
+| `warn` | Recoverable issues (PDB-blocked eviction, event publish failure) |
+| `info` | Phase transitions, reconciliation start/end |
+| `debug` | Per-pod decisions, API call details |
+| `trace` | Internal state, schedule evaluation |
+
+Set via `RUST_LOG`:
+
+```bash
+RUST_LOG=info,kube=warn,hyper=warn  # Production default
+RUST_LOG=debug                       # Verbose (--verbose flag)
+```
+
+## Kubernetes Events
+
+5-Spot publishes a Kubernetes Event for every phase transition, visible via:
+
+```bash
+kubectl describe scheduledmachine <name>
+# or
 kubectl get events --field-selector involvedObject.kind=ScheduledMachine
 ```
 
-Event types:
+Event types and reasons:
 
-| Type | Reason | Description |
-|------|--------|-------------|
-| Normal | MachineScheduled | Machine entered schedule window |
-| Normal | MachineActivated | Machine became active |
-| Normal | MachineDeactivated | Machine was removed |
-| Warning | MachineError | Error during operation |
-| Warning | GracePeriodExpired | Grace period timeout |
+| Type | Reason | Trigger |
+|------|--------|---------|
+| Normal | `MachineCreated` | Transition to Active — CAPI resources provisioned |
+| Normal | `ScheduleActive` | Machine entered schedule window |
+| Normal | `ScheduleInactive` | Machine exited schedule window |
+| Normal | `GracePeriodActive` | Graceful shutdown countdown started |
+| Normal | `NodeDraining` / `NodeDrained` | Node drain start / completion |
+| Normal | `MachineDeleted` | Transition to Inactive — CAPI resources removed |
+| Normal | `ScheduleDisabled` | Schedule disabled, machine deactivated |
+| Warning | `ReconcileFailed` | Unrecoverable error — machine in Error phase |
+| Warning | `KillSwitchActivated` | Emergency kill switch triggered |
+
+Events are written to the `events.k8s.io/v1` API and are immutable once created, providing an auditable state-change trail (SOX §404 / NIST AU-2).
 
 ## Alerting Examples
 

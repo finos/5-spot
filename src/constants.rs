@@ -81,6 +81,9 @@ pub const K8S_API_TIMEOUT_SECS: u64 = 30;
 /// Maximum backoff time for exponential retry (5 minutes)
 pub const MAX_BACKOFF_SECS: u64 = 300;
 
+/// Maximum number of per-resource reconciliation retries before capping at [`MAX_BACKOFF_SECS`]
+pub const MAX_RECONCILE_RETRIES: u32 = 10;
+
 // ============================================================================
 // Condition Types
 // ============================================================================

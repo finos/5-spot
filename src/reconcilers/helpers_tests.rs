@@ -1023,4 +1023,48 @@ mod tests {
 
         srv.await.unwrap();
     }
+
+    // ========================================================================
+    // compute_backoff_secs — exponential backoff with cap
+    // ========================================================================
+
+    #[test]
+    fn test_backoff_secs_retry_0_returns_base() {
+        // First error: should return the base ERROR_REQUEUE_SECS (30s)
+        let secs = super::super::compute_backoff_secs(0);
+        assert_eq!(secs, 30, "retry 0 should return base 30s");
+    }
+
+    #[test]
+    fn test_backoff_secs_doubles_each_retry() {
+        assert_eq!(super::super::compute_backoff_secs(1), 60);
+        assert_eq!(super::super::compute_backoff_secs(2), 120);
+        assert_eq!(super::super::compute_backoff_secs(3), 240);
+    }
+
+    #[test]
+    fn test_backoff_secs_caps_at_max_backoff() {
+        // Retry 4: 30 * 2^4 = 480 > 300 → should be capped at MAX_BACKOFF_SECS (300)
+        let secs = super::super::compute_backoff_secs(4);
+        assert_eq!(secs, 300, "retry 4 should be capped at 300s");
+    }
+
+    #[test]
+    fn test_backoff_secs_at_max_retries_returns_max() {
+        use crate::constants::MAX_RECONCILE_RETRIES;
+        let secs = super::super::compute_backoff_secs(MAX_RECONCILE_RETRIES);
+        assert_eq!(
+            secs, 300,
+            "at MAX_RECONCILE_RETRIES should return max backoff"
+        );
+    }
+
+    #[test]
+    fn test_backoff_secs_well_beyond_max_retries_returns_max() {
+        let secs = super::super::compute_backoff_secs(100);
+        assert_eq!(
+            secs, 300,
+            "large retry count should always return max backoff"
+        );
+    }
 }

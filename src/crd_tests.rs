@@ -249,4 +249,88 @@ mod tests {
         assert_eq!(status.observed_generation, None);
         assert!(!status.in_schedule);
     }
+
+    // ========================================================================
+    // Condition.status schema — P2-7 enum constraint tests (TDD)
+    // ========================================================================
+
+    fn condition_schema_json() -> serde_json::Value {
+        let schema = schemars::schema_for!(Condition);
+        serde_json::to_value(schema).expect("schema should serialise")
+    }
+
+    // ---- Positive: valid enum values are present in the schema ----
+
+    #[test]
+    fn test_condition_status_schema_has_enum_constraint() {
+        let schema = condition_schema_json();
+        // Navigate to properties.status.enum
+        let enum_vals = schema
+            .pointer("/definitions/Condition/properties/status/enum")
+            .or_else(|| schema.pointer("/properties/status/enum"))
+            .expect("Condition.status schema must have an 'enum' constraint for NIST CM-5");
+        let arr = enum_vals.as_array().expect("enum must be an array");
+        assert_eq!(
+            arr.len(),
+            3,
+            "exactly 3 enum values expected: True, False, Unknown"
+        );
+    }
+
+    #[test]
+    fn test_condition_status_schema_contains_true() {
+        let schema = condition_schema_json();
+        let enum_vals = schema
+            .pointer("/definitions/Condition/properties/status/enum")
+            .or_else(|| schema.pointer("/properties/status/enum"))
+            .expect("enum must exist");
+        assert!(
+            enum_vals
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("True")),
+            "enum must contain 'True'"
+        );
+    }
+
+    #[test]
+    fn test_condition_status_schema_contains_false() {
+        let schema = condition_schema_json();
+        let enum_vals = schema
+            .pointer("/definitions/Condition/properties/status/enum")
+            .or_else(|| schema.pointer("/properties/status/enum"))
+            .expect("enum must exist");
+        assert!(
+            enum_vals
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("False")),
+            "enum must contain 'False'"
+        );
+    }
+
+    #[test]
+    fn test_condition_status_schema_contains_unknown() {
+        let schema = condition_schema_json();
+        let enum_vals = schema
+            .pointer("/definitions/Condition/properties/status/enum")
+            .or_else(|| schema.pointer("/properties/status/enum"))
+            .expect("enum must exist");
+        assert!(
+            enum_vals
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("Unknown")),
+            "enum must contain 'Unknown'"
+        );
+    }
+
+    // ---- Negative: the Condition type itself still works as a plain String ----
+
+    #[test]
+    fn test_condition_new_still_accepts_string_status() {
+        // Runtime behaviour unchanged — only the CRD schema gains the constraint
+        let c = Condition::new("Ready", "True", "ReconcileSucceeded", "ok");
+        assert_eq!(c.status, "True");
+    }
 }

@@ -202,6 +202,18 @@ fn arbitrary_object_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schem
     })
 }
 
+/// Schema for `Condition.status` — enforces the Kubernetes condition status enum.
+///
+/// Only `"True"`, `"False"`, and `"Unknown"` are valid values per the
+/// Kubernetes API conventions and NIST CM-5 configuration change control
+/// requirements.
+fn condition_status_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "string",
+        "enum": ["True", "False", "Unknown"]
+    })
+}
+
 // ============================================================================
 // MachineTemplateSpec - Optional configuration for created CAPI Machine
 // ============================================================================
@@ -317,6 +329,7 @@ pub struct Condition {
     pub r#type: String,
 
     /// Status: "True", "False", or "Unknown"
+    #[schemars(schema_with = "condition_status_schema")]
     pub status: String,
 
     /// Last transition time (RFC3339 format)

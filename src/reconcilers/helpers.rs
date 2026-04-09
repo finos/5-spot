@@ -44,9 +44,10 @@ use crate::constants::{
     CAPI_CLUSTER_NAME_LABEL, CAPI_GROUP, CAPI_MACHINE_API_VERSION, CAPI_MACHINE_API_VERSION_FULL,
     CAPI_RESOURCE_MACHINES, CONDITION_STATUS_TRUE, CONDITION_TYPE_READY, DEFAULT_INSTANCE_ID,
     ENV_OPERATOR_INSTANCE_ID, ERROR_REQUEUE_SECS, FINALIZER_CLEANUP_TIMEOUT_SECS,
-    FINALIZER_SCHEDULED_MACHINE, MAX_DURATION_SECS, PHASE_ACTIVE, PHASE_ERROR, PHASE_INACTIVE,
-    PHASE_SHUTTING_DOWN, PHASE_TERMINATED, POD_EVICTION_GRACE_PERIOD_SECS, REASON_GRACE_PERIOD,
-    REASON_KILL_SWITCH, REASON_RECONCILE_SUCCEEDED, RESERVED_LABEL_PREFIXES, TIMER_REQUEUE_SECS,
+    FINALIZER_SCHEDULED_MACHINE, MAX_BACKOFF_SECS, MAX_DURATION_SECS, MAX_RECONCILE_RETRIES,
+    PHASE_ACTIVE, PHASE_ERROR, PHASE_INACTIVE, PHASE_SHUTTING_DOWN, PHASE_TERMINATED,
+    POD_EVICTION_GRACE_PERIOD_SECS, REASON_GRACE_PERIOD, REASON_KILL_SWITCH,
+    REASON_RECONCILE_SUCCEEDED, RESERVED_LABEL_PREFIXES, TIMER_REQUEUE_SECS,
 };
 use crate::crd::{Condition, ScheduledMachine, ScheduledMachineStatus};
 use crate::metrics::{record_node_drain, record_pod_eviction};
@@ -1310,21 +1311,64 @@ pub async fn drain_node_with_timeout(
 // Error policy for controller
 // ============================================================================
 
-/// Controller error policy — log the error and requeue after a back-off delay.
+/// Computes bounded exponential back-off in seconds for a given retry count.
+///
+/// The delay starts at [`ERROR_REQUEUE_SECS`] and doubles with each successive
+/// retry, capped at [`MAX_BACKOFF_SECS`].  Once `retry_count` reaches or exceeds
+/// [`MAX_RECONCILE_RETRIES`] the function always returns [`MAX_BACKOFF_SECS`].
+///
+/// | retry | delay     |
+/// |-------|-----------|
+/// | 0     | 30 s      |
+/// | 1     | 60 s      |
+/// | 2     | 120 s     |
+/// | 3     | 240 s     |
+/// | 4+    | 300 s cap |
+pub(crate) fn compute_backoff_secs(retry_count: u32) -> u64 {
+    if retry_count >= MAX_RECONCILE_RETRIES {
+        return MAX_BACKOFF_SECS;
+    }
+    // `1u64 << retry_count` doubles the interval each retry; min(63) prevents
+    // overflow for large (but pre-capped) retry counts.
+    let backoff = ERROR_REQUEUE_SECS.saturating_mul(1u64 << retry_count.min(63));
+    backoff.min(MAX_BACKOFF_SECS)
+}
+
+/// Controller error policy — log the error and requeue with exponential back-off.
 ///
 /// Called by the `kube-rs` [`Controller`](kube::runtime::Controller) runtime
 /// whenever [`reconcile_scheduled_machine`](super::scheduled_machine::reconcile_scheduled_machine)
-/// returns an `Err`.  The function logs the error at `ERROR` level and
-/// returns [`Action::requeue`] with [`ERROR_REQUEUE_SECS`] so the resource is
-/// retried after a short back-off rather than immediately (which would cause a
-/// hot-loop) or never (which would leave the cluster in a broken state).
+/// returns an `Err`.  Per-resource retry counts are tracked in [`Context::retry_counts`]:
+/// the first failure requeues after [`ERROR_REQUEUE_SECS`]; each subsequent
+/// failure doubles the delay up to [`MAX_BACKOFF_SECS`] (Basel III HA resilience
+/// / NIST SI-2 flaw remediation).
+///
+/// The retry count is cleared when reconciliation succeeds (see
+/// `reconcile_guarded` in `scheduled_machine.rs`).
 pub fn error_policy(
-    _resource: Arc<ScheduledMachine>,
-    error: &ReconcilerError,
-    _ctx: Arc<Context>,
+    resource: Arc<ScheduledMachine>,
+    err: &ReconcilerError,
+    ctx: Arc<Context>,
 ) -> Action {
-    error!(error = %error, "Reconciliation error");
-    Action::requeue(Duration::from_secs(ERROR_REQUEUE_SECS))
+    let key = format!(
+        "{}/{}",
+        resource.namespace().unwrap_or_default(),
+        resource.name_any()
+    );
+    let retry_count = {
+        let mut counts = ctx.retry_counts.lock().unwrap_or_else(|p| p.into_inner());
+        let count = counts.entry(key).or_insert(0);
+        *count = count.saturating_add(1);
+        *count
+    };
+    let backoff = compute_backoff_secs(retry_count);
+    error!(
+        error = %err,
+        retry_count,
+        backoff_secs = backoff,
+        "Reconciliation error — requeuing with exponential back-off"
+    );
+    Action::requeue(Duration::from_secs(backoff))
 }
 
 #[cfg(test)]

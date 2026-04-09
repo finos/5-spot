@@ -10,7 +10,9 @@
 | `OPERATOR_INSTANCE_COUNT` | `1` | Total number of controller instances |
 | `METRICS_PORT` | `8080` | Port for Prometheus metrics endpoint |
 | `HEALTH_PORT` | `8081` | Port for health check endpoints |
-| `RUST_LOG` | `info` | Log level (trace, debug, info, warn, error) |
+| `RUST_LOG` | `info` | Log level (`trace`, `debug`, `info`, `warn`, `error`) |
+| `RUST_LOG_FORMAT` | `json` | Log format: `json` (production/SIEM) or `text` (local dev) |
+| `CONTROLLER_POD_NAME` | _(injected)_ | Pod name injected via `fieldRef`; used as the reporting instance in Kubernetes Events |
 
 ## Command-Line Arguments
 
@@ -22,9 +24,22 @@ Options:
   --instance-count <COUNT> Total instances (default: 1)
   --metrics-port <PORT>    Metrics port (default: 8080)
   --health-port <PORT>     Health port (default: 8081)
+  --log-format <FORMAT>    Log format: json or text (default: json) [env: RUST_LOG_FORMAT]
   -v, --verbose            Enable verbose logging
   -h, --help               Print help
   -V, --version            Print version
+```
+
+### Log Format
+
+The default `json` format is designed for SIEM ingestion and log aggregation. Switch to `text` for human-readable output during local development:
+
+```bash
+# Local development
+RUST_LOG=debug RUST_LOG_FORMAT=text cargo run
+
+# Production (default — structured JSON)
+RUST_LOG=info RUST_LOG_FORMAT=json ./5spot
 ```
 
 ## ConfigMap Example

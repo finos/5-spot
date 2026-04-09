@@ -26,8 +26,11 @@
 //! one instance via consistent hashing on `namespace/name`.  Instances that
 //! are not assigned to a resource skip it with `Action::await_change`.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use chrono::Utc;
 
 use kube::{
     runtime::{
@@ -36,7 +39,7 @@ use kube::{
     },
     Client, Resource, ResourceExt,
 };
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, Instrument};
 
 use crate::constants::{
     ERROR_REQUEUE_SECS, PHASE_ACTIVE, PHASE_DISABLED, PHASE_ERROR, PHASE_INACTIVE, PHASE_PENDING,
@@ -73,6 +76,13 @@ pub struct Context {
     pub instance_count: u32,
     /// Kubernetes event recorder for publishing immutable audit-trail events.
     pub recorder: Recorder,
+    /// Per-resource reconciliation error counts, keyed by `"namespace/name"`.
+    ///
+    /// Incremented by [`error_policy`](crate::reconcilers::error_policy) on each
+    /// failure and cleared by `reconcile_guarded` on success, so back-off resets
+    /// after the resource recovers.  Uses a `std::sync::Mutex` because
+    /// `error_policy` is synchronous.
+    pub retry_counts: Arc<Mutex<HashMap<String, u32>>>,
 }
 
 impl Context {
@@ -92,6 +102,7 @@ impl Context {
             instance_id,
             instance_count,
             recorder,
+            retry_counts: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -154,7 +165,34 @@ pub enum ReconcilerError {
 // Main reconciliation logic
 // ============================================================================
 
+/// Generates a short, unique correlation ID for a single reconciliation attempt.
+///
+/// The ID combines the last `-`-separated segment of the resource's Kubernetes
+/// UID with a hex-encoded nanosecond timestamp.  Because the UID is stable per
+/// resource and the timestamp has nanosecond resolution, the resulting ID is
+/// unique in practice across all reconciliations of the same resource.
+///
+/// Format: `{uid_suffix}-{timestamp_ns_hex}` — e.g. `deadbeef0001-17f3e2a1b`.
+///
+/// Falls back to `unknown` as the UID prefix when `metadata.uid` is absent
+/// (e.g. in tests that construct a bare resource without calling the API).
+pub(crate) fn generate_reconcile_id(resource: &ScheduledMachine) -> String {
+    let uid_suffix = resource
+        .metadata
+        .uid
+        .as_deref()
+        .and_then(|u| u.split('-').next_back())
+        .unwrap_or("unknown");
+    let ts_ns = Utc::now().timestamp_nanos_opt().unwrap_or(0);
+    format!("{uid_suffix}-{ts_ns:x}")
+}
+
 /// Main reconciliation entry point with finalizer handling
+///
+/// Every reconciliation is wrapped in a `tracing` span carrying a unique
+/// `reconcile_id` field.  In JSON log mode this field appears on every log
+/// line emitted during the reconciliation, enabling full correlation in a
+/// SIEM or log-aggregation platform (NIST AU-3 / SOX §404).
 ///
 /// # Errors
 /// Returns error if schedule evaluation, k8s API calls, or machine lifecycle operations fail
@@ -162,12 +200,37 @@ pub async fn reconcile_scheduled_machine(
     resource: Arc<ScheduledMachine>,
     ctx: Arc<Context>,
 ) -> Result<Action, ReconcilerError> {
-    let start_time = Instant::now();
     let namespace = resource.namespace().ok_or_else(|| {
         record_error("invalid_config");
         ReconcilerError::InvalidConfig("ScheduledMachine must be namespaced".to_string())
     })?;
     let name = resource.name_any();
+    let reconcile_id = generate_reconcile_id(&resource);
+
+    let span = tracing::info_span!(
+        "reconcile",
+        resource = %name,
+        namespace = %namespace,
+        reconcile_id = %reconcile_id,
+    );
+
+    reconcile_guarded(resource, ctx, namespace, name, reconcile_id)
+        .instrument(span)
+        .await
+}
+
+/// Inner reconciliation body — separated so it can be fully wrapped in a tracing span.
+///
+/// # Errors
+/// Returns error if schedule evaluation, k8s API calls, or machine lifecycle operations fail
+async fn reconcile_guarded(
+    resource: Arc<ScheduledMachine>,
+    ctx: Arc<Context>,
+    namespace: String,
+    name: String,
+    reconcile_id: String,
+) -> Result<Action, ReconcilerError> {
+    let start_time = Instant::now();
 
     // Get current phase for metrics (clone to avoid borrow issues)
     let current_phase = resource
@@ -179,6 +242,7 @@ pub async fn reconcile_scheduled_machine(
     info!(
         resource = %name,
         namespace = %namespace,
+        reconcile_id = %reconcile_id,
         priority = resource.spec.priority,
         "Starting reconciliation"
     );
@@ -215,8 +279,18 @@ pub async fn reconcile_scheduled_machine(
     }
 
     // Perform actual reconciliation
-    let result = reconcile_inner(resource, ctx).await;
+    let result = reconcile_inner(resource, ctx.clone()).await;
     record_reconciliation_result(&result, &current_phase, start_time.elapsed());
+
+    // Reset the exponential back-off counter on success so the resource
+    // starts from the base delay if it encounters a future error.
+    if result.is_ok() {
+        let key = format!("{namespace}/{name}");
+        if let Ok(mut counts) = ctx.retry_counts.lock() {
+            counts.remove(&key);
+        }
+    }
+
     result
 }
 

@@ -10,11 +10,32 @@ Common issues and solutions for 5-Spot.
 # Operator pods
 kubectl get pods -n 5spot-system
 
-# Operator logs
-kubectl logs -n 5spot-system -l app=5spot-controller --tail=100
+# Operator logs (JSON — pipe through jq for readability)
+kubectl logs -n 5spot-system -l app=5spot-controller --tail=100 | jq .
+
+# Plain-text logs (for quick reads without jq)
+RUST_LOG_FORMAT=text kubectl logs -n 5spot-system -l app=5spot-controller --tail=100
 
 # Detailed pod info
 kubectl describe pod -n 5spot-system -l app=5spot-controller
+```
+
+### Filter Logs by Correlation ID
+
+Every reconciliation carries a unique `reconcile_id` field. Use it to isolate all log lines for a single reconciliation attempt:
+
+```bash
+# Stream logs and filter by resource name, showing reconcile_id
+kubectl logs -n 5spot-system -l app=5spot-controller -f | \
+  jq -c 'select(.fields.resource == "<machine-name>")'
+
+# Trace a specific reconciliation end-to-end
+kubectl logs -n 5spot-system -l app=5spot-controller | \
+  jq -c 'select(.fields.reconcile_id == "<id-from-a-previous-log-line>")'
+
+# Find all Error-phase transitions
+kubectl logs -n 5spot-system -l app=5spot-controller | \
+  jq -c 'select(.fields.to_phase == "Error")'
 ```
 
 ### Check ScheduledMachines
@@ -85,9 +106,13 @@ kubectl describe machine <name>
    kubectl get pods -o wide | grep <machine-name>
    ```
 
-2. **PodDisruptionBudget blocking**
+2. **PodDisruptionBudget blocking eviction**
+
+   PDB-blocked evictions (HTTP 429) now surface as a `CapiError` in the reconciler and will cause the machine to enter the `Error` phase. Check for blocking PDBs:
    ```bash
    kubectl get pdb -A
+   # Look for PDBs with maxUnavailable: 0 or minAvailable matching current replicas
+   kubectl get pdb -A -o json | jq '.items[] | {name:.metadata.name, ns:.metadata.namespace, disruptions:.status.disruptionsAllowed}'
    ```
 
 3. **Long grace period**
@@ -96,9 +121,9 @@ kubectl describe machine <name>
    ```
 
 **Solution:**
-- Check for pods that can't be evicted
-- Review PDB settings
-- Consider using `killSwitch: true` for immediate removal
+- Check for pods that can't be evicted; look for `warn` log lines with `"Pod eviction blocked by PDB (HTTP 429)"`
+- Review PDB settings — temporarily scale up or relax `minAvailable` to allow drain
+- Consider using `killSwitch: true` for immediate removal (bypasses drain)
 
 ### Schedule Not Evaluating
 
@@ -154,6 +179,28 @@ kubectl describe machine <name>
 - Verify references point to existing resources
 - Check CAPI provider health
 - Review CAPI controller logs
+
+### Reconciliation Retrying with Increasing Delay
+
+**Symptoms:**
+- Repeated error events on a `ScheduledMachine`
+- Logs show `retry_count` climbing and `backoff_secs` growing (30 → 60 → 120 → 240 → 300)
+
+**Cause:** The controller uses bounded exponential back-off. Each consecutive failure doubles the retry delay up to 300 s (5 min). The counter resets after a successful reconciliation.
+
+```bash
+# Watch the retry_count and backoff_secs fields
+kubectl logs -n 5spot-system -l app=5spot-controller -f | \
+  jq -c 'select(.fields.resource == "<machine-name>") | {retry: .fields.retry_count, backoff: .fields.backoff_secs, error: .fields.error}'
+```
+
+**Solution:**
+- Check the underlying error causing repeated failures (CAPI, schedule, validation)
+- Once the root cause is fixed, the next successful reconciliation resets the counter
+- If the resource is stuck at max backoff (300 s), fix the underlying issue and patch the resource to trigger an immediate reconcile:
+  ```bash
+  kubectl annotate scheduledmachine <name> 5spot.io/force-reconcile="$(date -u +%s)" --overwrite
+  ```
 
 ## Error Messages
 
