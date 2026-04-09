@@ -161,7 +161,9 @@ pub async fn add_finalizer(
     resource: Arc<ScheduledMachine>,
     ctx: Arc<Context>,
 ) -> Result<Action, ReconcilerError> {
-    let namespace = resource.namespace().unwrap();
+    let namespace = resource.namespace().ok_or_else(|| {
+        ReconcilerError::InvalidConfig("ScheduledMachine must be namespaced".to_string())
+    })?;
     let name = resource.name_any();
 
     info!(
@@ -192,7 +194,9 @@ pub async fn handle_deletion(
     resource: Arc<ScheduledMachine>,
     ctx: Arc<Context>,
 ) -> Result<Action, ReconcilerError> {
-    let namespace = resource.namespace().unwrap();
+    let namespace = resource.namespace().ok_or_else(|| {
+        ReconcilerError::InvalidConfig("ScheduledMachine must be namespaced".to_string())
+    })?;
     let name = resource.name_any();
 
     info!(
@@ -261,7 +265,9 @@ pub async fn handle_kill_switch(
     resource: Arc<ScheduledMachine>,
     ctx: Arc<Context>,
 ) -> Result<Action, ReconcilerError> {
-    let namespace = resource.namespace().unwrap();
+    let namespace = resource.namespace().ok_or_else(|| {
+        ReconcilerError::InvalidConfig("ScheduledMachine must be namespaced".to_string())
+    })?;
     let name = resource.name_any();
 
     let current_phase = resource.status.as_ref().and_then(|s| s.phase.as_deref());

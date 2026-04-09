@@ -22,14 +22,15 @@ schedule:
 
 ### Cron Format
 
-```
-┌───────────── minute (0-59)
-│ ┌───────────── hour (0-23)
-│ │ ┌───────────── day of month (1-31)
-│ │ │ ┌───────────── month (1-12)
-│ │ │ │ ┌───────────── day of week (0-6, Sun-Sat)
-│ │ │ │ │
-* * * * *
+```mermaid
+flowchart LR
+    A["<b>*</b><br/>minute<br/><i>0–59</i>"]
+    B["<b>*</b><br/>hour<br/><i>0–23</i>"]
+    C["<b>*</b><br/>day of month<br/><i>1–31</i>"]
+    D["<b>*</b><br/>month<br/><i>1–12</i>"]
+    E["<b>*</b><br/>day of week<br/><i>0–6, Sun–Sat</i>"]
+
+    A --- B --- C --- D --- E
 ```
 
 ### Cron Examples

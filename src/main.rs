@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
-use five_spot::constants::{HEALTH_PORT, METRICS_PORT};
+use five_spot::constants::{HEALTH_PORT, K8S_API_TIMEOUT_SECS, METRICS_PORT};
 use five_spot::crd::ScheduledMachine;
 use five_spot::health::{start_health_server, HealthState};
 use five_spot::metrics::init_controller_info;
@@ -79,9 +79,15 @@ async fn main() -> Result<()> {
     // Initialize controller info metric
     init_controller_info(env!("CARGO_PKG_VERSION"), cli.instance_id);
 
-    // Create Kubernetes client
-    let client = Client::try_default().await?;
-    info!("Connected to Kubernetes API");
+    // Create Kubernetes client with explicit timeouts (NIST SC-5, Basel III)
+    let mut kube_config = kube::Config::infer().await?;
+    kube_config.read_timeout = Some(std::time::Duration::from_secs(K8S_API_TIMEOUT_SECS));
+    kube_config.write_timeout = Some(std::time::Duration::from_secs(K8S_API_TIMEOUT_SECS));
+    let client = Client::try_from(kube_config)?;
+    info!(
+        timeout_secs = K8S_API_TIMEOUT_SECS,
+        "Connected to Kubernetes API"
+    );
 
     // Mark Kubernetes as connected
     health_state.set_k8s_connected(true);

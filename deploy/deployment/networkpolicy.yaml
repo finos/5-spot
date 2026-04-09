@@ -1,0 +1,51 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# NetworkPolicy for the 5-Spot controller.
+#
+# Ingress: Only Prometheus (monitoring namespace) may scrape metrics on 8080.
+#          Kubelet health probes are allowed on 8081 from any source (k8s internal).
+# Egress:  Only Kubernetes API server (6443) and DNS (53) are permitted.
+#          All other egress is denied, preventing data exfiltration.
+#
+# NIST SP 800-53 SC-7: Boundary Protection
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: 5spot-controller
+  namespace: 5spot-system
+spec:
+  podSelector:
+    matchLabels:
+      app: 5spot-controller
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    # Prometheus metrics scrape (port 8080) — monitoring namespace only
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8080
+
+    # Kubelet liveness/readiness probes (port 8081) — node-local, no namespace restriction
+    - ports:
+        - protocol: TCP
+          port: 8081
+
+  egress:
+    # DNS resolution (required for service discovery and API server hostname lookup)
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    # Kubernetes API server
+    - ports:
+        - protocol: TCP
+          port: 6443

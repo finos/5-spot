@@ -182,7 +182,9 @@ async fn reconcile_inner(
     resource: Arc<ScheduledMachine>,
     ctx: Arc<Context>,
 ) -> Result<Action, ReconcilerError> {
-    let namespace = resource.namespace().unwrap();
+    let namespace = resource.namespace().ok_or_else(|| {
+        ReconcilerError::InvalidConfig("ScheduledMachine must be namespaced".to_string())
+    })?;
     let name = resource.name_any();
 
     // Get current status
@@ -249,7 +251,9 @@ async fn handle_pending_phase(
     ctx: Arc<Context>,
     should_be_active: bool,
 ) -> Result<Action, ReconcilerError> {
-    let namespace = resource.namespace().unwrap();
+    let namespace = resource.namespace().ok_or_else(|| {
+        ReconcilerError::InvalidConfig("ScheduledMachine must be namespaced".to_string())
+    })?;
     let name = resource.name_any();
 
     // Guard clause: if schedule is disabled
@@ -320,7 +324,9 @@ async fn handle_active_phase(
     ctx: Arc<Context>,
     should_be_active: bool,
 ) -> Result<Action, ReconcilerError> {
-    let namespace = resource.namespace().unwrap();
+    let namespace = resource.namespace().ok_or_else(|| {
+        ReconcilerError::InvalidConfig("ScheduledMachine must be namespaced".to_string())
+    })?;
     let name = resource.name_any();
 
     // Guard clause: schedule disabled
@@ -363,7 +369,9 @@ async fn handle_shutting_down_phase(
     resource: Arc<ScheduledMachine>,
     ctx: Arc<Context>,
 ) -> Result<Action, ReconcilerError> {
-    let namespace = resource.namespace().unwrap();
+    let namespace = resource.namespace().ok_or_else(|| {
+        ReconcilerError::InvalidConfig("ScheduledMachine must be namespaced".to_string())
+    })?;
     let name = resource.name_any();
 
     // Check if grace period elapsed
@@ -455,7 +463,9 @@ async fn handle_inactive_phase(
     ctx: Arc<Context>,
     should_be_active: bool,
 ) -> Result<Action, ReconcilerError> {
-    let namespace = resource.namespace().unwrap();
+    let namespace = resource.namespace().ok_or_else(|| {
+        ReconcilerError::InvalidConfig("ScheduledMachine must be namespaced".to_string())
+    })?;
     let name = resource.name_any();
 
     // Guard clause: schedule disabled
@@ -489,7 +499,9 @@ async fn handle_disabled_phase(
     ctx: Arc<Context>,
     _should_be_active: bool,
 ) -> Result<Action, ReconcilerError> {
-    let namespace = resource.namespace().unwrap();
+    let namespace = resource.namespace().ok_or_else(|| {
+        ReconcilerError::InvalidConfig("ScheduledMachine must be namespaced".to_string())
+    })?;
     let name = resource.name_any();
 
     // Guard clause: schedule enabled again
@@ -526,7 +538,9 @@ async fn handle_error_phase(
     resource: Arc<ScheduledMachine>,
     ctx: Arc<Context>,
 ) -> Result<Action, ReconcilerError> {
-    let namespace = resource.namespace().unwrap();
+    let namespace = resource.namespace().ok_or_else(|| {
+        ReconcilerError::InvalidConfig("ScheduledMachine must be namespaced".to_string())
+    })?;
     let name = resource.name_any();
 
     // Log error and retry from Pending

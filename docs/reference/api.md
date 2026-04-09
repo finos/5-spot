@@ -1,5 +1,4 @@
-   Compiling five_spot v0.1.0 (/Users/erick/dev/5-spot)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.92s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.16s
      Running `target/debug/crddoc`
 # 5Spot API Reference
 

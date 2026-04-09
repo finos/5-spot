@@ -7,8 +7,48 @@ use std::sync::LazyLock;
 
 use prometheus::{
     register_counter_vec, register_gauge, register_gauge_vec, register_histogram_vec, CounterVec,
-    Gauge, GaugeVec, HistogramVec,
+    Gauge, GaugeVec, HistogramVec, Opts,
 };
+
+// ============================================================================
+// Fallback helpers
+//
+// If metric registration fails (e.g., duplicate name in tests), we log a
+// warning and fall back to an *unregistered* metric so the process continues.
+// The fallback constructors use hardcoded valid names and cannot panic.
+// ============================================================================
+
+fn fallback_counter_vec(name: &str, help: &str, labels: &[&str]) -> CounterVec {
+    CounterVec::new(Opts::new(name, help), labels)
+        .unwrap_or_else(|_| unreachable!("hardcoded metric name '{name}' is always valid"))
+}
+
+fn fallback_gauge(name: &str, help: &str) -> Gauge {
+    Gauge::new(name, help)
+        .unwrap_or_else(|_| unreachable!("hardcoded metric name '{name}' is always valid"))
+}
+
+fn fallback_gauge_vec(name: &str, help: &str, labels: &[&str]) -> GaugeVec {
+    GaugeVec::new(Opts::new(name, help), labels)
+        .unwrap_or_else(|_| unreachable!("hardcoded metric name '{name}' is always valid"))
+}
+
+fn fallback_histogram_vec(
+    name: &str,
+    help: &str,
+    labels: &[&str],
+    buckets: Vec<f64>,
+) -> HistogramVec {
+    HistogramVec::new(
+        prometheus::HistogramOpts::new(name, help).buckets(buckets),
+        labels,
+    )
+    .unwrap_or_else(|_| unreachable!("hardcoded metric name '{name}' is always valid"))
+}
+
+// ============================================================================
+// Metrics
+// ============================================================================
 
 /// Total number of reconciliations performed
 pub static RECONCILIATIONS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
@@ -17,7 +57,14 @@ pub static RECONCILIATIONS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
         "Total number of reconciliations performed",
         &["phase", "result"]
     )
-    .expect("Failed to register reconciliations_total metric")
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_reconciliations_total: {e}");
+        fallback_counter_vec(
+            "fivespot_reconciliations_total",
+            "Total number of reconciliations performed",
+            &["phase", "result"],
+        )
+    })
 });
 
 /// Duration of reconciliation operations in seconds
@@ -28,7 +75,17 @@ pub static RECONCILIATION_DURATION_SECONDS: LazyLock<HistogramVec> = LazyLock::n
         &["phase"],
         vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]
     )
-    .expect("Failed to register reconciliation_duration_seconds metric")
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_reconciliation_duration_seconds: {e}");
+        fallback_histogram_vec(
+            "fivespot_reconciliation_duration_seconds",
+            "Duration of reconciliation operations in seconds",
+            &["phase"],
+            vec![
+                0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+            ],
+        )
+    })
 });
 
 /// Number of currently active machines (in Active phase)
@@ -37,7 +94,13 @@ pub static MACHINES_ACTIVE: LazyLock<Gauge> = LazyLock::new(|| {
         "fivespot_machines_active",
         "Number of machines currently in Active phase"
     )
-    .expect("Failed to register machines_active metric")
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_machines_active: {e}");
+        fallback_gauge(
+            "fivespot_machines_active",
+            "Number of machines currently in Active phase",
+        )
+    })
 });
 
 /// Number of scheduled machines by phase
@@ -47,7 +110,14 @@ pub static MACHINES_BY_PHASE: LazyLock<GaugeVec> = LazyLock::new(|| {
         "Number of ScheduledMachine resources by phase",
         &["phase"]
     )
-    .expect("Failed to register machines_by_phase metric")
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_machines_by_phase: {e}");
+        fallback_gauge_vec(
+            "fivespot_machines_by_phase",
+            "Number of ScheduledMachine resources by phase",
+            &["phase"],
+        )
+    })
 });
 
 /// Total number of schedule evaluations
@@ -57,7 +127,14 @@ pub static SCHEDULE_EVALUATIONS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
         "Total number of schedule evaluations",
         &["result"]
     )
-    .expect("Failed to register schedule_evaluations_total metric")
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_schedule_evaluations_total: {e}");
+        fallback_counter_vec(
+            "fivespot_schedule_evaluations_total",
+            "Total number of schedule evaluations",
+            &["result"],
+        )
+    })
 });
 
 /// Number of machines with kill switch activated
@@ -66,7 +143,13 @@ pub static KILL_SWITCH_ACTIVATIONS_TOTAL: LazyLock<Gauge> = LazyLock::new(|| {
         "fivespot_kill_switch_activations_total",
         "Total number of kill switch activations"
     )
-    .expect("Failed to register kill_switch_activations_total metric")
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_kill_switch_activations_total: {e}");
+        fallback_gauge(
+            "fivespot_kill_switch_activations_total",
+            "Total number of kill switch activations",
+        )
+    })
 });
 
 /// Controller info gauge (always 1, used for labels)
@@ -76,7 +159,14 @@ pub static CONTROLLER_INFO: LazyLock<GaugeVec> = LazyLock::new(|| {
         "Controller information",
         &["version", "instance_id"]
     )
-    .expect("Failed to register controller_info metric")
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_controller_info: {e}");
+        fallback_gauge_vec(
+            "fivespot_controller_info",
+            "Controller information",
+            &["version", "instance_id"],
+        )
+    })
 });
 
 /// Whether the controller is the leader (1 = leader, 0 = not leader)
@@ -85,7 +175,13 @@ pub static IS_LEADER: LazyLock<Gauge> = LazyLock::new(|| {
         "fivespot_is_leader",
         "Whether this controller instance is the leader (1 = leader, 0 = not leader)"
     )
-    .expect("Failed to register is_leader metric")
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_is_leader: {e}");
+        fallback_gauge(
+            "fivespot_is_leader",
+            "Whether this controller instance is the leader",
+        )
+    })
 });
 
 /// Number of errors by type
@@ -95,7 +191,14 @@ pub static ERRORS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
         "Total number of errors by type",
         &["error_type"]
     )
-    .expect("Failed to register errors_total metric")
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_errors_total: {e}");
+        fallback_counter_vec(
+            "fivespot_errors_total",
+            "Total number of errors by type",
+            &["error_type"],
+        )
+    })
 });
 
 /// Node drain operations
@@ -105,7 +208,14 @@ pub static NODE_DRAINS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
         "Total number of node drain operations",
         &["result"]
     )
-    .expect("Failed to register node_drains_total metric")
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_node_drains_total: {e}");
+        fallback_counter_vec(
+            "fivespot_node_drains_total",
+            "Total number of node drain operations",
+            &["result"],
+        )
+    })
 });
 
 /// Pod evictions during node drain
@@ -115,7 +225,14 @@ pub static POD_EVICTIONS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
         "Total number of pod evictions during node drain",
         &["result"]
     )
-    .expect("Failed to register pod_evictions_total metric")
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_pod_evictions_total: {e}");
+        fallback_counter_vec(
+            "fivespot_pod_evictions_total",
+            "Total number of pod evictions during node drain",
+            &["result"],
+        )
+    })
 });
 
 /// Record a successful reconciliation
