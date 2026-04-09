@@ -1,7 +1,29 @@
-// Prometheus metrics for 5-Spot controller
-//
-// This module provides observability metrics for monitoring the controller's
-// health, performance, and operational state.
+//! # Prometheus metrics
+//!
+//! Observability metrics for monitoring the controller's health, performance,
+//! and operational state.  All metrics are registered with the default
+//! Prometheus registry and are exposed on the `/metrics` endpoint.
+//!
+//! ## Registration strategy
+//! Metrics are declared as `static LazyLock<…>` values so they are
+//! initialised exactly once on first access.  If registration fails (e.g. a
+//! duplicate name in tests), the fallback helpers create an *unregistered*
+//! metric so the process continues rather than panicking.
+//!
+//! ## Available metrics
+//! | Metric | Type | Description |
+//! |---|---|---|
+//! | `fivespot_reconciliations_total` | Counter | Reconciliation attempts by phase and result |
+//! | `fivespot_reconciliation_duration_seconds` | Histogram | Reconciliation latency |
+//! | `fivespot_machines_active` | Gauge | Currently active machines |
+//! | `fivespot_machines_by_phase` | Gauge | Machine count per lifecycle phase |
+//! | `fivespot_schedule_evaluations_total` | Counter | Schedule evaluations by outcome |
+//! | `fivespot_kill_switch_activations_total` | Counter | Kill-switch activations |
+//! | `fivespot_controller_info` | Gauge | Controller version and instance metadata |
+//! | `fivespot_is_leader` | Gauge | Whether this instance currently holds the leader lease |
+//! | `fivespot_errors_total` | Counter | Errors by type |
+//! | `fivespot_node_drains_total` | Counter | Node drain attempts by outcome |
+//! | `fivespot_pod_evictions_total` | Counter | Pod eviction attempts by outcome |
 
 use std::sync::LazyLock;
 
@@ -18,21 +40,29 @@ use prometheus::{
 // The fallback constructors use hardcoded valid names and cannot panic.
 // ============================================================================
 
+/// Create an *unregistered* `CounterVec` used as a no-op fallback when
+/// `register_counter_vec!` fails (e.g. duplicate name in test processes).
 fn fallback_counter_vec(name: &str, help: &str, labels: &[&str]) -> CounterVec {
     CounterVec::new(Opts::new(name, help), labels)
         .unwrap_or_else(|_| unreachable!("hardcoded metric name '{name}' is always valid"))
 }
 
+/// Create an *unregistered* `Gauge` used as a no-op fallback when
+/// `register_gauge!` fails.
 fn fallback_gauge(name: &str, help: &str) -> Gauge {
     Gauge::new(name, help)
         .unwrap_or_else(|_| unreachable!("hardcoded metric name '{name}' is always valid"))
 }
 
+/// Create an *unregistered* `GaugeVec` used as a no-op fallback when
+/// `register_gauge_vec!` fails.
 fn fallback_gauge_vec(name: &str, help: &str, labels: &[&str]) -> GaugeVec {
     GaugeVec::new(Opts::new(name, help), labels)
         .unwrap_or_else(|_| unreachable!("hardcoded metric name '{name}' is always valid"))
 }
 
+/// Create an *unregistered* `HistogramVec` used as a no-op fallback when
+/// `register_histogram_vec!` fails.
 fn fallback_histogram_vec(
     name: &str,
     help: &str,

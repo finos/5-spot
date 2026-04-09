@@ -37,8 +37,11 @@ rules:
       - "remotemachines/status"
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
-  # Events for recording reconciliation events
+  # Events for recording reconciliation events (core v1 and events.k8s.io/v1)
   - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["events.k8s.io"]
     resources: ["events"]
     verbs: ["create", "patch"]
 

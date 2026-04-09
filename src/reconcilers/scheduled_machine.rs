@@ -1,9 +1,39 @@
-// Reconciliation logic for ScheduledMachine resources
+//! # ScheduledMachine reconciler
+//!
+//! Implements the Kubernetes controller reconciliation loop for
+//! [`ScheduledMachine`] custom resources.
+//!
+//! ## Lifecycle state machine
+//!
+//! ```text
+//! Pending ──► Active ──► ShuttingDown ──► Inactive ──► Pending (loop)
+//!   │                                                       ▲
+//!   └──► Disabled ─────────────────────────────────────────┘
+//!
+//! Any state ──► Terminated  (kill switch)
+//! Any state ──► Error       (unrecoverable failure)
+//! Error     ──► Pending     (automatic recovery attempt)
+//! ```
+//!
+//! ## Entry points
+//! - [`reconcile_scheduled_machine`] — called by the `kube-rs` controller loop
+//! - [`error_policy`] — determines requeue interval after a reconciliation error
+//!
+//! ## Multi-instance distribution
+//! When `instance_count > 1`, each resource is deterministically assigned to
+//! one instance via consistent hashing on `namespace/name`.  Instances that
+//! are not assigned to a resource skip it with `Action::await_change`.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use kube::{runtime::controller::Action, Client, Resource, ResourceExt};
+use kube::{
+    runtime::{
+        controller::Action,
+        events::{Recorder, Reporter},
+    },
+    Client, Resource, ResourceExt,
+};
 use tracing::{debug, error, info};
 
 use crate::constants::{
@@ -22,20 +52,44 @@ use crate::metrics::{
 // Context for reconciliation
 // ============================================================================
 
+/// Controller name used for event reporting
+pub const CONTROLLER_NAME: &str = "5spot-controller";
+
+/// Shared state passed to every reconciliation call.
+///
+/// `Context` is cheaply cloneable (all fields are `Arc`-backed or `Copy`) and
+/// is wrapped in [`Arc`] by the controller framework before being handed to
+/// [`reconcile_scheduled_machine`].
 #[derive(Clone)]
 pub struct Context {
+    /// Kubernetes API client authenticated via the controller's service account.
     pub client: Client,
+    /// Zero-based index of this operator instance (set via `OPERATOR_INSTANCE_ID`).
     pub instance_id: u32,
+    /// Total number of running operator instances (set via `OPERATOR_INSTANCE_COUNT`).
+    /// When `1`, every resource is processed by this instance.
     pub instance_count: u32,
+    /// Kubernetes event recorder for publishing immutable audit-trail events.
+    pub recorder: Recorder,
 }
 
 impl Context {
+    /// Create a new `Context`, initialising the event recorder from the client.
+    ///
+    /// The recorder uses `CONTROLLER_POD_NAME` from the environment as the
+    /// reporting instance name (optional; falls back to `None`).
     #[must_use]
     pub fn new(client: Client, instance_id: u32, instance_count: u32) -> Self {
+        let reporter = Reporter {
+            controller: CONTROLLER_NAME.to_string(),
+            instance: std::env::var("CONTROLLER_POD_NAME").ok(),
+        };
+        let recorder = Recorder::new(client.clone(), reporter);
         Self {
             client,
             instance_id,
             instance_count,
+            recorder,
         }
     }
 }
@@ -44,35 +98,52 @@ impl Context {
 // Error types
 // ============================================================================
 
+/// All errors that can be returned by the reconciliation path.
+///
+/// Variants map to specific Prometheus error label values recorded via
+/// [`record_error`](crate::metrics::record_error) so each failure mode is
+/// individually observable.
 #[derive(Debug, thiserror::Error)]
 pub enum ReconcilerError {
+    /// A Kubernetes API call failed (network error, 5xx, auth, etc.).
+    /// Automatically converted from [`kube::Error`].
     #[error("Kubernetes API error: {0}")]
     KubeError(#[from] kube::Error),
 
+    /// A required Kubernetes resource does not exist.
     #[error("Resource not found: {0}")]
     NotFound(String),
 
+    /// The `ScheduledMachine` spec contains invalid or incomplete configuration.
     #[error("Invalid configuration: {0}")]
     InvalidConfig(String),
 
+    /// Schedule parsing or evaluation failed (invalid timezone, bad day/hour range, etc.).
     #[error("Schedule evaluation error: {0}")]
     ScheduleError(String),
 
+    /// A Cluster API operation failed (resource creation, deletion, drain, etc.).
     #[error("CAPI operation failed: {0}")]
     CapiError(String),
 
+    /// Bootstrap or infrastructure file content could not be resolved.
     #[error("File content resolution failed: {0}")]
     FileResolutionError(String),
 
+    /// A cross-resource reference (bootstrap ref, infra ref) is invalid.
     #[error("Reference validation failed: {0}")]
     ReferenceValidationError(String),
 
+    /// An input field failed a security validation check (reserved label prefix,
+    /// disallowed API group, etc.).
     #[error("Security validation failed: {0}")]
     ValidationError(String),
 
+    /// An async operation exceeded its configured deadline (e.g. finalizer cleanup).
     #[error("Operation timed out: {0}")]
     TimeoutError(String),
 
+    /// Catch-all for unexpected errors from third-party libraries.
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -147,7 +218,12 @@ pub async fn reconcile_scheduled_machine(
     result
 }
 
-/// Record reconciliation result metrics
+/// Record Prometheus metrics for a completed reconciliation attempt.
+///
+/// On success, increments the success counter and records duration.
+/// On failure, increments the failure counter, records duration, and
+/// additionally increments a per-error-type counter so each failure mode
+/// is individually observable.
 fn record_reconciliation_result(
     result: &Result<Action, ReconcilerError>,
     phase: &str,
@@ -177,7 +253,15 @@ fn record_reconciliation_result(
     }
 }
 
-/// Inner reconciliation logic
+/// Core reconciliation logic executed after finalizer and deletion guards pass.
+///
+/// Evaluates the kill switch, the schedule, and the current phase, then
+/// dispatches to the appropriate phase handler.  Each phase handler is
+/// responsible for a single state transition and must return an [`Action`]
+/// indicating when the controller should next wake up.
+///
+/// # Errors
+/// Propagates any error returned by a phase handler or by schedule evaluation.
 async fn reconcile_inner(
     resource: Arc<ScheduledMachine>,
     ctx: Arc<Context>,
@@ -245,7 +329,13 @@ async fn reconcile_inner(
 // Phase-specific handlers (CAPI-based)
 // ============================================================================
 
-/// Handle Pending phase - initial state, evaluate schedule
+/// Handle the `Pending` phase — initial state for new or recovering resources.
+///
+/// Transitions:
+/// - Schedule disabled → `Disabled`
+/// - Outside schedule window → `Inactive`
+/// - Inside schedule window → creates CAPI resources, then `Active`
+/// - CAPI creation failure → `Error` (retried after [`ERROR_REQUEUE_SECS`])
 async fn handle_pending_phase(
     resource: Arc<ScheduledMachine>,
     ctx: Arc<Context>,
@@ -260,9 +350,10 @@ async fn handle_pending_phase(
     if !resource.spec.schedule.enabled {
         info!(resource = %name, namespace = %namespace, "Schedule disabled");
         update_phase(
-            &ctx.client,
+            &ctx,
             &namespace,
             &name,
+            Some(PHASE_PENDING),
             PHASE_DISABLED,
             Some(REASON_SCHEDULE_DISABLED),
             Some("Schedule is disabled"),
@@ -275,9 +366,10 @@ async fn handle_pending_phase(
     if !should_be_active {
         info!(resource = %name, namespace = %namespace, "Outside schedule window");
         update_phase(
-            &ctx.client,
+            &ctx,
             &namespace,
             &name,
+            Some(PHASE_PENDING),
             PHASE_INACTIVE,
             Some(REASON_SCHEDULE_INACTIVE),
             Some("Outside scheduled time window"),
@@ -293,9 +385,10 @@ async fn handle_pending_phase(
     if let Err(e) = add_machine_to_cluster(&resource, &ctx.client, &namespace).await {
         error!(resource = %name, error = %e, "Failed to create CAPI Machine");
         update_phase(
-            &ctx.client,
+            &ctx,
             &namespace,
             &name,
+            Some(PHASE_PENDING),
             PHASE_ERROR,
             Some("MachineCreationFailed"),
             Some(&format!("Failed to create CAPI Machine: {e}")),
@@ -306,9 +399,10 @@ async fn handle_pending_phase(
 
     // Machine created successfully - transition to Active
     update_phase(
-        &ctx.client,
+        &ctx,
         &namespace,
         &name,
+        Some(PHASE_PENDING),
         PHASE_ACTIVE,
         Some(REASON_MACHINE_CREATED),
         Some("CAPI Machine created successfully"),
@@ -318,7 +412,12 @@ async fn handle_pending_phase(
     Ok(Action::requeue(Duration::from_secs(TIMER_REQUEUE_SECS)))
 }
 
-/// Handle Active phase - machine is running
+/// Handle the `Active` phase — machine is provisioned and part of the cluster.
+///
+/// Transitions:
+/// - Schedule disabled → `ShuttingDown` (grace period starts)
+/// - Outside schedule window → `ShuttingDown` (grace period starts)
+/// - Still in schedule → no-op, requeue after [`TIMER_REQUEUE_SECS`]
 async fn handle_active_phase(
     resource: Arc<ScheduledMachine>,
     ctx: Arc<Context>,
@@ -333,9 +432,10 @@ async fn handle_active_phase(
     if !resource.spec.schedule.enabled {
         info!(resource = %name, namespace = %namespace, "Schedule disabled - initiating shutdown");
         update_phase_with_grace_period(
-            &ctx.client,
+            &ctx,
             &namespace,
             &name,
+            Some(PHASE_ACTIVE),
             PHASE_SHUTTING_DOWN,
             Some(REASON_SCHEDULE_DISABLED),
             Some("Schedule disabled - starting graceful shutdown"),
@@ -348,9 +448,10 @@ async fn handle_active_phase(
     if !should_be_active {
         info!(resource = %name, namespace = %namespace, "Outside schedule - initiating shutdown");
         update_phase_with_grace_period(
-            &ctx.client,
+            &ctx,
             &namespace,
             &name,
+            Some(PHASE_ACTIVE),
             PHASE_SHUTTING_DOWN,
             Some(REASON_GRACE_PERIOD),
             Some("Outside schedule - starting graceful shutdown"),
@@ -364,7 +465,21 @@ async fn handle_active_phase(
     Ok(Action::requeue(Duration::from_secs(TIMER_REQUEUE_SECS)))
 }
 
-/// Handle `ShuttingDown` phase - graceful machine shutdown
+/// Handle the `ShuttingDown` phase — graceful shutdown with node drain.
+///
+/// On each reconciliation tick, checks whether the grace period
+/// (configured by `spec.gracefulShutdownTimeout`) has elapsed.
+///
+/// If elapsed:
+/// 1. Resolves the Kubernetes `Node` via the CAPI Machine's `nodeRef`
+/// 2. Drains the node (cordon + pod eviction) up to `spec.nodeDrainTimeout`
+/// 3. Deletes the CAPI `Machine` resource
+/// 4. Transitions to `Inactive`
+///
+/// Drain failures are logged but do **not** block machine deletion, preventing
+/// the controller from getting stuck if drain is unrecoverable.
+///
+/// If the grace period has not yet elapsed, the handler simply requeues.
 async fn handle_shutting_down_phase(
     resource: Arc<ScheduledMachine>,
     ctx: Arc<Context>,
@@ -427,9 +542,10 @@ async fn handle_shutting_down_phase(
         if let Err(e) = remove_machine_from_cluster(&resource, &ctx.client, &namespace).await {
             error!(resource = %name, error = %e, "Failed to delete CAPI Machine");
             update_phase(
-                &ctx.client,
+                &ctx,
                 &namespace,
                 &name,
+                Some(PHASE_SHUTTING_DOWN),
                 PHASE_ERROR,
                 Some("MachineDeletionFailed"),
                 Some(&format!("Failed to delete CAPI Machine: {e}")),
@@ -440,9 +556,10 @@ async fn handle_shutting_down_phase(
 
         // Machine removed successfully - transition to Inactive
         update_phase(
-            &ctx.client,
+            &ctx,
             &namespace,
             &name,
+            Some(PHASE_SHUTTING_DOWN),
             PHASE_INACTIVE,
             Some(REASON_MACHINE_DELETED),
             Some("Machine removed from cluster"),
@@ -457,7 +574,12 @@ async fn handle_shutting_down_phase(
     Ok(Action::requeue(Duration::from_secs(TIMER_REQUEUE_SECS)))
 }
 
-/// Handle Inactive phase - machine removed, waiting for schedule
+/// Handle the `Inactive` phase — machine removed, waiting for the next active window.
+///
+/// Transitions:
+/// - Schedule disabled → no-op, requeue
+/// - Still outside schedule window → no-op, requeue
+/// - Schedule window becomes active → `Pending` (triggers machine recreation)
 async fn handle_inactive_phase(
     resource: Arc<ScheduledMachine>,
     ctx: Arc<Context>,
@@ -481,9 +603,10 @@ async fn handle_inactive_phase(
     // Schedule became active - transition to Pending to recreate machine
     info!(resource = %name, namespace = %namespace, "Schedule active - recreating machine");
     update_phase(
-        &ctx.client,
+        &ctx,
         &namespace,
         &name,
+        Some(PHASE_INACTIVE),
         PHASE_PENDING,
         Some(REASON_SCHEDULE_ACTIVE),
         Some("Schedule became active - initiating machine creation"),
@@ -493,7 +616,15 @@ async fn handle_inactive_phase(
     Ok(Action::requeue(Duration::from_secs(TIMER_REQUEUE_SECS)))
 }
 
-/// Handle Disabled phase - schedule is disabled
+/// Handle the `Disabled` phase — `spec.schedule.enabled` is `false`.
+///
+/// Transitions:
+/// - Schedule re-enabled → `Pending` (machine will be recreated if in window)
+/// - Still disabled → no-op, requeue
+///
+/// Note: disabling the schedule does **not** remove an already-active machine.
+/// The machine will only be removed once the `Active → ShuttingDown` transition
+/// is triggered by the schedule being disabled while the machine is running.
 async fn handle_disabled_phase(
     resource: Arc<ScheduledMachine>,
     ctx: Arc<Context>,
@@ -508,9 +639,10 @@ async fn handle_disabled_phase(
     if resource.spec.schedule.enabled {
         info!(resource = %name, namespace = %namespace, "Schedule re-enabled");
         update_phase(
-            &ctx.client,
+            &ctx,
             &namespace,
             &name,
+            Some(PHASE_DISABLED),
             PHASE_PENDING,
             Some(REASON_SCHEDULE_ACTIVE),
             Some("Schedule re-enabled"),
@@ -523,7 +655,12 @@ async fn handle_disabled_phase(
     Ok(Action::requeue(Duration::from_secs(TIMER_REQUEUE_SECS)))
 }
 
-/// Handle Terminated phase - kill switch activated
+/// Handle the `Terminated` phase — terminal state after kill-switch activation.
+///
+/// This is a **terminal state**: no further transitions occur.  The resource
+/// continues to exist in the cluster but the controller will not take any
+/// action other than periodic requeueing.  The phase can only be cleared by
+/// deleting the `ScheduledMachine` resource.
 #[allow(clippy::unused_async)]
 async fn handle_terminated_phase(
     _resource: Arc<ScheduledMachine>,
@@ -533,7 +670,11 @@ async fn handle_terminated_phase(
     Ok(Action::requeue(Duration::from_secs(TIMER_REQUEUE_SECS)))
 }
 
-/// Handle Error phase - attempt recovery
+/// Handle the `Error` phase — attempt automatic recovery.
+///
+/// Resets the phase to `Pending`, which causes the controller to re-evaluate
+/// the schedule and attempt to reconcile from a clean state.  Uses
+/// [`ERROR_REQUEUE_SECS`] for the requeue interval to avoid tight retry loops.
 async fn handle_error_phase(
     resource: Arc<ScheduledMachine>,
     ctx: Arc<Context>,
@@ -547,9 +688,10 @@ async fn handle_error_phase(
     error!(resource = %name, namespace = %namespace, "In Error phase - attempting recovery");
 
     update_phase(
-        &ctx.client,
+        &ctx,
         &namespace,
         &name,
+        Some(PHASE_ERROR),
         PHASE_PENDING,
         Some("RetryingReconciliation"),
         Some("Attempting recovery from error"),

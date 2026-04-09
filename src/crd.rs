@@ -1,6 +1,15 @@
-// CRD definitions for 5Spot Machine Scheduler
-// This is the source of truth - YAML files are generated from these types
-// Controller for managing scheduled Cluster API machines
+//! # CRD type definitions
+//!
+//! This module is the **source of truth** for the `ScheduledMachine` custom resource.
+//! The YAML files under `deploy/crds/` are **auto-generated** from these types by
+//! `cargo run --bin crdgen` — never edit the YAML directly.
+//!
+//! ## Key types
+//! - [`ScheduledMachineSpec`] / [`ScheduledMachine`] — the top-level CR
+//! - [`ScheduleSpec`] — time-based schedule (days of week, hours, timezone, or cron)
+//! - [`EmbeddedResource`] — inline bootstrap or infrastructure provider spec
+//! - [`ScheduledMachineStatus`] — runtime phase and condition tracking
+//! - [`Condition`] — standard Kubernetes status condition
 
 use chrono::Utc;
 use kube::CustomResource;

@@ -1,5 +1,13 @@
-// Standard Kubernetes labels
-// Following Kubernetes recommended labels: https://kubernetes.io/docs/concepts/overview/working-with-objects/common-labels/
+//! # Standard Kubernetes labels
+//!
+//! Label key constants and helper functions for building consistent
+//! `BTreeMap<String, String>` label sets that follow the
+//! [Kubernetes recommended labels](https://kubernetes.io/docs/concepts/overview/working-with-objects/common-labels/)
+//! convention (`app.kubernetes.io/*`).
+//!
+//! All resources created by 5-Spot carry a common base label set (see
+//! [`common_labels`]) plus resource-type-specific labels produced by the
+//! specialised helpers.
 
 // ============================================================================
 // Recommended Kubernetes Labels

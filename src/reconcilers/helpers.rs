@@ -1,5 +1,22 @@
-// Helper functions for ScheduledMachine reconciliation
-// This file contains utility functions separated from the main reconciler logic
+//! # Reconciliation helper functions
+//!
+//! Pure utility functions used by the [`scheduled_machine`](super::scheduled_machine)
+//! reconciler.  Separated here to keep the main reconciler focused on the
+//! state-machine logic.
+//!
+//! ## Organisation
+//! - **Resource distribution** — consistent hashing for multi-instance deployments
+//! - **Schedule evaluation** — timezone-aware day/hour range and cron matching
+//! - **Finalizer management** — add, check, and remove the 5-spot finalizer
+//! - **Kill switch** — immediate machine removal path
+//! - **Grace period** — elapsed-time check against the shutdown timeout
+//! - **Duration parsing** — bounded `"5m"` / `"10s"` / `"1h"` string parser
+//! - **Kubernetes event helpers** — phase-transition event construction
+//! - **Status update helpers** — `patch_status` wrappers that also record events
+//! - **Security validation** — label prefix rejection and API group allowlist
+//! - **CAPI resource creation / deletion** — bootstrap, infra, and Machine lifecycle
+//! - **Node draining** — cordon + pod eviction with timeout
+//! - **Error policy** — controller requeue-on-error strategy
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -7,13 +24,17 @@ use std::time::Duration;
 
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use chrono_tz::Tz;
+use k8s_openapi::api::core::v1::ObjectReference;
 use kube::{
     api::{Api, Patch, PatchParams},
-    runtime::controller::Action,
+    runtime::{
+        controller::Action,
+        events::{Event as KubeEvent, EventType},
+    },
     Client, Resource, ResourceExt,
 };
 use serde_json::json;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use super::{Context, ReconcilerError};
 use crate::constants::{
@@ -21,7 +42,7 @@ use crate::constants::{
     CAPI_CLUSTER_NAME_LABEL, CAPI_GROUP, CAPI_MACHINE_API_VERSION, CAPI_MACHINE_API_VERSION_FULL,
     CAPI_RESOURCE_MACHINES, CONDITION_STATUS_TRUE, CONDITION_TYPE_READY, DEFAULT_INSTANCE_ID,
     ENV_OPERATOR_INSTANCE_ID, ERROR_REQUEUE_SECS, FINALIZER_CLEANUP_TIMEOUT_SECS,
-    FINALIZER_SCHEDULED_MACHINE, MAX_DURATION_SECS, PHASE_ACTIVE, PHASE_INACTIVE,
+    FINALIZER_SCHEDULED_MACHINE, MAX_DURATION_SECS, PHASE_ACTIVE, PHASE_ERROR, PHASE_INACTIVE,
     PHASE_SHUTTING_DOWN, PHASE_TERMINATED, POD_EVICTION_GRACE_PERIOD_SECS, REASON_GRACE_PERIOD,
     REASON_KILL_SWITCH, REASON_RECONCILE_SUCCEEDED, RESERVED_LABEL_PREFIXES, TIMER_REQUEUE_SECS,
 };
@@ -147,7 +168,10 @@ pub fn evaluate_schedule(
 // Finalizer management
 // ============================================================================
 
-/// Check if resource has finalizer
+/// Return `true` if the resource already carries the 5-spot finalizer.
+///
+/// Used as a guard in [`reconcile_scheduled_machine`] to avoid adding the
+/// finalizer a second time when the resource has already been processed.
 pub fn has_finalizer(resource: &ScheduledMachine) -> bool {
     resource
         .meta()
@@ -156,7 +180,17 @@ pub fn has_finalizer(resource: &ScheduledMachine) -> bool {
         .is_some_and(|f| f.contains(&FINALIZER_SCHEDULED_MACHINE.to_string()))
 }
 
-/// Add finalizer to resource
+/// Add the 5-spot finalizer to a `ScheduledMachine` resource.
+///
+/// The finalizer prevents Kubernetes from deleting the resource until the
+/// controller has successfully run cleanup logic (see [`handle_deletion`]).
+/// After patching the finalizer, the function requeues immediately
+/// (`Duration::from_secs(0)`) so the main reconcile loop can proceed to the
+/// `Pending` phase in the same reconciliation cycle.
+///
+/// # Errors
+/// Returns [`ReconcilerError::InvalidConfig`] if the resource has no namespace,
+/// or a kube API error if the merge-patch call fails.
 pub async fn add_finalizer(
     resource: Arc<ScheduledMachine>,
     ctx: Arc<Context>,
@@ -189,7 +223,23 @@ pub async fn add_finalizer(
     Ok(Action::requeue(Duration::from_secs(0)))
 }
 
-/// Handle resource deletion (finalizer cleanup)
+/// Run finalizer cleanup when a `ScheduledMachine` is being deleted.
+///
+/// If the resource is currently in the `Active` or `ShuttingDown` phase the
+/// corresponding CAPI Machine (and its child resources) are removed from the
+/// cluster first.  The removal is wrapped in a hard
+/// [`FINALIZER_CLEANUP_TIMEOUT_SECS`] timeout so a hung API call cannot
+/// block namespace deletion or cluster upgrades indefinitely.
+///
+/// Once cleanup succeeds (or is skipped for non-running phases) the
+/// finalizer string is removed from `metadata.finalizers`.  After this patch
+/// Kubernetes considers the resource fully deleted.
+///
+/// # Errors
+/// - [`ReconcilerError::InvalidConfig`] — resource has no namespace
+/// - [`ReconcilerError::TimeoutError`] — machine removal exceeded the cleanup timeout
+/// - [`ReconcilerError::CapiError`] — CAPI Machine delete call failed
+/// - kube API error — finalizer patch call failed
 pub async fn handle_deletion(
     resource: Arc<ScheduledMachine>,
     ctx: Arc<Context>,
@@ -260,7 +310,23 @@ pub async fn handle_deletion(
 // Kill switch handling
 // ============================================================================
 
-/// Handle kill switch activation - immediate removal
+/// Execute an emergency kill-switch that immediately removes the machine from
+/// its cluster and transitions it to the `Terminated` phase.
+///
+/// The kill switch is an operator-level escape hatch for situations where the
+/// normal graceful shutdown period must be bypassed (e.g., cost runaway,
+/// security incident).  Unlike the ordinary shutdown path, no grace period is
+/// observed — removal happens synchronously in the reconcile loop.
+///
+/// The machine is only removed when its current phase is `Active` or
+/// `ShuttingDown`.  Resources already in `Inactive` or `Terminated` are left
+/// untouched; the function simply records the `Terminated` phase to ensure
+/// the status is up to date.
+///
+/// # Errors
+/// - [`ReconcilerError::InvalidConfig`] — resource has no namespace
+/// - [`ReconcilerError::CapiError`] — CAPI Machine delete call failed
+/// - kube API error — status patch call failed
 pub async fn handle_kill_switch(
     resource: Arc<ScheduledMachine>,
     ctx: Arc<Context>,
@@ -288,10 +354,12 @@ pub async fn handle_kill_switch(
         }
     }
 
+    let from_phase = resource.status.as_ref().and_then(|s| s.phase.as_deref());
     update_phase(
-        &ctx.client,
+        &ctx,
         &namespace,
         &name,
+        from_phase,
         PHASE_TERMINATED,
         Some(REASON_KILL_SWITCH),
         Some("Machine terminated due to kill switch"),
@@ -305,7 +373,21 @@ pub async fn handle_kill_switch(
 // Grace period management
 // ============================================================================
 
-/// Check if grace period has elapsed
+/// Return `true` when the graceful shutdown timeout has been exceeded.
+///
+/// The grace period is tracked via the `last_transition_time` field of the
+/// status condition whose `reason` equals [`REASON_GRACE_PERIOD`].  That
+/// timestamp is written by [`update_phase_with_grace_period`] when the
+/// machine first enters the `ShuttingDown` phase.
+///
+/// If no such condition is found (e.g., the resource was transitioned to
+/// `ShuttingDown` by an older controller version that did not record the
+/// condition), the function conservatively returns `true` so the drain
+/// proceeds without getting stuck.
+///
+/// # Errors
+/// - [`ReconcilerError::InvalidConfig`] — resource has no `.status` sub-resource
+///   or the recorded timestamp is not valid RFC-3339
 pub fn check_grace_period_elapsed(resource: &ScheduledMachine) -> Result<bool, ReconcilerError> {
     let status = resource
         .status
@@ -389,30 +471,99 @@ pub fn parse_duration(duration_str: &str) -> Result<Duration, ReconcilerError> {
 }
 
 // ============================================================================
+// Kubernetes Event helpers
+// ============================================================================
+
+/// Build a Kubernetes Event for a phase transition.
+///
+/// Returns `EventType::Warning` for `Error` and `Terminated` phases (actionable
+/// operator alert); `EventType::Normal` for all other transitions.
+pub fn build_phase_transition_event(
+    from_phase: Option<&str>,
+    to_phase: &str,
+    reason: &str,
+    message: &str,
+) -> KubeEvent {
+    let event_type = if to_phase == PHASE_ERROR || to_phase == PHASE_TERMINATED {
+        EventType::Warning
+    } else {
+        EventType::Normal
+    };
+    KubeEvent {
+        type_: event_type,
+        reason: reason.to_string(),
+        note: Some(format!(
+            "{} -> {}: {}",
+            from_phase.unwrap_or("Unknown"),
+            to_phase,
+            message
+        )),
+        action: format!("PhaseTransitionTo{to_phase}"),
+        secondary: None,
+    }
+}
+
+// ============================================================================
 // Status update helpers
 // ============================================================================
 
-/// Update phase and status condition
+/// Update phase and status condition, recording an immutable Kubernetes Event
+/// for audit trail (SOX §404, NIST AU-2/AU-3).
+///
+/// The `from_phase` parameter captures the previous phase for before/after logging.
+/// Event recording is best-effort — a failure to publish the event is logged as a
+/// warning but does not abort the phase transition.
 pub async fn update_phase(
-    client: &Client,
+    ctx: &Context,
     namespace: &str,
     name: &str,
+    from_phase: Option<&str>,
     phase: &str,
     reason: Option<&str>,
     message: Option<&str>,
 ) -> Result<(), ReconcilerError> {
-    let api: Api<ScheduledMachine> = Api::namespaced(client.clone(), namespace);
+    let resolved_reason = reason.unwrap_or(REASON_RECONCILE_SUCCEEDED);
+    let resolved_message = message.unwrap_or("Phase transition completed");
+
+    info!(
+        resource = %name,
+        namespace = %namespace,
+        from = from_phase.unwrap_or("Unknown"),
+        to = %phase,
+        reason = %resolved_reason,
+        "Phase transition"
+    );
+
+    // Record an immutable Kubernetes Event for the audit trail
+    let object_ref = ObjectReference {
+        api_version: Some(crate::constants::API_VERSION_FULL.to_string()),
+        kind: Some(crate::constants::KIND_SCHEDULED_MACHINE.to_string()),
+        name: Some(name.to_string()),
+        namespace: Some(namespace.to_string()),
+        ..Default::default()
+    };
+    let event = build_phase_transition_event(from_phase, phase, resolved_reason, resolved_message);
+    if let Err(e) = ctx.recorder.publish(&event, &object_ref).await {
+        warn!(
+            resource = %name,
+            namespace = %namespace,
+            error = %e,
+            "Failed to record phase transition event (audit trail incomplete)"
+        );
+    }
+
+    let api: Api<ScheduledMachine> = Api::namespaced(ctx.client.clone(), namespace);
 
     let condition = Condition::new(
         CONDITION_TYPE_READY,
         CONDITION_STATUS_TRUE,
-        reason.unwrap_or(REASON_RECONCILE_SUCCEEDED),
-        message.unwrap_or("Phase transition completed"),
+        resolved_reason,
+        resolved_message,
     );
 
     let status = ScheduledMachineStatus {
         phase: Some(phase.to_string()),
-        message: Some(message.unwrap_or("Phase transition completed").to_string()),
+        message: Some(resolved_message.to_string()),
         conditions: vec![condition],
         ..Default::default()
     };
@@ -427,28 +578,61 @@ pub async fn update_phase(
     Ok(())
 }
 
-/// Update phase with last schedule time
+/// Patch the status with the current time as `lastScheduledTime`, recording
+/// an immutable audit event.
+///
+/// Used when the machine transitions to `Active` after being provisioned on
+/// schedule.  The `lastScheduledTime` field lets operators audit when the
+/// last scheduled window began.
+///
+/// # Errors
+/// Same as [`update_phase`].
 #[allow(dead_code)] // TODO: Use this when machine creation is implemented
 pub async fn update_phase_with_last_schedule(
-    client: &Client,
+    ctx: &Context,
     namespace: &str,
     name: &str,
+    from_phase: Option<&str>,
     phase: &str,
     reason: Option<&str>,
     message: Option<&str>,
 ) -> Result<(), ReconcilerError> {
-    let api: Api<ScheduledMachine> = Api::namespaced(client.clone(), namespace);
+    let resolved_reason = reason.unwrap_or(REASON_RECONCILE_SUCCEEDED);
+    let resolved_message = message.unwrap_or("Phase transition completed");
+
+    info!(
+        resource = %name,
+        namespace = %namespace,
+        from = from_phase.unwrap_or("Unknown"),
+        to = %phase,
+        reason = %resolved_reason,
+        "Phase transition"
+    );
+
+    let object_ref = ObjectReference {
+        api_version: Some(crate::constants::API_VERSION_FULL.to_string()),
+        kind: Some(crate::constants::KIND_SCHEDULED_MACHINE.to_string()),
+        name: Some(name.to_string()),
+        namespace: Some(namespace.to_string()),
+        ..Default::default()
+    };
+    let event = build_phase_transition_event(from_phase, phase, resolved_reason, resolved_message);
+    if let Err(e) = ctx.recorder.publish(&event, &object_ref).await {
+        warn!(resource = %name, error = %e, "Failed to record phase transition event");
+    }
+
+    let api: Api<ScheduledMachine> = Api::namespaced(ctx.client.clone(), namespace);
 
     let condition = Condition::new(
         CONDITION_TYPE_READY,
         CONDITION_STATUS_TRUE,
-        reason.unwrap_or(REASON_RECONCILE_SUCCEEDED),
-        message.unwrap_or("Phase transition completed"),
+        resolved_reason,
+        resolved_message,
     );
 
     let status = ScheduledMachineStatus {
         phase: Some(phase.to_string()),
-        message: Some(message.unwrap_or("Phase transition completed").to_string()),
+        message: Some(resolved_message.to_string()),
         conditions: vec![condition],
         last_scheduled_time: Some(Utc::now().to_rfc3339()),
         ..Default::default()
@@ -464,27 +648,61 @@ pub async fn update_phase_with_last_schedule(
     Ok(())
 }
 
-/// Update phase with grace period start time
+/// Patch the status to `ShuttingDown` and stamp the current time into the
+/// `last_transition_time` of the grace-period condition.
+///
+/// This timestamp is later read by [`check_grace_period_elapsed`] to decide
+/// when the drain window has closed.  Recording it here — rather than
+/// computing elapsed time from an external clock — makes the grace period
+/// robust to controller restarts.
+///
+/// # Errors
+/// Same as [`update_phase`].
 pub async fn update_phase_with_grace_period(
-    client: &Client,
+    ctx: &Context,
     namespace: &str,
     name: &str,
+    from_phase: Option<&str>,
     phase: &str,
     reason: Option<&str>,
     message: Option<&str>,
 ) -> Result<(), ReconcilerError> {
-    let api: Api<ScheduledMachine> = Api::namespaced(client.clone(), namespace);
+    let resolved_reason = reason.unwrap_or(REASON_GRACE_PERIOD);
+    let resolved_message = message.unwrap_or("Grace period started");
+
+    info!(
+        resource = %name,
+        namespace = %namespace,
+        from = from_phase.unwrap_or("Unknown"),
+        to = %phase,
+        reason = %resolved_reason,
+        "Phase transition"
+    );
+
+    let object_ref = ObjectReference {
+        api_version: Some(crate::constants::API_VERSION_FULL.to_string()),
+        kind: Some(crate::constants::KIND_SCHEDULED_MACHINE.to_string()),
+        name: Some(name.to_string()),
+        namespace: Some(namespace.to_string()),
+        ..Default::default()
+    };
+    let event = build_phase_transition_event(from_phase, phase, resolved_reason, resolved_message);
+    if let Err(e) = ctx.recorder.publish(&event, &object_ref).await {
+        warn!(resource = %name, error = %e, "Failed to record phase transition event");
+    }
+
+    let api: Api<ScheduledMachine> = Api::namespaced(ctx.client.clone(), namespace);
 
     let condition = Condition::new(
         CONDITION_TYPE_READY,
         CONDITION_STATUS_TRUE,
-        reason.unwrap_or(REASON_GRACE_PERIOD),
-        message.unwrap_or("Grace period started"),
+        resolved_reason,
+        resolved_message,
     );
 
     let status = ScheduledMachineStatus {
         phase: Some(phase.to_string()),
-        message: Some(message.unwrap_or("Grace period started").to_string()),
+        message: Some(resolved_message.to_string()),
         conditions: vec![condition],
         ..Default::default()
     };
@@ -549,17 +767,28 @@ pub fn validate_api_group(
 // CAPI Resource Creation
 // ============================================================================
 
-/// Generate the name for a created bootstrap resource
+/// Derive the Kubernetes name for the bootstrap config resource.
+///
+/// The name is `<scheduled-machine-name>-bootstrap`, which makes the
+/// child resource easy to identify in `kubectl get` output and ties its
+/// lifecycle to the parent `ScheduledMachine` via name-based correlation
+/// (in addition to `ownerReferences`).
 fn bootstrap_resource_name(scheduled_machine_name: &str) -> String {
     format!("{scheduled_machine_name}-bootstrap")
 }
 
-/// Generate the name for a created infrastructure resource
+/// Derive the Kubernetes name for the infrastructure resource.
+///
+/// The name is `<scheduled-machine-name>-infra`.  See [`bootstrap_resource_name`]
+/// for the naming rationale.
 fn infrastructure_resource_name(scheduled_machine_name: &str) -> String {
     format!("{scheduled_machine_name}-infra")
 }
 
-/// Generate the name for the created CAPI Machine
+/// Derive the Kubernetes name for the CAPI `Machine` resource.
+///
+/// The name is `<scheduled-machine-name>-machine`.  See [`bootstrap_resource_name`]
+/// for the naming rationale.
 fn machine_resource_name(scheduled_machine_name: &str) -> String {
     format!("{scheduled_machine_name}-machine")
 }
@@ -747,7 +976,15 @@ pub async fn add_machine_to_cluster(
     Ok(())
 }
 
-/// Helper to create a dynamic Kubernetes resource
+/// Post a generic Kubernetes resource via the dynamic API client.
+///
+/// Converts `api_version` and `kind` into a [`kube::api::ApiResource`] and
+/// issues a `POST` to the namespaced resource endpoint.  The function is used
+/// to create CAPI bootstrap, infrastructure, and `Machine` objects whose types
+/// are not statically known at compile time.
+///
+/// # Errors
+/// Returns `kube::Error` if the JSON serialisation or the API call fails.
 async fn create_dynamic_resource(
     client: &Client,
     namespace: &str,
@@ -773,7 +1010,14 @@ async fn create_dynamic_resource(
     Ok(())
 }
 
-/// Parse apiVersion into (group, version)
+/// Split a Kubernetes `apiVersion` string into `(group, version)`.
+///
+/// `"bootstrap.cluster.x-k8s.io/v1beta1"` → `("bootstrap.cluster.x-k8s.io", "v1beta1")`
+///
+/// Core API versions that contain no `/` (e.g., `"v1"`) return an empty
+/// group string: `("", "v1")`.  In practice these are always rejected before
+/// this function is called by [`validate_api_group`], so the empty-group
+/// branch exists only for completeness.
 fn parse_api_version(api_version: &str) -> (String, String) {
     if let Some(idx) = api_version.rfind('/') {
         (
@@ -786,7 +1030,15 @@ fn parse_api_version(api_version: &str) -> (String, String) {
     }
 }
 
-/// Remove machine from cluster (delete CAPI Machine resource)
+/// Delete the CAPI `Machine` resource that represents this node in the cluster.
+///
+/// Deletion is initiated by issuing a `DELETE` to the `Machine` resource.
+/// CAPI's own machine controller then handles the provider-specific teardown
+/// (deprovision, drain, etc.) asynchronously.  A 404 response is treated as
+/// success because it means the machine was already removed.
+///
+/// # Errors
+/// - [`ReconcilerError::CapiError`] — API call failed with a non-404 status
 pub async fn remove_machine_from_cluster(
     resource: &ScheduledMachine,
     client: &Client,
@@ -919,7 +1171,13 @@ async fn cordon_node(client: &Client, node_name: &str) -> Result<(), ReconcilerE
     Ok(())
 }
 
-/// Check if a pod should be evicted during node drain
+/// Return `true` if a pod should be evicted as part of a node drain.
+///
+/// Pods are skipped when:
+/// - Their phase is `Succeeded` or `Failed` — they are already done.
+/// - They are owned by a `DaemonSet` — DaemonSet pods are automatically
+///   re-scheduled by the DaemonSet controller and should not be evicted
+///   manually; doing so would cause needless churn.
 pub fn should_evict_pod(pod: &k8s_openapi::api::core::v1::Pod) -> bool {
     // Skip pods that are already terminating or completed
     if let Some(status) = &pod.status {
@@ -938,7 +1196,17 @@ pub fn should_evict_pod(pod: &k8s_openapi::api::core::v1::Pod) -> bool {
     true
 }
 
-/// Evict a single pod with graceful deletion
+/// Delete a single pod with a graceful termination period.
+///
+/// Uses [`POD_EVICTION_GRACE_PERIOD_SECS`] as the `gracePeriodSeconds` so
+/// the pod's `preStop` hooks and SIGTERM handlers have time to run.
+/// PDB-blocked evictions (HTTP 429) are logged but do not return an error —
+/// the drain loop records the failure in metrics and moves on; the
+/// grace period timeout in [`drain_node_with_timeout`] acts as the final
+/// safety net.
+///
+/// # Errors
+/// Returns [`ReconcilerError::CapiError`] for unexpected non-404/non-429 failures.
 async fn evict_pod(
     client: &Client,
     pod_name: &str,
@@ -1038,7 +1306,14 @@ pub async fn drain_node_with_timeout(
 // Error policy for controller
 // ============================================================================
 
-/// Determine requeue action on error
+/// Controller error policy — log the error and requeue after a back-off delay.
+///
+/// Called by the `kube-rs` [`Controller`](kube::runtime::Controller) runtime
+/// whenever [`reconcile_scheduled_machine`](super::scheduled_machine::reconcile_scheduled_machine)
+/// returns an `Err`.  The function logs the error at `ERROR` level and
+/// returns [`Action::requeue`] with [`ERROR_REQUEUE_SECS`] so the resource is
+/// retried after a short back-off rather than immediately (which would cause a
+/// hot-loop) or never (which would leave the cluster in a broken state).
 pub fn error_policy(
     _resource: Arc<ScheduledMachine>,
     error: &ReconcilerError,

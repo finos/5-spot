@@ -1,5 +1,3 @@
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.16s
-     Running `target/debug/crddoc`
 # 5Spot API Reference
 
 ## ScheduledMachine

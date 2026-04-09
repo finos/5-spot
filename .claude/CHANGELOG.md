@@ -9,6 +9,47 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-04-08 12:00] - Complete rustdoc coverage across all Rust source files
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/helpers.rs`: Expanded thin one-liner docs on all remaining functions — `add_finalizer`, `handle_deletion`, `handle_kill_switch`, `check_grace_period_elapsed`, `update_phase_with_last_schedule`, `update_phase_with_grace_period`, `bootstrap_resource_name`, `infrastructure_resource_name`, `machine_resource_name`, `create_dynamic_resource`, `parse_api_version`, `remove_machine_from_cluster`, `should_evict_pod`, `evict_pod`, and `error_policy` — with full `///` docs covering purpose, behaviour details, and `# Errors` sections
+- `src/bin/crdgen.rs`: Replaced `//` comment header with `//!` module doc explaining purpose, usage, and regeneration requirement; added `///` on `main()` with `# Panics` note
+- `src/bin/crddoc.rs`: Added `//!` module doc explaining purpose, usage, and implementation note about static-println generation vs schema-driven approach; added `///` on `main()`
+
+### Why
+All public items and binary entry points now have complete rustdoc coverage to satisfy the project's documentation standard (CLAUDE.md §Code Comments) and to provide clear in-IDE guidance for future contributors.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
+## [2026-04-08 00:03] - Phase 2 (P2-1/P2-2): Kubernetes Event audit trail and before/after phase logging
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/scheduled_machine.rs`: Added `Recorder` field to `Context` struct (created from `Reporter` with controller name and pod name); removed separate `client`/`recorder` args from all `update_phase*` call sites — now pass `&ctx` directly
+- `src/reconcilers/helpers.rs`: Added `build_phase_transition_event()` pure function that constructs a `KubeEvent` from phase transition parameters (`Warning` for `Error`/`Terminated`, `Normal` otherwise); updated `update_phase()`, `update_phase_with_last_schedule()`, and `update_phase_with_grace_period()` to accept `&Context` (replacing separate `&Client` + `&Recorder` params), log `from → to` phase transition at `INFO` level, and publish an immutable Kubernetes Event via the recorder (best-effort — failures emit `WARN` but do not abort the transition)
+- `deploy/deployment/rbac/clusterrole.yaml`: Added `events.k8s.io` / `events` create+patch rule alongside the existing core `""` events rule (kube-rs Recorder uses the `events.k8s.io/v1` API)
+- `src/reconcilers/helpers_tests.rs`: Added 7 unit tests for `build_phase_transition_event()` covering Normal/Warning event types, note format, unknown from-phase fallback, action field, and reason field
+
+### Why
+P2-1 and P2-2 from the SOX/Basel III/NIST compliance roadmap. Every machine phase transition now writes an immutable Kubernetes Event visible via `kubectl describe scheduledmachine <name>`, providing an auditable record of state changes required by SOX §404 (immutable audit trail) and NIST AU-2/AU-3 (event recording and audit record content). Before/after logging closes the gap against AU-3 by making the previous phase explicit in each log line.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
 ## [2026-04-08 00:02] - Phase 1 Compliance Remediation (SOX/Basel III/NIST SP 800-53)
 
 **Author:** Erick Bourgeois

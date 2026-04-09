@@ -1,4 +1,14 @@
-// Library exports for 5Spot Machine Scheduler
+//! # five_spot — library crate
+//!
+//! Public API surface for the 5-Spot ScheduledMachine controller.
+//!
+//! Modules:
+//! - [`constants`] — all named constants (timing, labels, phases, CAPI API strings)
+//! - [`crd`] — `ScheduledMachine` CRD type definitions (source of truth for YAML generation)
+//! - [`health`] — HTTP health and readiness server
+//! - [`labels`] — standard Kubernetes label helpers
+//! - [`metrics`] — Prometheus metric definitions and recording helpers
+//! - [`reconcilers`] — reconciliation logic and controller context
 
 pub mod constants;
 pub mod crd;

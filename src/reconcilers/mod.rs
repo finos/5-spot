@@ -1,4 +1,16 @@
-// Reconcilers module - reconciliation logic for all CRDs
+//! # Reconcilers
+//!
+//! This module contains all reconciliation logic for 5-Spot custom resources.
+//!
+//! ## Sub-modules
+//! - `scheduled_machine` — top-level reconciliation entry point, phase-state
+//!   machine, [`Context`], and [`ReconcilerError`]
+//! - `helpers` — pure helper functions for schedule evaluation, CAPI resource
+//!   creation/deletion, node draining, status patching, and security validation
+//!
+//! ## Re-exports
+//! The most commonly used symbols are re-exported at this level so callers only
+//! need `use crate::reconcilers::{…}`.
 
 mod helpers;
 pub mod scheduled_machine;

@@ -1,4 +1,14 @@
-// Main entry point for 5-Spot Machine Scheduler
+//! # 5-Spot Machine Scheduler — Entry Point
+//!
+//! This binary starts the controller process. It:
+//!
+//! 1. Parses CLI flags and environment variables via [`Cli`]
+//! 2. Initialises structured logging (tracing)
+//! 3. Creates a Kubernetes client with explicit read/write timeouts
+//! 4. Verifies the [`ScheduledMachine`] CRD is installed
+//! 5. Spawns the Prometheus metrics server and the HTTP health/readiness server
+//! 6. Runs the `kube-rs` [`Controller`] loop, distributing reconciliation work
+//!    across all active instances via consistent hashing
 
 use std::sync::Arc;
 
@@ -18,6 +28,10 @@ use kube::{
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+/// Command-line interface for the 5-Spot operator.
+///
+/// All fields can also be set via the corresponding environment variables,
+/// which is the recommended approach for Kubernetes deployments.
 #[derive(Parser, Debug)]
 #[clap(
     name = "5spot",
@@ -46,6 +60,12 @@ struct Cli {
     verbose: bool,
 }
 
+/// Async entry point.
+///
+/// Initialises the controller and blocks until the process receives a shutdown
+/// signal (SIGTERM / SIGINT).  Returns an error if:
+/// - The Kubernetes client cannot be configured
+/// - The `ScheduledMachine` CRD is not present in the cluster
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();

@@ -1,5 +1,19 @@
-// Global constants for repeated strings and values
-// Following the "no magic numbers" rule - all constants must be named
+//! # Global constants
+//!
+//! All named constants used across the controller.  No magic numbers are
+//! permitted in source files — every literal that carries semantic meaning must
+//! be declared here.
+//!
+//! Constants are grouped by concern:
+//! - Kubernetes API strings (`API_GROUP`, `API_VERSION`, CAPI constants)
+//! - Resource names and kinds
+//! - Finalizer names
+//! - Timing values (requeue intervals, timeouts)
+//! - Status condition types, statuses, and reasons
+//! - Machine phase names
+//! - Metrics and health endpoint paths
+//! - Operator instance environment variables
+//! - Security constraints (`MAX_DURATION_SECS`, `RESERVED_LABEL_PREFIXES`, …)
 
 // ============================================================================
 // Kubernetes API Constants

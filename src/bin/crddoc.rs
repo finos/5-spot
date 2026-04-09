@@ -1,10 +1,31 @@
-// CRD documentation generator
-// Run with: cargo run --bin crddoc > docs/reference/api.md
+//! # CRD API documentation generator
+//!
+//! Offline tool that emits a Markdown API reference for the `ScheduledMachine`
+//! custom resource to `stdout`.  The output is committed to
+//! `docs/reference/api.md` so that documentation consumers do not need a
+//! running Rust toolchain.
+//!
+//! ## Usage
+//!
+//! ```bash
+//! cargo run --bin crddoc > docs/reference/api.md
+//! ```
+//!
+//! Re-run this binary whenever the `ScheduledMachine` spec changes (fields
+//! added/removed, descriptions updated) and commit the refreshed Markdown.
+//! The `regen-api-docs` skill in `.claude/SKILL.md` automates this step.
+//!
+//! ## Implementation note
+//! The documentation is generated as static `println!` calls rather than
+//! derived from the JSON Schema.  Full schema-driven generation is deferred
+//! pending the CAPI integration update (see TODO comment at the top of
+//! `main()`).
 
 // TODO: Re-enable when CRD documentation generation is updated for CAPI
 // use five_spot::crd::ScheduledMachine;
 // use kube::CustomResourceExt;
 
+/// Emit the `ScheduledMachine` API reference as Markdown to `stdout`.
 #[allow(clippy::too_many_lines)]
 fn main() {
     println!("# 5Spot API Reference");

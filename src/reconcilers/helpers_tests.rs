@@ -247,4 +247,607 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("not allowed"));
     }
+
+    // ========================================================================
+    // build_phase_transition_event — pure function, no API calls
+    // ========================================================================
+
+    #[test]
+    fn test_phase_event_normal_type_for_active_transition() {
+        use kube::runtime::events::EventType;
+        let event = build_phase_transition_event(
+            Some("Pending"),
+            "Active",
+            "MachineCreated",
+            "CAPI Machine created",
+        );
+        assert_eq!(event.type_, EventType::Normal);
+    }
+
+    #[test]
+    fn test_phase_event_warning_type_for_error_transition() {
+        use kube::runtime::events::EventType;
+        let event = build_phase_transition_event(
+            Some("Pending"),
+            "Error",
+            "MachineCreationFailed",
+            "CAPI API unreachable",
+        );
+        assert_eq!(event.type_, EventType::Warning);
+    }
+
+    #[test]
+    fn test_phase_event_warning_type_for_terminated_transition() {
+        use kube::runtime::events::EventType;
+        let event = build_phase_transition_event(
+            Some("Active"),
+            "Terminated",
+            "KillSwitch",
+            "Kill switch activated",
+        );
+        assert_eq!(event.type_, EventType::Warning);
+    }
+
+    #[test]
+    fn test_phase_event_note_contains_from_and_to_phase() {
+        let event = build_phase_transition_event(
+            Some("Inactive"),
+            "Pending",
+            "ScheduleActive",
+            "Schedule became active",
+        );
+        let note = event.note.expect("note should be set");
+        assert!(note.contains("Inactive"), "note should contain from-phase");
+        assert!(note.contains("Pending"), "note should contain to-phase");
+    }
+
+    #[test]
+    fn test_phase_event_unknown_from_phase_when_none() {
+        let event =
+            build_phase_transition_event(None, "Inactive", "ScheduleInactive", "Outside schedule");
+        let note = event.note.expect("note should be set");
+        assert!(
+            note.contains("Unknown"),
+            "note should show 'Unknown' for missing from-phase"
+        );
+    }
+
+    #[test]
+    fn test_phase_event_action_contains_to_phase() {
+        let event = build_phase_transition_event(
+            Some("Pending"),
+            "Active",
+            "MachineCreated",
+            "Machine ready",
+        );
+        assert!(
+            event.action.contains("Active"),
+            "action should reference the target phase"
+        );
+    }
+
+    #[test]
+    fn test_phase_event_reason_matches_input() {
+        let event = build_phase_transition_event(
+            Some("Active"),
+            "ShuttingDown",
+            "GracePeriod",
+            "Outside schedule window",
+        );
+        assert_eq!(event.reason, "GracePeriod");
+    }
+
+    // Additional coverage: every non-error phase → Normal
+    #[test]
+    fn test_phase_event_normal_for_all_non_error_phases() {
+        use kube::runtime::events::EventType;
+        for phase in &["Pending", "Active", "ShuttingDown", "Inactive", "Disabled"] {
+            let event = build_phase_transition_event(None, phase, "Reason", "msg");
+            assert_eq!(
+                event.type_,
+                EventType::Normal,
+                "phase '{phase}' should produce Normal event"
+            );
+        }
+    }
+
+    #[test]
+    fn test_phase_event_note_contains_message() {
+        let event = build_phase_transition_event(
+            Some("Pending"),
+            "Active",
+            "MachineCreated",
+            "CAPI resources provisioned",
+        );
+        let note = event.note.expect("note should be set");
+        assert!(
+            note.contains("CAPI resources provisioned"),
+            "note should include the message"
+        );
+    }
+
+    #[test]
+    fn test_phase_event_secondary_is_none() {
+        // secondary object reference is not used for phase transitions
+        let event =
+            build_phase_transition_event(Some("Inactive"), "Active", "ScheduleActive", "msg");
+        assert!(event.secondary.is_none());
+    }
+
+    // ========================================================================
+    // update_phase — mock API tests
+    // ========================================================================
+
+    use http::{Request, Response};
+    use kube::client::Body;
+    use std::pin::pin;
+    use tower_test::mock;
+
+    fn mock_client_pair() -> (kube::Client, mock::Handle<Request<Body>, Response<Body>>) {
+        let (svc, handle) = mock::pair::<Request<Body>, Response<Body>>();
+        (kube::Client::new(svc, "default"), handle)
+    }
+
+    fn make_test_context(client: kube::Client) -> crate::reconcilers::Context {
+        crate::reconcilers::Context::new(client, 0, 1)
+    }
+
+    /// Minimal ScheduledMachine JSON for patch_status responses.
+    fn sm_response_body(name: &str, namespace: &str, phase: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "apiVersion": "5spot.io/v1alpha1",
+            "kind": "ScheduledMachine",
+            "metadata": {
+                "name": name,
+                "namespace": namespace,
+                "resourceVersion": "2"
+            },
+            "spec": {
+                "clusterName": "test",
+                "bootstrapSpec": {
+                    "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
+                    "kind": "K0sWorkerConfig",
+                    "spec": {}
+                },
+                "infrastructureSpec": {
+                    "apiVersion": "infrastructure.cluster.x-k8s.io/v1beta1",
+                    "kind": "RemoteMachine",
+                    "spec": {}
+                },
+                "schedule": {
+                    "daysOfWeek": ["mon-fri"],
+                    "hoursOfDay": ["9-17"],
+                    "timezone": "UTC",
+                    "enabled": true
+                },
+                "gracefulShutdownTimeout": "5m",
+                "nodeDrainTimeout": "5m"
+            },
+            "status": { "phase": phase }
+        }))
+        .unwrap()
+    }
+
+    /// Minimal events.k8s.io/v1 Event JSON for recorder responses.
+    fn k8s_event_response_body() -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "apiVersion": "events.k8s.io/v1",
+            "kind": "Event",
+            "metadata": {
+                "name": "5spot-test.17a0b1c",
+                "namespace": "default",
+                "resourceVersion": "1"
+            },
+            "eventTime": "2026-04-08T00:00:00.000000Z",
+            "reportingController": "5spot-controller",
+            "reportingInstance": "5spot-0",
+            "action": "PhaseTransitionToActive",
+            "reason": "MachineCreated",
+            "type": "Normal",
+            "regarding": {
+                "apiVersion": "5spot.io/v1alpha1",
+                "kind": "ScheduledMachine",
+                "name": "test-sm",
+                "namespace": "default"
+            }
+        }))
+        .unwrap()
+    }
+
+    fn k8s_error_body(code: u16, msg: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "kind": "Status",
+            "apiVersion": "v1",
+            "status": "Failure",
+            "message": msg,
+            "code": code
+        }))
+        .unwrap()
+    }
+
+    // ---- Positive: successful full path ----
+
+    #[tokio::test]
+    async fn test_update_phase_success_patches_status() {
+        let (client, handle) = mock_client_pair();
+        let ctx = make_test_context(client);
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            // 1. Event publication (events.k8s.io)
+            let (_req, send) = h.next_request().await.expect("expected events call");
+            send.send_response(
+                Response::builder()
+                    .status(201)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_event_response_body()))
+                    .unwrap(),
+            );
+            // 2. Status patch
+            let (req, send) = h.next_request().await.expect("expected patch_status call");
+            assert_eq!(req.method(), http::Method::PATCH);
+            assert!(
+                req.uri().path().ends_with("/status"),
+                "should target /status subresource, got: {}",
+                req.uri().path()
+            );
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(sm_response_body("test-sm", "default", "Active")))
+                    .unwrap(),
+            );
+        });
+
+        update_phase(
+            &ctx,
+            "default",
+            "test-sm",
+            Some("Pending"),
+            "Active",
+            Some("MachineCreated"),
+            Some("CAPI Machine created"),
+        )
+        .await
+        .expect("update_phase should return Ok on success");
+
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_update_phase_uses_default_reason_when_none() {
+        let (client, handle) = mock_client_pair();
+        let ctx = make_test_context(client);
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("events call");
+            send.send_response(
+                Response::builder()
+                    .status(201)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_event_response_body()))
+                    .unwrap(),
+            );
+            let (_req, send) = h.next_request().await.expect("patch_status call");
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(sm_response_body(
+                        "test-sm", "default", "Inactive",
+                    )))
+                    .unwrap(),
+            );
+        });
+
+        // Passing None for reason and message — should use defaults without panicking
+        update_phase(&ctx, "default", "test-sm", None, "Inactive", None, None)
+            .await
+            .expect("should succeed with default reason/message");
+
+        srv.await.unwrap();
+    }
+
+    // ---- Negative: Kubernetes API returns an error on patch_status ----
+
+    #[tokio::test]
+    async fn test_update_phase_returns_kube_error_when_patch_fails() {
+        let (client, handle) = mock_client_pair();
+        let ctx = make_test_context(client);
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            // Event call succeeds
+            let (_req, send) = h.next_request().await.expect("events call");
+            send.send_response(
+                Response::builder()
+                    .status(201)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_event_response_body()))
+                    .unwrap(),
+            );
+            // Status patch returns 500
+            let (_req, send) = h.next_request().await.expect("patch_status call");
+            send.send_response(
+                Response::builder()
+                    .status(500)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_error_body(500, "internal server error")))
+                    .unwrap(),
+            );
+        });
+
+        let result = update_phase(
+            &ctx,
+            "default",
+            "test-sm",
+            Some("Active"),
+            "Error",
+            None,
+            None,
+        )
+        .await;
+        assert!(result.is_err(), "should return Err when patch_status fails");
+        assert!(
+            matches!(result.unwrap_err(), ReconcilerError::KubeError(_)),
+            "error variant should be KubeError"
+        );
+
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_update_phase_returns_kube_error_on_404_not_found() {
+        let (client, handle) = mock_client_pair();
+        let ctx = make_test_context(client);
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("events call");
+            send.send_response(
+                Response::builder()
+                    .status(201)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_event_response_body()))
+                    .unwrap(),
+            );
+            let (_req, send) = h.next_request().await.expect("patch_status call");
+            send.send_response(
+                Response::builder()
+                    .status(404)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_error_body(
+                        404,
+                        "scheduledmachines \"test-sm\" not found",
+                    )))
+                    .unwrap(),
+            );
+        });
+
+        let result = update_phase(
+            &ctx,
+            "default",
+            "test-sm",
+            Some("Pending"),
+            "Active",
+            None,
+            None,
+        )
+        .await;
+        assert!(result.is_err(), "should return Err on 404");
+        assert!(matches!(result.unwrap_err(), ReconcilerError::KubeError(_)));
+
+        srv.await.unwrap();
+    }
+
+    // ---- Exception: event recording fails — best-effort, must not block status patch ----
+
+    #[tokio::test]
+    async fn test_update_phase_event_failure_is_best_effort_patch_still_succeeds() {
+        let (client, handle) = mock_client_pair();
+        let ctx = make_test_context(client);
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            // Event call fails with 500
+            let (_req, send) = h.next_request().await.expect("events call");
+            send.send_response(
+                Response::builder()
+                    .status(500)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_error_body(500, "events API unavailable")))
+                    .unwrap(),
+            );
+            // Status patch MUST still be called and returns success
+            let (req, send) = h
+                .next_request()
+                .await
+                .expect("patch_status must be called even after event failure");
+            assert_eq!(req.method(), http::Method::PATCH);
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(sm_response_body("test-sm", "default", "Active")))
+                    .unwrap(),
+            );
+        });
+
+        let result = update_phase(
+            &ctx,
+            "default",
+            "test-sm",
+            Some("Pending"),
+            "Active",
+            None,
+            None,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "event failure must not abort phase transition, got: {:?}",
+            result
+        );
+
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_update_phase_event_failure_plus_patch_failure_returns_kube_error() {
+        // Both event AND patch fail — should still return the patch error, not the event error
+        let (client, handle) = mock_client_pair();
+        let ctx = make_test_context(client);
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            // Event fails
+            let (_req, send) = h.next_request().await.expect("events call");
+            send.send_response(
+                Response::builder()
+                    .status(503)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_error_body(503, "service unavailable")))
+                    .unwrap(),
+            );
+            // Patch also fails
+            let (_req, send) = h.next_request().await.expect("patch_status call");
+            send.send_response(
+                Response::builder()
+                    .status(500)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_error_body(500, "internal error")))
+                    .unwrap(),
+            );
+        });
+
+        let result = update_phase(
+            &ctx,
+            "default",
+            "test-sm",
+            Some("Active"),
+            "Error",
+            None,
+            None,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "should propagate patch error when both calls fail"
+        );
+        assert!(matches!(result.unwrap_err(), ReconcilerError::KubeError(_)));
+
+        srv.await.unwrap();
+    }
+
+    // ---- update_phase_with_grace_period ----
+
+    #[tokio::test]
+    async fn test_update_phase_with_grace_period_success() {
+        let (client, handle) = mock_client_pair();
+        let ctx = make_test_context(client);
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("events call");
+            send.send_response(
+                Response::builder()
+                    .status(201)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_event_response_body()))
+                    .unwrap(),
+            );
+            let (req, send) = h.next_request().await.expect("patch_status call");
+            assert!(req.uri().path().ends_with("/status"));
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(sm_response_body(
+                        "test-sm",
+                        "default",
+                        "ShuttingDown",
+                    )))
+                    .unwrap(),
+            );
+        });
+
+        update_phase_with_grace_period(
+            &ctx,
+            "default",
+            "test-sm",
+            Some("Active"),
+            "ShuttingDown",
+            None,
+            None,
+        )
+        .await
+        .expect("grace period update should succeed");
+
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_update_phase_with_grace_period_patch_failure() {
+        let (client, handle) = mock_client_pair();
+        let ctx = make_test_context(client);
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("events call");
+            send.send_response(
+                Response::builder()
+                    .status(201)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_event_response_body()))
+                    .unwrap(),
+            );
+            let (_req, send) = h.next_request().await.expect("patch_status call");
+            send.send_response(
+                Response::builder()
+                    .status(409)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_error_body(
+                        409,
+                        "conflict: resource version mismatch",
+                    )))
+                    .unwrap(),
+            );
+        });
+
+        let result = update_phase_with_grace_period(
+            &ctx,
+            "default",
+            "test-sm",
+            Some("Active"),
+            "ShuttingDown",
+            None,
+            None,
+        )
+        .await;
+        assert!(result.is_err(), "409 conflict should return error");
+        assert!(matches!(result.unwrap_err(), ReconcilerError::KubeError(_)));
+
+        srv.await.unwrap();
+    }
+
+    // ---- Context::new — unit tests ----
+
+    #[tokio::test]
+    async fn test_context_stores_instance_fields() {
+        // Can't fully inspect Recorder internals, but verify Context fields are set correctly.
+        // Requires async context because tower's buffer needs a Tokio runtime.
+        let (svc, _handle) = mock::pair::<Request<Body>, Response<Body>>();
+        let client = kube::Client::new(svc, "default");
+        let ctx = crate::reconcilers::Context::new(client, 2, 5);
+        assert_eq!(ctx.instance_id, 2);
+        assert_eq!(ctx.instance_count, 5);
+    }
+
+    #[test]
+    fn test_controller_name_constant_is_correct() {
+        use crate::reconcilers::scheduled_machine::CONTROLLER_NAME;
+        assert_eq!(CONTROLLER_NAME, "5spot-controller");
+    }
 }
