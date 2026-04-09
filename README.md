@@ -1,3 +1,5 @@
+[![FINOS - Incubating](https://cdn.jsdelivr.net/gh/finos/contrib-toolbox@master/images/badge-incubating.svg)](https://community.finos.org/docs/governance/Software-Projects/stages/incubating)
+
 # 5-Spot Machine Scheduler
 
 A cloud-native Kubernetes controller for managing time-based machine scheduling on physical nodes using Cluster API (CAPI).
@@ -19,7 +21,6 @@ A cloud-native Kubernetes controller for managing time-based machine scheduling 
 
 ## License
 
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 ---
@@ -468,12 +469,7 @@ Report security issues to the maintainers.
 
 ## License
 
-Licensed under either of:
-
 - Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT License ([LICENSE-MIT](LICENSE-MIT))
-
-at your option.
 
 ## Acknowledgments
 
