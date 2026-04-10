@@ -1,8 +1,10 @@
 # Introduction
 
-[![Build (PR)](https://github.com/finos/5-spot/actions/workflows/build.yaml/badge.svg?event=pull_request)](https://github.com/finos/5-spot/actions/workflows/build.yaml)
-[![Build (push)](https://github.com/finos/5-spot/actions/workflows/build.yaml/badge.svg?event=push)](https://github.com/finos/5-spot/actions/workflows/build.yaml)
-[![Build (release)](https://github.com/finos/5-spot/actions/workflows/build.yaml/badge.svg?event=release)](https://github.com/finos/5-spot/actions/workflows/build.yaml)
+## CI/CD
+
+[![Build (PR)](https://img.shields.io/github/actions/workflow/status/finos/5-spot/build.yaml?event=pull_request&label=Build%20(PR))](https://github.com/finos/5-spot/actions/workflows/build.yaml)
+[![Build (push)](https://img.shields.io/github/actions/workflow/status/finos/5-spot/build.yaml?event=push&label=Build%20(push))](https://github.com/finos/5-spot/actions/workflows/build.yaml)
+[![Build (release)](https://img.shields.io/github/actions/workflow/status/finos/5-spot/build.yaml?event=release&label=Build%20(release))](https://github.com/finos/5-spot/actions/workflows/build.yaml)
 
 **5-Spot** is a cloud-native Kubernetes controller for managing time-based machine scheduling on physical nodes using Cluster API (CAPI). It enables you to automatically add and remove machines from your CAPI clusters based on time schedules, bringing cost optimization and resource efficiency to your infrastructure.
 

@@ -6,9 +6,9 @@ A cloud-native Kubernetes controller for managing time-based machine scheduling 
 
 ## CI/CD
 
-[![Build (PR)](https://github.com/finos/5-spot/actions/workflows/build.yaml/badge.svg?event=pull_request)](https://github.com/finos/5-spot/actions/workflows/build.yaml)
-[![Build (push)](https://github.com/finos/5-spot/actions/workflows/build.yaml/badge.svg?event=push)](https://github.com/finos/5-spot/actions/workflows/build.yaml)
-[![Build (release)](https://github.com/finos/5-spot/actions/workflows/build.yaml/badge.svg?event=release)](https://github.com/finos/5-spot/actions/workflows/build.yaml)
+[![Build (PR)](https://img.shields.io/github/actions/workflow/status/finos/5-spot/build.yaml?event=pull_request&label=Build%20(PR))](https://github.com/finos/5-spot/actions/workflows/build.yaml)
+[![Build (push)](https://img.shields.io/github/actions/workflow/status/finos/5-spot/build.yaml?event=push&label=Build%20(push))](https://github.com/finos/5-spot/actions/workflows/build.yaml)
+[![Build (release)](https://img.shields.io/github/actions/workflow/status/finos/5-spot/build.yaml?event=release&label=Build%20(release))](https://github.com/finos/5-spot/actions/workflows/build.yaml)
 
 ## Technology & Compatibility
 

@@ -1,8 +1,8 @@
 # 5-Spot Machine Scheduler - Project Roadmap
 
 **Date:** 2026-03-21  
-**Last Updated:** 2026-04-09  
-**Status:** Active — Phase 1 complete, Phase 2 hardening in progress  
+**Last Updated:** 2026-04-10  
+**Status:** Active — Phase 1 & 2 complete, Phase 3 hardening next  
 **Author:** Erick Bourgeois
 
 ---
@@ -38,9 +38,10 @@
 | Admission validation | ✅ Complete | `ValidatingAdmissionPolicy` — `deploy/admission/` |
 | NetworkPolicy | ✅ Complete | Egress: DNS + k8s API; ingress: monitoring namespace only |
 | Deployment manifests | ✅ Complete | `deploy/deployment/` — RBAC, ServiceAccount, NetworkPolicy |
-| CI/CD pipeline | ✅ Complete | GitHub Actions — native cargo builds, amd64 + arm64 |
-| SBOM generation in CI | ✅ Complete | `cargo-cyclonedx` in PR, main, and release workflows |
-| Container image signing | ✅ Complete | Cosign keyless + SLSA L3 provenance on release |
+| CI/CD pipeline | ✅ Complete | Single `build.yaml` — native cargo, amd64 + arm64, all triggers (PR/main/release) — consolidated 2026-04-10 |
+| SBOM generation in CI | ✅ Complete | `cargo-cyclonedx` in every build job |
+| Container image signing | ✅ Complete | Cosign keyless on main + release; GitHub artifact attestation (`gh attestation verify`) on every build — 2026-04-10 |
+| Documentation site | ✅ Complete | MkDocs + GitHub Pages, auto-deployed on every main push (`docs.yaml`) — added 2026-04-10 |
 | SPDX license headers | ✅ Complete | Apache-2.0 on all `src/**/*.rs` files |
 | Unit tests | ✅ Complete | 161 tests across 6 test files |
 
@@ -114,14 +115,16 @@
 
 ### 1.5 CI/CD Pipeline ✅
 
-- [x] GitHub Actions (pr.yaml, main.yaml, release.yaml):
+- [x] GitHub Actions — consolidated into single `build.yaml` (2026-04-10; replaces pr.yaml + main.yaml + release.yaml):
   - fmt + clippy + test on every PR
-  - Native `cargo build --release` — amd64 on `ubuntu-latest`, arm64 on `ubuntu-24.04-arm` (fixed 2026-04-09)
+  - Native `cargo build --release` — amd64 on `ubuntu-latest`, arm64 on `ubuntu-24.04-arm`; `CARGO_TARGET_*_LINKER=cc` prevents `.cargo/config.toml` cross-compiler override on Linux CI
   - Docker multi-arch build (amd64/arm64)
   - Security scanning (`cargo audit` + Trivy)
-  - SBOM generation (`cargo-cyclonedx` — fixed 2026-04-09)
-  - Apache-2.0 license header check (fixed 2026-04-09)
-- [x] Release automation: Cosign signing + SLSA L3 provenance + release asset upload
+  - SBOM generation (`cargo-cyclonedx` in every build job)
+  - Apache-2.0 license header check
+  - GitHub artifact attestation (`actions/attest-build-provenance@v2`) on every docker build — `gh attestation verify` queryable (2026-04-10)
+- [x] Release automation: Cosign signing extended to main branch (staging images now signed); SLSA L3 provenance; release asset upload (2026-04-10)
+- [x] Documentation site: MkDocs built and published to GitHub Pages on every main push via `docs.yaml` (2026-04-10)
 
 ---
 
