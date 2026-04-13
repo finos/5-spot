@@ -107,7 +107,7 @@ Having `version` in MachineSpec created a conceptual mismatch with CAPI architec
   - `CAPI_MACHINE_API_VERSION_FULL`: "cluster.x-k8s.io/v1beta1"
   - `CAPI_CLUSTER_NAME_LABEL`: "cluster.x-k8s.io/cluster-name"
   - `CAPI_RESOURCE_MACHINES`: "machines"
-  - `API_VERSION_FULL`: "capi.5spot.io/v1alpha1"
+  - `API_VERSION_FULL`: "5spot.finos.org/v1alpha1"
 
 - `src/main.rs`: Implemented actual Prometheus metrics
   - **Replaced** stub metrics endpoint with proper `prometheus::gather()` integration
@@ -204,7 +204,7 @@ where the cluster name is used by bootstrap and infrastructure providers.
 
 ### Changed
 - `src/crd.rs`: **BREAKING** - Converted from k0smotron to CAPI (Cluster API) based architecture
-  - Changed API group from `5spot.eribourg.dev` to `capi.5spot.io`
+  - Changed API group from `5spot.eribourg.dev` to `5spot.finos.org`
   - Added `bootstrap_ref` and `infrastructure_ref` for CAPI Machine creation
   - Made `files` field non-optional in `MachineSpec`
   - Renamed `FileContentFrom` types to `ContentSource` and `KeySelector` for consistency
@@ -214,7 +214,7 @@ where the cluster name is used by bootstrap and infrastructure providers.
   - Changed `machine_ref` to use `ObjectReference` instead of custom `MachineRef` type
 
 - `src/constants.rs`: Updated all constants for CAPI architecture
-  - Changed API group constants to `capi.5spot.io`
+  - Changed API group constants to `5spot.finos.org`
   - Updated finalizer name to use new API group
   - Added CAPI Machine phase constants (Pending, Active, ShuttingDown, Inactive, Disabled, Terminated, Error)
   - Added CAPI API version constants (`cluster.x-k8s.io/v1beta1`)
@@ -256,7 +256,7 @@ Complete architectural shift from k0smotron-specific machine management to stand
 2. **Delete old CRD**: `kubectl delete crd scheduledmachines.5spot.eribourg.dev`
 3. **Deploy new CRD**: `kubectl apply -f deploy/crds/scheduledmachine.yaml`
 4. **Update all ScheduledMachine manifests** to new schema:
-   - Change `apiVersion` from `5spot.eribourg.dev/v1alpha1` to `capi.5spot.io/v1alpha1`
+   - Change `apiVersion` from `5spot.eribourg.dev/v1alpha1` to `5spot.finos.org/v1alpha1`
    - Add `bootstrapRef` and `infrastructureRef` fields
    - Update `files` structure (now required, not optional)
    - Ensure all file paths are absolute and start with `/`

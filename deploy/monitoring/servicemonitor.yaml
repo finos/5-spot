@@ -1,4 +1,3 @@
----
 # 5-Spot Controller ServiceMonitor
 # For Prometheus Operator to automatically discover and scrape metrics
 apiVersion: monitoring.coreos.com/v1

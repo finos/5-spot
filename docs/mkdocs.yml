@@ -87,8 +87,8 @@ theme:
     - content.tooltips         # Improved tooltips
 
   # Logo and favicon
-  logo: images/favicons/favicon.png
-  favicon: images/favicons/favicon.png
+  logo: images/5-spot-icon.svg
+  favicon: images/favicon.ico
   icon:
     repo: fontawesome/brands/github
     edit: material/pencil

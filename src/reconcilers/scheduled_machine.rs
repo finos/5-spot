@@ -40,7 +40,7 @@ use kube::{
     },
     Client, Resource, ResourceExt,
 };
-use tracing::{debug, error, info, Instrument};
+use tracing::{debug, error, info, warn, Instrument};
 
 use crate::constants::{
     ERROR_REQUEUE_SECS, PHASE_ACTIVE, PHASE_DISABLED, PHASE_ERROR, PHASE_INACTIVE, PHASE_PENDING,
@@ -422,7 +422,7 @@ async fn reconcile_inner(
         PHASE_INACTIVE => handle_inactive_phase(resource, ctx, should_be_active).await,
         PHASE_DISABLED => handle_disabled_phase(resource, ctx, should_be_active).await,
         PHASE_TERMINATED => handle_terminated_phase(resource, ctx).await,
-        PHASE_ERROR => handle_error_phase(resource, ctx).await,
+        PHASE_ERROR => handle_error_phase(resource, ctx),
         // PHASE_PENDING and unknown phases handled by default
         _ => handle_pending_phase(resource, ctx, should_be_active).await,
     }
@@ -460,6 +460,7 @@ async fn handle_pending_phase(
             PHASE_DISABLED,
             Some(REASON_SCHEDULE_DISABLED),
             Some("Schedule is disabled"),
+            false, // in_schedule: disabled means not in schedule
         )
         .await?;
         return Ok(Action::requeue(Duration::from_secs(TIMER_REQUEUE_SECS)));
@@ -476,6 +477,7 @@ async fn handle_pending_phase(
             PHASE_INACTIVE,
             Some(REASON_SCHEDULE_INACTIVE),
             Some("Outside scheduled time window"),
+            false, // in_schedule: outside window
         )
         .await?;
         return Ok(Action::requeue(Duration::from_secs(TIMER_REQUEUE_SECS)));
@@ -495,6 +497,7 @@ async fn handle_pending_phase(
             PHASE_ERROR,
             Some("MachineCreationFailed"),
             Some(&format!("Failed to create CAPI Machine: {e}")),
+            true, // in_schedule: error occurred while in schedule
         )
         .await?;
         return Ok(Action::requeue(Duration::from_secs(ERROR_REQUEUE_SECS)));
@@ -509,6 +512,7 @@ async fn handle_pending_phase(
         PHASE_ACTIVE,
         Some(REASON_MACHINE_CREATED),
         Some("CAPI Machine created successfully"),
+        true, // in_schedule: machine created because we're in schedule
     )
     .await?;
 
@@ -542,6 +546,7 @@ async fn handle_active_phase(
             PHASE_SHUTTING_DOWN,
             Some(REASON_SCHEDULE_DISABLED),
             Some("Schedule disabled - starting graceful shutdown"),
+            false, // in_schedule: disabled means not in schedule
         )
         .await?;
         return Ok(Action::requeue(Duration::from_secs(TIMER_REQUEUE_SECS)));
@@ -558,6 +563,7 @@ async fn handle_active_phase(
             PHASE_SHUTTING_DOWN,
             Some(REASON_GRACE_PERIOD),
             Some("Outside schedule - starting graceful shutdown"),
+            false, // in_schedule: outside schedule window
         )
         .await?;
         return Ok(Action::requeue(Duration::from_secs(TIMER_REQUEUE_SECS)));
@@ -652,6 +658,7 @@ async fn handle_shutting_down_phase(
                 PHASE_ERROR,
                 Some("MachineDeletionFailed"),
                 Some(&format!("Failed to delete CAPI Machine: {e}")),
+                false, // in_schedule: shutting down means outside schedule
             )
             .await?;
             return Ok(Action::requeue(Duration::from_secs(ERROR_REQUEUE_SECS)));
@@ -666,6 +673,7 @@ async fn handle_shutting_down_phase(
             PHASE_INACTIVE,
             Some(REASON_MACHINE_DELETED),
             Some("Machine removed from cluster"),
+            false, // in_schedule: inactive means outside schedule
         )
         .await?;
 
@@ -713,6 +721,7 @@ async fn handle_inactive_phase(
         PHASE_PENDING,
         Some(REASON_SCHEDULE_ACTIVE),
         Some("Schedule became active - initiating machine creation"),
+        true, // in_schedule: transitioning because schedule is now active
     )
     .await?;
 
@@ -749,6 +758,7 @@ async fn handle_disabled_phase(
             PHASE_PENDING,
             Some(REASON_SCHEDULE_ACTIVE),
             Some("Schedule re-enabled"),
+            false, // in_schedule: will be evaluated in pending phase
         )
         .await?;
         return Ok(Action::requeue(Duration::from_secs(TIMER_REQUEUE_SECS)));
@@ -775,32 +785,30 @@ async fn handle_terminated_phase(
 
 /// Handle the `Error` phase — attempt automatic recovery.
 ///
-/// Resets the phase to `Pending`, which causes the controller to re-evaluate
-/// the schedule and attempt to reconcile from a clean state.  Uses
-/// [`ERROR_REQUEUE_SECS`] for the requeue interval to avoid tight retry loops.
-async fn handle_error_phase(
+/// Simply requeues with the error backoff delay WITHOUT updating status.
+/// This avoids the tight retry loop caused by status updates triggering
+/// watch events. The resource stays in Error phase until the user fixes
+/// the underlying issue (e.g., invalid annotation), at which point the
+/// spec change triggers a new reconciliation that succeeds.
+#[allow(clippy::needless_pass_by_value)] // Consistent with other phase handlers
+fn handle_error_phase(
     resource: Arc<ScheduledMachine>,
-    ctx: Arc<Context>,
+    _ctx: Arc<Context>,
 ) -> Result<Action, ReconcilerError> {
     let namespace = resource.namespace().ok_or_else(|| {
         ReconcilerError::InvalidConfig("ScheduledMachine must be namespaced".to_string())
     })?;
     let name = resource.name_any();
 
-    // Log error and retry from Pending
-    error!(resource = %name, namespace = %namespace, "In Error phase - attempting recovery");
+    // Log at warn level (not error) since this is expected during backoff
+    warn!(
+        resource = %name,
+        namespace = %namespace,
+        "Resource in Error phase - waiting for spec change or manual intervention"
+    );
 
-    update_phase(
-        &ctx,
-        &namespace,
-        &name,
-        Some(PHASE_ERROR),
-        PHASE_PENDING,
-        Some("RetryingReconciliation"),
-        Some("Attempting recovery from error"),
-    )
-    .await?;
-
+    // Requeue with backoff delay but do NOT update status.
+    // This prevents the watch event that causes tight loops.
     Ok(Action::requeue(Duration::from_secs(ERROR_REQUEUE_SECS)))
 }
 

@@ -366,6 +366,7 @@ pub async fn handle_kill_switch(
         PHASE_TERMINATED,
         Some(REASON_KILL_SWITCH),
         Some("Machine terminated due to kill switch"),
+        false, // in_schedule: kill switch overrides schedule
     )
     .await?;
 
@@ -516,6 +517,7 @@ pub fn build_phase_transition_event(
 /// The `from_phase` parameter captures the previous phase for before/after logging.
 /// Event recording is best-effort — a failure to publish the event is logged as a
 /// warning but does not abort the phase transition.
+#[allow(clippy::too_many_arguments)]
 pub async fn update_phase(
     ctx: &Context,
     namespace: &str,
@@ -524,6 +526,7 @@ pub async fn update_phase(
     phase: &str,
     reason: Option<&str>,
     message: Option<&str>,
+    in_schedule: bool,
 ) -> Result<(), ReconcilerError> {
     let resolved_reason = reason.unwrap_or(REASON_RECONCILE_SUCCEEDED);
     let resolved_message = message.unwrap_or("Phase transition completed");
@@ -568,6 +571,7 @@ pub async fn update_phase(
         phase: Some(phase.to_string()),
         message: Some(resolved_message.to_string()),
         conditions: vec![condition],
+        in_schedule,
         ..Default::default()
     };
 
@@ -591,6 +595,7 @@ pub async fn update_phase(
 /// # Errors
 /// Same as [`update_phase`].
 #[allow(dead_code)] // TODO: Use this when machine creation is implemented
+#[allow(clippy::too_many_arguments)]
 pub async fn update_phase_with_last_schedule(
     ctx: &Context,
     namespace: &str,
@@ -599,6 +604,7 @@ pub async fn update_phase_with_last_schedule(
     phase: &str,
     reason: Option<&str>,
     message: Option<&str>,
+    in_schedule: bool,
 ) -> Result<(), ReconcilerError> {
     let resolved_reason = reason.unwrap_or(REASON_RECONCILE_SUCCEEDED);
     let resolved_message = message.unwrap_or("Phase transition completed");
@@ -638,6 +644,7 @@ pub async fn update_phase_with_last_schedule(
         message: Some(resolved_message.to_string()),
         conditions: vec![condition],
         last_scheduled_time: Some(Utc::now().to_rfc3339()),
+        in_schedule,
         ..Default::default()
     };
 
@@ -661,6 +668,7 @@ pub async fn update_phase_with_last_schedule(
 ///
 /// # Errors
 /// Same as [`update_phase`].
+#[allow(clippy::too_many_arguments)]
 pub async fn update_phase_with_grace_period(
     ctx: &Context,
     namespace: &str,
@@ -669,6 +677,7 @@ pub async fn update_phase_with_grace_period(
     phase: &str,
     reason: Option<&str>,
     message: Option<&str>,
+    in_schedule: bool,
 ) -> Result<(), ReconcilerError> {
     let resolved_reason = reason.unwrap_or(REASON_GRACE_PERIOD);
     let resolved_message = message.unwrap_or("Grace period started");
@@ -707,6 +716,7 @@ pub async fn update_phase_with_grace_period(
         phase: Some(phase.to_string()),
         message: Some(resolved_message.to_string()),
         conditions: vec![condition],
+        in_schedule,
         ..Default::default()
     };
 
@@ -770,32 +780,6 @@ pub fn validate_api_group(
 // CAPI Resource Creation
 // ============================================================================
 
-/// Derive the Kubernetes name for the bootstrap config resource.
-///
-/// The name is `<scheduled-machine-name>-bootstrap`, which makes the
-/// child resource easy to identify in `kubectl get` output and ties its
-/// lifecycle to the parent `ScheduledMachine` via name-based correlation
-/// (in addition to `ownerReferences`).
-fn bootstrap_resource_name(scheduled_machine_name: &str) -> String {
-    format!("{scheduled_machine_name}-bootstrap")
-}
-
-/// Derive the Kubernetes name for the infrastructure resource.
-///
-/// The name is `<scheduled-machine-name>-infra`.  See [`bootstrap_resource_name`]
-/// for the naming rationale.
-fn infrastructure_resource_name(scheduled_machine_name: &str) -> String {
-    format!("{scheduled_machine_name}-infra")
-}
-
-/// Derive the Kubernetes name for the CAPI `Machine` resource.
-///
-/// The name is `<scheduled-machine-name>-machine`.  See [`bootstrap_resource_name`]
-/// for the naming rationale.
-fn machine_resource_name(scheduled_machine_name: &str) -> String {
-    format!("{scheduled_machine_name}-machine")
-}
-
 /// Add machine to cluster by creating bootstrap, infrastructure, and Machine resources
 ///
 /// This function:
@@ -811,28 +795,58 @@ pub async fn add_machine_to_cluster(
     let name = resource.name_any();
     let cluster_name = &resource.spec.cluster_name;
 
-    let bootstrap_name = bootstrap_resource_name(&name);
-    let infra_name = infrastructure_resource_name(&name);
-    let machine_name = machine_resource_name(&name);
-
     info!(
         resource = %name,
         namespace = %namespace,
         cluster = %cluster_name,
-        bootstrap = %bootstrap_name,
-        infrastructure = %infra_name,
-        machine = %machine_name,
         "Creating CAPI resources from inline specs"
     );
 
+    // Extract required fields from embedded resources
+    let bootstrap_api_version = resource.spec.bootstrap_spec.api_version().ok_or_else(|| {
+        ReconcilerError::InvalidConfig(
+            "bootstrapSpec missing required field 'apiVersion'".to_string(),
+        )
+    })?;
+    let bootstrap_kind = resource.spec.bootstrap_spec.kind().ok_or_else(|| {
+        ReconcilerError::InvalidConfig("bootstrapSpec missing required field 'kind'".to_string())
+    })?;
+    let bootstrap_spec_inner = resource
+        .spec
+        .bootstrap_spec
+        .spec()
+        .cloned()
+        .unwrap_or_default();
+
+    let infra_api_version = resource
+        .spec
+        .infrastructure_spec
+        .api_version()
+        .ok_or_else(|| {
+            ReconcilerError::InvalidConfig(
+                "infrastructureSpec missing required field 'apiVersion'".to_string(),
+            )
+        })?;
+    let infra_kind = resource.spec.infrastructure_spec.kind().ok_or_else(|| {
+        ReconcilerError::InvalidConfig(
+            "infrastructureSpec missing required field 'kind'".to_string(),
+        )
+    })?;
+    let infra_spec_inner = resource
+        .spec
+        .infrastructure_spec
+        .spec()
+        .cloned()
+        .unwrap_or_default();
+
     // Validate API groups before creating any resources
     validate_api_group(
-        &resource.spec.bootstrap_spec.api_version,
+        bootstrap_api_version,
         ALLOWED_BOOTSTRAP_API_GROUPS,
         "bootstrap",
     )?;
     validate_api_group(
-        &resource.spec.infrastructure_spec.api_version,
+        infra_api_version,
         ALLOWED_INFRASTRUCTURE_API_GROUPS,
         "infrastructure",
     )?;
@@ -860,61 +874,68 @@ pub async fn add_machine_to_cluster(
     let infra_ns = namespace;
 
     // 1. Create bootstrap resource
-    let bootstrap_spec = &resource.spec.bootstrap_spec;
+    // NOTE: No ownerReferences here - the bootstrap controller (e.g., k0smotron) needs to
+    // process this resource. We use labels for tracking instead, and the CAPI Machine's
+    // bootstrap.configRef provides the logical relationship.
     let bootstrap_obj = json!({
-        "apiVersion": bootstrap_spec.api_version,
-        "kind": bootstrap_spec.kind,
+        "apiVersion": bootstrap_api_version,
+        "kind": bootstrap_kind,
         "metadata": {
-            "name": bootstrap_name,
+            "name": name,
             "namespace": bootstrap_ns,
-            "ownerReferences": [owner_ref],
+            "labels": {
+                "5spot.finos.org/scheduled-machine": name,
+                CAPI_CLUSTER_NAME_LABEL: cluster_name,
+            },
         },
-        "spec": bootstrap_spec.spec,
+        "spec": bootstrap_spec_inner,
     });
 
     create_dynamic_resource(
         client,
         bootstrap_ns,
-        &bootstrap_spec.api_version,
-        &bootstrap_spec.kind,
+        bootstrap_api_version,
+        bootstrap_kind,
         bootstrap_obj,
     )
     .await
     .map_err(|e| ReconcilerError::CapiError(format!("Failed to create bootstrap resource: {e}")))?;
 
-    info!(bootstrap = %bootstrap_name, "Bootstrap resource created");
+    info!(kind = %bootstrap_kind, "Bootstrap resource created");
 
     // 2. Create infrastructure resource
-    let infra_spec = &resource.spec.infrastructure_spec;
+    // NOTE: No ownerReferences here - the infrastructure controller (e.g., CAPM3, CAPA) needs to
+    // process this resource. We use labels for tracking instead, and the CAPI Machine's
+    // infrastructureRef provides the logical relationship.
     let infra_obj = json!({
-        "apiVersion": infra_spec.api_version,
-        "kind": infra_spec.kind,
+        "apiVersion": infra_api_version,
+        "kind": infra_kind,
         "metadata": {
-            "name": infra_name,
+            "name": name,
             "namespace": infra_ns,
-            "ownerReferences": [owner_ref],
+            "labels": {
+                "5spot.finos.org/scheduled-machine": name,
+                CAPI_CLUSTER_NAME_LABEL: cluster_name,
+            },
         },
-        "spec": infra_spec.spec,
+        "spec": infra_spec_inner,
     });
 
-    create_dynamic_resource(
-        client,
-        infra_ns,
-        &infra_spec.api_version,
-        &infra_spec.kind,
-        infra_obj,
-    )
-    .await
-    .map_err(|e| {
-        ReconcilerError::CapiError(format!("Failed to create infrastructure resource: {e}"))
-    })?;
+    create_dynamic_resource(client, infra_ns, infra_api_version, infra_kind, infra_obj)
+        .await
+        .map_err(|e| {
+            ReconcilerError::CapiError(format!("Failed to create infrastructure resource: {e}"))
+        })?;
 
-    info!(infrastructure = %infra_name, "Infrastructure resource created");
+    info!(kind = %infra_kind, "Infrastructure resource created");
 
     // 3. Create CAPI Machine referencing both
     let mut machine_labels = std::collections::BTreeMap::new();
     machine_labels.insert(CAPI_CLUSTER_NAME_LABEL.to_string(), cluster_name.clone());
-    machine_labels.insert("5spot.io/scheduled-machine".to_string(), name.clone());
+    machine_labels.insert(
+        "5spot.finos.org/scheduled-machine".to_string(),
+        name.clone(),
+    );
 
     // Merge in user-provided labels
     if let Some(template) = &resource.spec.machine_template {
@@ -935,7 +956,7 @@ pub async fn add_machine_to_cluster(
         "apiVersion": CAPI_MACHINE_API_VERSION_FULL,
         "kind": "Machine",
         "metadata": {
-            "name": machine_name,
+            "name": name,
             "namespace": namespace,
             "labels": machine_labels,
             "annotations": machine_annotations,
@@ -945,16 +966,16 @@ pub async fn add_machine_to_cluster(
             "clusterName": cluster_name,
             "bootstrap": {
                 "configRef": {
-                    "apiVersion": bootstrap_spec.api_version,
-                    "kind": bootstrap_spec.kind,
-                    "name": bootstrap_name,
+                    "apiVersion": bootstrap_api_version,
+                    "kind": bootstrap_kind,
+                    "name": name,
                     "namespace": bootstrap_ns,
                 }
             },
             "infrastructureRef": {
-                "apiVersion": infra_spec.api_version,
-                "kind": infra_spec.kind,
-                "name": infra_name,
+                "apiVersion": infra_api_version,
+                "kind": infra_kind,
+                "name": name,
                 "namespace": infra_ns,
             },
         }
@@ -970,11 +991,7 @@ pub async fn add_machine_to_cluster(
     .await
     .map_err(|e| ReconcilerError::CapiError(format!("Failed to create Machine: {e}")))?;
 
-    info!(
-        resource = %name,
-        machine_name = %machine_name,
-        "CAPI Machine created successfully"
-    );
+    info!(resource = %name, "CAPI Machine created successfully");
 
     Ok(())
 }
@@ -1033,12 +1050,53 @@ fn parse_api_version(api_version: &str) -> (String, String) {
     }
 }
 
+/// Delete a Kubernetes resource via the dynamic API client.
+///
+/// A 404 response is treated as success (resource already deleted).
+///
+/// # Errors
+/// Returns `ReconcilerError::CapiError` if the API call fails with a non-404 status.
+async fn delete_dynamic_resource(
+    client: &Client,
+    namespace: &str,
+    api_version: &str,
+    kind: &str,
+    name: &str,
+) -> Result<(), ReconcilerError> {
+    let (group, version) = parse_api_version(api_version);
+    let plural = format!("{}s", kind.to_lowercase());
+
+    let ar = kube::api::ApiResource::from_gvk_with_plural(
+        &kube::api::GroupVersionKind::gvk(&group, &version, kind),
+        &plural,
+    );
+
+    let api: Api<kube::core::DynamicObject> = Api::namespaced_with(client.clone(), namespace, &ar);
+
+    match api.delete(name, &kube::api::DeleteParams::default()).await {
+        Ok(_) => {
+            info!(kind = %kind, name = %name, "Resource deletion initiated");
+            Ok(())
+        }
+        Err(kube::Error::Api(e)) if e.code == 404 => {
+            debug!(kind = %kind, name = %name, "Resource already deleted or does not exist");
+            Ok(())
+        }
+        Err(e) => Err(ReconcilerError::CapiError(format!(
+            "Failed to delete {kind} {name}: {e}"
+        ))),
+    }
+}
+
 /// Delete the CAPI `Machine` resource that represents this node in the cluster.
 ///
 /// Deletion is initiated by issuing a `DELETE` to the `Machine` resource.
 /// CAPI's own machine controller then handles the provider-specific teardown
 /// (deprovision, drain, etc.) asynchronously.  A 404 response is treated as
 /// success because it means the machine was already removed.
+///
+/// Also deletes the associated bootstrap and infrastructure resources since they
+/// no longer have ownerReferences (to allow their respective controllers to process them).
 ///
 /// # Errors
 /// - [`ReconcilerError::CapiError`] — API call failed with a non-404 status
@@ -1049,17 +1107,15 @@ pub async fn remove_machine_from_cluster(
 ) -> Result<(), ReconcilerError> {
     let name = resource.name_any();
     let cluster_name = &resource.spec.cluster_name;
-    let machine_name = format!("{name}-machine");
 
     info!(
         resource = %name,
         namespace = %namespace,
         cluster = %cluster_name,
-        machine_name = %machine_name,
-        "Deleting CAPI Machine resource"
+        "Deleting CAPI resources"
     );
 
-    // Get the Machine API
+    // 1. Delete the Machine resource first (this triggers CAPI cleanup)
     let ar = kube::api::ApiResource::from_gvk_with_plural(
         &kube::api::GroupVersionKind::gvk(CAPI_GROUP, CAPI_MACHINE_API_VERSION, "Machine"),
         CAPI_RESOURCE_MACHINES,
@@ -1067,30 +1123,38 @@ pub async fn remove_machine_from_cluster(
     let machines: Api<kube::core::DynamicObject> =
         Api::namespaced_with(client.clone(), namespace, &ar);
 
-    // Delete the Machine resource if it exists
     match machines
-        .delete(&machine_name, &kube::api::DeleteParams::default())
+        .delete(&name, &kube::api::DeleteParams::default())
         .await
     {
         Ok(_) => {
-            info!(
-                machine_name = %machine_name,
-                "CAPI Machine deletion initiated"
-            );
-            Ok(())
+            info!(resource = %name, "CAPI Machine deletion initiated");
         }
         Err(kube::Error::Api(e)) if e.code == 404 => {
-            // Machine already deleted or doesn't exist
-            debug!(
-                machine_name = %machine_name,
-                "CAPI Machine already deleted or does not exist"
-            );
-            Ok(())
+            debug!(resource = %name, "CAPI Machine already deleted or does not exist");
         }
-        Err(e) => Err(ReconcilerError::CapiError(format!(
-            "Failed to delete Machine {machine_name}: {e}"
-        ))),
+        Err(e) => {
+            return Err(ReconcilerError::CapiError(format!(
+                "Failed to delete Machine {name}: {e}"
+            )));
+        }
     }
+
+    // 2. Delete bootstrap resource (no ownerReference, must delete explicitly)
+    let bootstrap_api_version = resource.spec.bootstrap_spec.api_version();
+    let bootstrap_kind = resource.spec.bootstrap_spec.kind();
+    if let (Some(api_version), Some(kind)) = (bootstrap_api_version, bootstrap_kind) {
+        delete_dynamic_resource(client, namespace, api_version, kind, &name).await?;
+    }
+
+    // 3. Delete infrastructure resource (no ownerReference, must delete explicitly)
+    let infra_api_version = resource.spec.infrastructure_spec.api_version();
+    let infra_kind = resource.spec.infrastructure_spec.kind();
+    if let (Some(api_version), Some(kind)) = (infra_api_version, infra_kind) {
+        delete_dynamic_resource(client, namespace, api_version, kind, &name).await?;
+    }
+
+    Ok(())
 }
 
 // ============================================================================
@@ -1345,6 +1409,7 @@ pub(crate) fn compute_backoff_secs(retry_count: u32) -> u64 {
 ///
 /// The retry count is cleared when reconciliation succeeds (see
 /// `reconcile_guarded` in `scheduled_machine.rs`).
+#[allow(clippy::needless_pass_by_value)] // kube-rs Controller API requires Arc by value
 pub fn error_policy(
     resource: Arc<ScheduledMachine>,
     err: &ReconcilerError,
@@ -1356,7 +1421,10 @@ pub fn error_policy(
         resource.name_any()
     );
     let retry_count = {
-        let mut counts = ctx.retry_counts.lock().unwrap_or_else(|p| p.into_inner());
+        let mut counts = ctx
+            .retry_counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let count = counts.entry(key).or_insert(0);
         *count = count.saturating_add(1);
         *count

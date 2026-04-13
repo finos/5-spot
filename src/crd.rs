@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, HashSet};
 
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
-    group = "5spot.io",
+    group = "5spot.finos.org",
     version = "v1alpha1",
     kind = "ScheduledMachine",
     namespaced,
@@ -167,21 +167,42 @@ impl ScheduleSpec {
 // EmbeddedResource - Inline resource specification for CAPI resources
 // ============================================================================
 
-/// An embedded Kubernetes resource specification
-/// Used for inline bootstrap and infrastructure specs
+/// An embedded Kubernetes resource specification.
+///
+/// Used for inline bootstrap and infrastructure specs. This is intentionally
+/// unstructured to support any provider type (`K0sWorkerConfig`, `KubeadmConfig`,
+/// `RemoteMachine`, `AWSMachine`, etc.) without requiring schema knowledge.
+///
+/// Must contain at minimum `apiVersion` and `kind` fields. The controller
+/// will extract these to create the appropriate dynamic resource.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct EmbeddedResource {
-    /// API version of the resource (e.g., "bootstrap.cluster.x-k8s.io/v1beta1")
-    pub api_version: String,
+#[schemars(schema_with = "embedded_resource_schema")]
+pub struct EmbeddedResource(pub Value);
 
-    /// Kind of the resource (e.g., `K0sWorkerConfig`, `RemoteMachine`)
-    pub kind: String,
+impl EmbeddedResource {
+    /// Get the apiVersion field from the embedded resource
+    #[must_use]
+    pub fn api_version(&self) -> Option<&str> {
+        self.0.get("apiVersion").and_then(Value::as_str)
+    }
 
-    /// The spec of the resource (provider-specific)
-    /// This is an arbitrary JSON object whose schema depends on the kind
-    #[schemars(schema_with = "arbitrary_object_schema")]
-    pub spec: Value,
+    /// Get the kind field from the embedded resource
+    #[must_use]
+    pub fn kind(&self) -> Option<&str> {
+        self.0.get("kind").and_then(Value::as_str)
+    }
+
+    /// Get the spec field from the embedded resource
+    #[must_use]
+    pub fn spec(&self) -> Option<&Value> {
+        self.0.get("spec")
+    }
+
+    /// Get the inner JSON value
+    #[must_use]
+    pub fn inner(&self) -> &Value {
+        &self.0
+    }
 }
 
 /// Schema for the timezone field — bounded string to prevent log injection
@@ -193,12 +214,29 @@ fn timezone_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     })
 }
 
-/// Schema for arbitrary JSON object
-fn arbitrary_object_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+/// Schema for `EmbeddedResource` — requires apiVersion, kind, and spec fields.
+/// The `spec` field uses `x-kubernetes-preserve-unknown-fields` to allow any
+/// provider-specific fields (`K0sWorkerConfig`, `RemoteMachine`, `AWSMachine`, etc.).
+fn embedded_resource_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({
         "type": "object",
-        "additionalProperties": true,
-        "x-kubernetes-preserve-unknown-fields": true
+        "required": ["apiVersion", "kind", "spec"],
+        "properties": {
+            "apiVersion": {
+                "type": "string",
+                "description": "API version of the resource (e.g., 'bootstrap.cluster.x-k8s.io/v1beta1')"
+            },
+            "kind": {
+                "type": "string",
+                "description": "Kind of the resource (e.g., 'K0sWorkerConfig', 'RemoteMachine')"
+            },
+            "spec": {
+                "type": "object",
+                "x-kubernetes-preserve-unknown-fields": true,
+                "description": "Provider-specific configuration"
+            }
+        },
+        "additionalProperties": false
     })
 }
 

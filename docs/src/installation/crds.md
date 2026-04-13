@@ -21,21 +21,21 @@ kubectl apply -f https://raw.githubusercontent.com/finos/5-spot/main/deploy/crds
 ### Verify Installation
 
 ```bash
-kubectl get crds scheduledmachines.capi.5spot.io
+kubectl get crds scheduledmachines.5spot.finos.org
 ```
 
 Expected output:
 
 ```
 NAME                                 CREATED AT
-scheduledmachines.capi.5spot.io     2025-01-01T00:00:00Z
+scheduledmachines.5spot.finos.org     2025-01-01T00:00:00Z
 ```
 
 ## CRD Schema
 
 The CRD defines the following structure:
 
-- **apiVersion**: `capi.5spot.io/v1alpha1`
+- **apiVersion**: `5spot.finos.org/v1alpha1`
 - **kind**: `ScheduledMachine`
 - **spec**: Configuration for scheduling and machine management
 - **status**: Current state and conditions

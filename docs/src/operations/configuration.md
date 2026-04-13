@@ -126,10 +126,10 @@ metadata:
   name: 5spot-controller
 rules:
   # ScheduledMachine resources
-  - apiGroups: ["capi.5spot.io"]
+  - apiGroups: ["5spot.finos.org"]
     resources: ["scheduledmachines"]
     verbs: ["get", "list", "watch", "update", "patch"]
-  - apiGroups: ["capi.5spot.io"]
+  - apiGroups: ["5spot.finos.org"]
     resources: ["scheduledmachines/status"]
     verbs: ["get", "update", "patch"]
   

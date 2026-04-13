@@ -1,6 +1,6 @@
 [![FINOS - Incubating](https://cdn.jsdelivr.net/gh/finos/contrib-toolbox@master/images/badge-incubating.svg)](https://community.finos.org/docs/governance/Software-Projects/stages/incubating)
 
-# 5-Spot Machine Scheduler
+# <img src="docs/src/images/5-spot-icon.svg" alt="5-Spot Logo" width="60"  style="vertical-align: middle; margin-right: 5px;" /> 5-Spot Machine Scheduler
 
 A cloud-native Kubernetes controller for managing time-based machine scheduling on physical nodes using Cluster API (CAPI).
 
@@ -81,7 +81,7 @@ kubectl apply -f examples/scheduledmachine-basic.yaml
 ## Example
 
 ```yaml
-apiVersion: capi.5spot.io/v1alpha1
+apiVersion: 5spot.finos.org/v1alpha1
 kind: ScheduledMachine
 metadata:
   name: business-hours-machine
@@ -334,7 +334,7 @@ make security-scan-local
    This creates a `.git/hooks/pre-commit` hook that scans staged changes before each commit.
 
 3. **Configure allowlists** (for false positives):
-   
+
    Edit `.gitleaks.toml` to add exceptions:
    ```toml
    [allowlist]

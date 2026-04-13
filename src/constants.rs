@@ -22,13 +22,13 @@
 // ============================================================================
 
 /// API group for 5-Spot CRDs
-pub const API_GROUP: &str = "5spot.io";
+pub const API_GROUP: &str = "5spot.finos.org";
 
 /// API version for 5-Spot CRDs
 pub const API_VERSION: &str = "v1alpha1";
 
 /// Full API version string
-pub const API_VERSION_FULL: &str = "5spot.io/v1alpha1";
+pub const API_VERSION_FULL: &str = "5spot.finos.org/v1alpha1";
 
 // ============================================================================
 // Resource Names
@@ -54,7 +54,7 @@ pub const KIND_SECRET: &str = "Secret";
 // ============================================================================
 
 /// Finalizer for `ScheduledMachine` resources
-pub const FINALIZER_SCHEDULED_MACHINE: &str = "5spot.io/scheduledmachine";
+pub const FINALIZER_SCHEDULED_MACHINE: &str = "5spot.finos.org/scheduledmachine";
 
 // ============================================================================
 // Timing Constants (in seconds)
@@ -100,7 +100,7 @@ pub const DEFAULT_LEASE_RENEW_DEADLINE_SECS: u64 = 10;
 /// Default retry period in seconds — documented for ops; not a direct `kube-lease-manager` parameter
 pub const DEFAULT_LEASE_RETRY_PERIOD_SECS: u64 = 2;
 
-/// Computed default grace period (duration − renew_deadline) in seconds
+/// Computed default grace period (duration − `renew_deadline`) in seconds
 pub const DEFAULT_LEASE_GRACE_SECS: u64 =
     DEFAULT_LEASE_DURATION_SECS - DEFAULT_LEASE_RENEW_DEADLINE_SECS;
 
@@ -349,7 +349,7 @@ pub const RESERVED_LABEL_PREFIXES: &[&str] = &[
     "kubernetes.io/",
     "k8s.io/",
     "cluster.x-k8s.io/",
-    "5spot.io/",
+    "5spot.finos.org/",
 ];
 
 /// Allowed API groups for bootstrap embedded resources

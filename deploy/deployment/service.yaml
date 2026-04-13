@@ -1,4 +1,3 @@
----
 # 5-Spot Controller Service
 # Exposes metrics endpoint for Prometheus scraping
 apiVersion: v1

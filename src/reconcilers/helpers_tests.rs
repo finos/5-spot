@@ -138,7 +138,7 @@ mod tests {
     fn test_validate_labels_rejects_5spot_io() {
         let mut labels = BTreeMap::new();
         labels.insert(
-            "5spot.io/scheduled-machine".to_string(),
+            "5spot.finos.org/scheduled-machine".to_string(),
             "injected".to_string(),
         );
         assert!(validate_labels(&labels, "labels").is_err());
@@ -397,7 +397,7 @@ mod tests {
     /// Minimal `ScheduledMachine` JSON for `patch_status` responses.
     fn sm_response_body(name: &str, namespace: &str, phase: &str) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
-            "apiVersion": "5spot.io/v1alpha1",
+            "apiVersion": "5spot.finos.org/v1alpha1",
             "kind": "ScheduledMachine",
             "metadata": {
                 "name": name,
@@ -447,7 +447,7 @@ mod tests {
             "reason": "MachineCreated",
             "type": "Normal",
             "regarding": {
-                "apiVersion": "5spot.io/v1alpha1",
+                "apiVersion": "5spot.finos.org/v1alpha1",
                 "kind": "ScheduledMachine",
                 "name": "test-sm",
                 "namespace": "default"
@@ -510,6 +510,7 @@ mod tests {
             "Active",
             Some("MachineCreated"),
             Some("CAPI Machine created"),
+            true,
         )
         .await
         .expect("update_phase should return Ok on success");
@@ -545,9 +546,11 @@ mod tests {
         });
 
         // Passing None for reason and message — should use defaults without panicking
-        update_phase(&ctx, "default", "test-sm", None, "Inactive", None, None)
-            .await
-            .expect("should succeed with default reason/message");
+        update_phase(
+            &ctx, "default", "test-sm", None, "Inactive", None, None, false,
+        )
+        .await
+        .expect("should succeed with default reason/message");
 
         srv.await.unwrap();
     }
@@ -589,6 +592,7 @@ mod tests {
             "Error",
             None,
             None,
+            false,
         )
         .await;
         assert!(result.is_err(), "should return Err when patch_status fails");
@@ -636,6 +640,7 @@ mod tests {
             "Active",
             None,
             None,
+            true,
         )
         .await;
         assert!(result.is_err(), "should return Err on 404");
@@ -685,6 +690,7 @@ mod tests {
             "Active",
             None,
             None,
+            true,
         )
         .await;
         assert!(
@@ -731,6 +737,7 @@ mod tests {
             "Error",
             None,
             None,
+            false,
         )
         .await;
         assert!(
@@ -782,6 +789,7 @@ mod tests {
             "ShuttingDown",
             None,
             None,
+            false,
         )
         .await
         .expect("grace period update should succeed");
@@ -825,6 +833,7 @@ mod tests {
             "ShuttingDown",
             None,
             None,
+            false,
         )
         .await;
         assert!(result.is_err(), "409 conflict should return error");

@@ -23,16 +23,16 @@ mod tests {
                 enabled: true,
             },
             cluster_name: "test-cluster".to_string(),
-            bootstrap_spec: crate::crd::EmbeddedResource {
-                api_version: "bootstrap.cluster.x-k8s.io/v1beta1".to_string(),
-                kind: "K0sWorkerConfig".to_string(),
-                spec: json!({"args": []}),
-            },
-            infrastructure_spec: crate::crd::EmbeddedResource {
-                api_version: "infrastructure.cluster.x-k8s.io/v1beta1".to_string(),
-                kind: "RemoteMachine".to_string(),
-                spec: json!({"address": "192.168.1.100", "port": 22}),
-            },
+            bootstrap_spec: crate::crd::EmbeddedResource(json!({
+                "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
+                "kind": "K0sWorkerConfig",
+                "spec": {"args": []}
+            })),
+            infrastructure_spec: crate::crd::EmbeddedResource(json!({
+                "apiVersion": "infrastructure.cluster.x-k8s.io/v1beta1",
+                "kind": "RemoteMachine",
+                "spec": {"address": "192.168.1.100", "port": 22}
+            })),
             machine_template: None,
             priority: 50,
             graceful_shutdown_timeout: "5m".to_string(),
