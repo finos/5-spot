@@ -7,6 +7,13 @@ on:
   pull_request:
     branches:
       - main
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Dockerfile*'
+      - '.github/workflows/build.yaml'
+      - '.github/actions/**'
   push:
     branches:
       - main
@@ -36,39 +43,11 @@ env:
 jobs:
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # PR only: determine which files changed so expensive jobs can be skipped on
-  # docs-only pull requests.
-  # ─────────────────────────────────────────────────────────────────────────────
-  changes:
-    name: 🔍 Detect Changed Files
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    outputs:
-      code: ${{ steps.filter.outputs.code }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Check for changes
-        id: filter
-        uses: dorny/paths-filter@v3
-        with:
-          filters: |
-            code:
-              - 'src/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-
-  # ─────────────────────────────────────────────────────────────────────────────
-  # License headers — on PR only runs when source files changed.
+  # License headers — always runs (PRs are pre-filtered by path at the trigger).
   # ─────────────────────────────────────────────────────────────────────────────
   license-check:
     name: ⚖️ Verify SPDX License Headers
     runs-on: ubuntu-latest
-    needs: [changes]
-    if: |
-      always() &&
-      (github.event_name != 'pull_request' || needs.changes.outputs.code == 'true')
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -85,8 +64,6 @@ jobs:
   verify-commits:
     name: 🔐 Verify Signed Commits
     runs-on: ubuntu-latest
-    needs: [changes]
-    if: always()
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -156,19 +133,13 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Extract version — all events; acts as the quality gate that downstream jobs
-  # wait on. workflow-type is derived from the GitHub event name.
+  # Extract version — all events; downstream build jobs depend on this.
+  # format/clippy are independent PR quality checks and do not gate the build.
   # ─────────────────────────────────────────────────────────────────────────────
   extract-version:
     name: 🏷️ Extract Version Information
     runs-on: ubuntu-latest
-    needs: [license-check, verify-commits, format]
-    # Run once all checks that apply to this event have passed or been skipped.
-    if: |
-      always() &&
-      needs.verify-commits.result == 'success' &&
-      (needs.license-check.result == 'success' || needs.license-check.result == 'skipped') &&
-      (needs.format.result == 'success' || needs.format.result == 'skipped')
+    needs: [license-check, verify-commits]
     outputs:
       version: ${{ steps.version-chainguard.outputs.version }}
       tag_name: ${{ steps.version-chainguard.outputs.tag-name }}
@@ -209,7 +180,6 @@ jobs:
     name: 🦀 Build - ${{ matrix.platform.name }}
     runs-on: ${{ matrix.platform.runner }}
     needs: [extract-version]
-    if: needs.extract-version.result == 'success'
     strategy:
       fail-fast: false
       matrix:
@@ -272,11 +242,10 @@ jobs:
             target/release/*.cdx.json
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # PR only: run tests against the pre-built binary.
+  # Tests — all events; running unconditionally lets docker depend on it simply.
   # ─────────────────────────────────────────────────────────────────────────────
   test:
     name: 🧪 Test
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     needs: [build]
     steps:
@@ -310,12 +279,6 @@ jobs:
     name: 🐳 Build and Push Docker Image - ${{ matrix.variant.name }}
     runs-on: ubuntu-latest
     needs: [build, extract-version, test]
-    # Allow test to be skipped (push / release) but require build to succeed.
-    if: |
-      always() &&
-      needs.build.result == 'success' &&
-      needs.extract-version.result == 'success' &&
-      (needs.test.result == 'success' || needs.test.result == 'skipped')
     permissions:
       contents: read
       packages: write
@@ -462,7 +425,6 @@ jobs:
     name: 🔏 Attest Docker Image - ${{ matrix.variant.name }}
     runs-on: ubuntu-latest
     needs: [docker, extract-version]
-    if: needs.docker.result == 'success'
     permissions:
       id-token: write
       attestations: write
@@ -499,11 +461,7 @@ jobs:
   security:
     name: 🛡️ Security Vulnerability Scan
     runs-on: ubuntu-latest
-    needs: [changes, license-check, verify-commits]
-    if: |
-      always() &&
-      needs.verify-commits.result == 'success' &&
-      (github.event_name != 'pull_request' || needs.changes.outputs.code == 'true')
+    needs: [verify-commits]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -529,17 +487,12 @@ jobs:
         run: make gitleaks
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Container security scan — push and release only (not PRs).
+  # Container security scan — all events.
   # ─────────────────────────────────────────────────────────────────────────────
   trivy:
     name: 🔭 Container Security Scan - ${{ matrix.variant.name }}
     runs-on: ubuntu-latest
     needs: [docker, extract-version]
-    if: |
-      always() &&
-      github.event_name != 'pull_request' &&
-      needs.docker.result == 'success' &&
-      needs.extract-version.result == 'success'
     strategy:
       fail-fast: false
       matrix:
