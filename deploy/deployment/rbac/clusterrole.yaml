@@ -8,7 +8,7 @@ metadata:
     app.kubernetes.io/component: controller
 rules:
   # ScheduledMachine CRD management
-  - apiGroups: ["5spot.io"]
+  - apiGroups: ["5spot.finos.org"]
     resources: ["scheduledmachines", "scheduledmachines/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 

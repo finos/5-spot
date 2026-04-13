@@ -199,7 +199,7 @@ kubectl logs -n 5spot-system -l app=5spot-controller -f | \
 - Once the root cause is fixed, the next successful reconciliation resets the counter
 - If the resource is stuck at max backoff (300 s), fix the underlying issue and patch the resource to trigger an immediate reconcile:
   ```bash
-  kubectl annotate scheduledmachine <name> 5spot.io/force-reconcile="$(date -u +%s)" --overwrite
+  kubectl annotate scheduledmachine <name> 5spot.finos.org/force-reconcile="$(date -u +%s)" --overwrite
   ```
 
 ## Error Messages

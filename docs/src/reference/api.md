@@ -7,19 +7,20 @@ automatically added to and removed from a k0smotron cluster based on a time sche
 
 ### API Group and Version
 
-- **API Group**: `capi.5spot.io`
+- **API Group**: `5spot.finos.org`
 - **API Version**: `v1alpha1`
 - **Kind**: `ScheduledMachine`
 
 ### Example
 
 ```yaml
-apiVersion: capi.5spot.io/v1alpha1
+apiVersion: 5spot.finos.org/v1alpha1
 kind: ScheduledMachine
 metadata:
-  name: example-machine
+  name: example-spot-machine
   namespace: default
 spec:
+  clusterName: my-cluster
   schedule:
     daysOfWeek:
       - mon-fri
@@ -27,25 +28,29 @@ spec:
       - 9-17
     timezone: America/New_York
     enabled: true
-  machine:
-    address: 192.168.1.100
-    user: admin
-    port: 22
-    useSudo: false
-    files: []
-  bootstrapRef:
+  bootstrapSpec:
     apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
-    kind: KubeadmConfigTemplate
-    name: worker-bootstrap-config
-    namespace: default
-  infrastructureRef:
+    kind: K0sWorkerConfig
+    spec:
+      version: v1.32.8+k0s.0
+      downloadURL: https://github.com/k0sproject/k0s/releases/download/v1.32.8+k0s.0/k0s-v1.32.8+k0s.0-amd64
+  infrastructureSpec:
     apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-    kind: MachineTemplate
-    name: worker-machine-template
-    namespace: default
-  clusterName: my-cluster
+    kind: RemoteMachine
+    spec:
+      address: 192.168.1.100
+      port: 22
+      user: root
+      sshKeyRef:
+        name: my-ssh-key
+  machineTemplate:
+    labels:
+      node-role.kubernetes.io/worker: spot
+    annotations:
+      example.com/scheduled-by: 5spot
   priority: 50
   gracefulShutdownTimeout: 5m
+  nodeDrainTimeout: 5m
   killSwitch: false
 ```
 
@@ -66,24 +71,40 @@ Machine scheduling configuration.
 
 - **enabled** (optional, boolean, default: `true`): Whether the schedule is enabled.
 
-#### machine
-
-Machine specification for k0smotron.
-
-- **address** (required, string): IP address of the machine.
-
-- **user** (required, string): Username for SSH connection.
-
-- **port** (optional, integer, default: `22`): SSH port.
-
-- **useSudo** (optional, boolean, default: `false`): Whether to use sudo for commands.
-
-- **files** (optional, array): Files to be passed to user_data upon creation.
-
 #### clusterName
 
 (required, string) Name of the CAPI cluster this machine belongs to.
-The bootstrap and infrastructure refs must be configured for this cluster.
+
+#### bootstrapSpec
+
+(required, object) Inline bootstrap configuration that will be created when the schedule is active.
+This is a fully unstructured object that must contain:
+
+- **apiVersion** (required, string): API version of the bootstrap resource (e.g., `bootstrap.cluster.x-k8s.io/v1beta1`)
+- **kind** (required, string): Kind of the bootstrap resource (e.g., `K0sWorkerConfig`, `KubeadmConfig`)
+- **spec** (required, object): Provider-specific configuration for the bootstrap resource
+
+The controller validates that the apiVersion belongs to an allowed bootstrap API group.
+
+#### infrastructureSpec
+
+(required, object) Inline infrastructure configuration that will be created when the schedule is active.
+This is a fully unstructured object that must contain:
+
+- **apiVersion** (required, string): API version of the infrastructure resource (e.g., `infrastructure.cluster.x-k8s.io/v1beta1`)
+- **kind** (required, string): Kind of the infrastructure resource (e.g., `RemoteMachine`, `AWSMachine`)
+- **spec** (required, object): Provider-specific configuration for the infrastructure resource
+
+The controller validates that the apiVersion belongs to an allowed infrastructure API group.
+
+#### machineTemplate
+
+(optional, object) Configuration for the created CAPI Machine resource.
+
+- **labels** (optional, map of string to string): Labels to apply to the created Machine
+- **annotations** (optional, map of string to string): Annotations to apply to the created Machine
+
+Note: Labels and annotations using reserved prefixes (`5spot.finos.org/`, `cluster.x-k8s.io/`) are rejected.
 
 #### priority
 
@@ -94,6 +115,11 @@ operator instances.
 #### gracefulShutdownTimeout
 
 (optional, string, default: `5m`) Timeout for graceful machine shutdown.
+Format: `<number><unit>` where unit is `s` (seconds), `m` (minutes), or `h` (hours).
+
+#### nodeDrainTimeout
+
+(optional, string, default: `5m`) Timeout for draining the node before deletion.
 Format: `<number><unit>` where unit is `s` (seconds), `m` (minutes), or `h` (hours).
 
 #### killSwitch
@@ -107,12 +133,12 @@ from the cluster and takes it out of rotation, bypassing the grace period.
 
 Current phase of the machine lifecycle. Possible values:
 
-- **Pending**: Initial state, schedule not yet evaluated
-- **Scheduled**: Machine is within scheduled time window but not yet active
+- **Pending**: Initial state, awaiting schedule evaluation
 - **Active**: Machine is running and part of the cluster
-- **UnScheduled**: Machine is outside scheduled time window
-- **Removing**: Machine is being removed from cluster
-- **Inactive**: Machine has been removed and is inactive
+- **ShuttingDown**: Machine is being gracefully removed (draining, etc.)
+- **Inactive**: Machine is outside scheduled time window and has been removed
+- **Disabled**: Schedule is disabled, machine is not active
+- **Terminated**: Machine has been permanently removed
 - **Error**: An error occurred during processing
 
 #### conditions
@@ -125,22 +151,14 @@ Array of condition objects with the following fields:
 - **message**: Human-readable message
 - **lastTransitionTime**: Last time the condition transitioned
 
-#### machineRef
+#### inSchedule
 
-Reference to the actual Machine resource:
+(boolean) Whether the machine is currently within its scheduled time window.
 
-- **name**: Machine name
-- **namespace**: Machine namespace
-- **uid**: Machine UID
+#### message
 
-#### lastScheduleTime
-
-Last time the machine was scheduled and activated.
-
-#### nextScheduleTime
-
-Next time the machine will be scheduled (if calculable).
+(string) Human-readable message describing the current state.
 
 #### observedGeneration
 
-The generation observed by the controller. Used for change detection.
+(integer) The generation observed by the controller. Used for change detection.

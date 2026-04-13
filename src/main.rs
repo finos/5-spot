@@ -94,7 +94,7 @@ struct Cli {
     #[clap(long, env = "LEASE_RENEW_DEADLINE_SECONDS", default_value_t = DEFAULT_LEASE_RENEW_DEADLINE_SECS)]
     lease_renew_deadline_secs: u64,
 
-    /// Retry period in seconds — documented for ops parity; not a direct LeaseManager parameter
+    /// Retry period in seconds — documented for ops parity; not a direct `LeaseManager` parameter
     #[clap(long, env = "LEASE_RETRY_PERIOD_SECONDS", default_value_t = DEFAULT_LEASE_RETRY_PERIOD_SECS)]
     _lease_retry_period_secs: u64,
 }
@@ -106,6 +106,7 @@ struct Cli {
 /// - The Kubernetes client cannot be configured
 /// - The `ScheduledMachine` CRD is not present in the cluster
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -208,20 +209,17 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             let (mut channel, task) = manager.watch().await;
             loop {
-                match channel.changed().await {
-                    Ok(()) => {
-                        let acquired = *channel.borrow_and_update();
-                        is_leader.store(acquired, Ordering::Release);
-                        if acquired {
-                            info!(holder_id = %holder_id, "Acquired leadership lease");
-                        } else {
-                            info!(holder_id = %holder_id, "Lost leadership lease — standby");
-                        }
+                if let Ok(()) = channel.changed().await {
+                    let acquired = *channel.borrow_and_update();
+                    is_leader.store(acquired, Ordering::Release);
+                    if acquired {
+                        info!(holder_id = %holder_id, "Acquired leadership lease");
+                    } else {
+                        info!(holder_id = %holder_id, "Lost leadership lease — standby");
                     }
-                    Err(_) => {
-                        error!("Leader election watch channel closed unexpectedly");
-                        break;
-                    }
+                } else {
+                    error!("Leader election watch channel closed unexpectedly");
+                    break;
                 }
             }
             drop(channel);
@@ -245,7 +243,7 @@ async fn main() -> Result<()> {
         error!("  kubectl apply -f deploy/crds/scheduledmachine.yaml");
         error!("Or generate and apply: cargo run --bin crdgen | kubectl apply -f -");
         return Err(anyhow::anyhow!(
-            "Required CRD 'scheduledmachines.5spot.io' is not installed in the cluster"
+            "Required CRD 'scheduledmachines.5spot.finos.org' is not installed in the cluster"
         ));
     }
     info!("ScheduledMachine CRD verified");

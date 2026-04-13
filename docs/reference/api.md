@@ -7,14 +7,14 @@ automatically added to and removed from a k0smotron cluster based on a time sche
 
 ### API Group and Version
 
-- **API Group**: `capi.5spot.io`
+- **API Group**: `5spot.finos.org`
 - **API Version**: `v1alpha1`
 - **Kind**: `ScheduledMachine`
 
 ### Example
 
 ```yaml
-apiVersion: capi.5spot.io/v1alpha1
+apiVersion: 5spot.finos.org/v1alpha1
 kind: ScheduledMachine
 metadata:
   name: example-machine

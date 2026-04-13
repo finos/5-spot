@@ -13,7 +13,6 @@
 # Apply with:
 #   kubectl apply -f deploy/admission/validatingadmissionpolicy.yaml
 #   kubectl apply -f deploy/admission/validatingadmissionpolicybinding.yaml
----
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -28,10 +27,10 @@ spec:
 
   matchConstraints:
     resourceRules:
-      - apiGroups:   ["capi.5spot.io"]
+      - apiGroups: ["5spot.finos.org"]
         apiVersions: ["v1alpha1"]
-        resources:   ["scheduledmachines"]
-        operations:  ["CREATE", "UPDATE"]
+        resources: ["scheduledmachines"]
+        operations: ["CREATE", "UPDATE"]
 
   validations:
 

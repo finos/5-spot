@@ -1,0 +1,15 @@
+# cargo-audit configuration
+# https://rustsec.org/
+
+[advisories]
+# Advisories to ignore (with justification)
+ignore = [
+    # RUSTSEC-2026-0097: rand unsound with custom logger using rand::rng()
+    # This is a transitive dependency from warp/tungstenite/kube-client.
+    # We do not use rand::rng() with a custom logger in our codebase.
+    # The vulnerability only affects code that:
+    #   1. Uses a custom global logger (not tracing-subscriber)
+    #   2. Calls rand::rng() from within that logger
+    # Neither condition applies to 5-spot.
+    "RUSTSEC-2026-0097",
+]

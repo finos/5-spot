@@ -13,7 +13,7 @@ A ScheduledMachine defines:
 ## Example
 
 ```yaml
-apiVersion: 5spot.io/v1alpha1
+apiVersion: 5spot.finos.org/v1alpha1
 kind: ScheduledMachine
 metadata:
   name: business-hours-worker

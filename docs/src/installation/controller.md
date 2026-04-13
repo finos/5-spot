@@ -39,7 +39,7 @@ kind: ClusterRole
 metadata:
   name: 5spot-controller
 rules:
-  - apiGroups: ["5spot.io"]
+  - apiGroups: ["5spot.finos.org"]
     resources: ["scheduledmachines", "scheduledmachines/status"]
     verbs: ["*"]
   - apiGroups: ["cluster.x-k8s.io"]

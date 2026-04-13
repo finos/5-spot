@@ -9,7 +9,6 @@
 # Apply after the ValidatingAdmissionPolicy:
 #   kubectl apply -f deploy/admission/validatingadmissionpolicy.yaml
 #   kubectl apply -f deploy/admission/validatingadmissionpolicybinding.yaml
----
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
 metadata:

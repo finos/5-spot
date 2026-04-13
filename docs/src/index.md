@@ -1,4 +1,4 @@
-# Introduction
+# <img src="images/5-spot-icon.svg" alt="5-Spot Logo" width="60"  style="vertical-align: middle; margin-right: 5px;" /> Introduction
 
 ## CI/CD
 
@@ -56,7 +56,7 @@ Traditional infrastructure management involves:
 Here's how simple it is to create a scheduled machine:
 
 ```yaml
-apiVersion: 5spot.io/v1alpha1
+apiVersion: 5spot.finos.org/v1alpha1
 kind: ScheduledMachine
 metadata:
   name: business-hours-machine
@@ -111,27 +111,27 @@ kubectl apply -f scheduled-machine.yaml
 ```mermaid
 stateDiagram-v2
     [*] --> Pending: Resource Created
-    
+
     Pending --> Active: Schedule active & machine created
     Pending --> Inactive: Outside schedule window
     Pending --> Disabled: Schedule disabled
-    
+
     Active --> ShuttingDown: Schedule ends
     Active --> Terminated: Kill switch activated
     Active --> Error: Provisioning error
-    
+
     ShuttingDown --> Inactive: Grace period complete
     ShuttingDown --> Error: Shutdown error
-    
+
     Inactive --> Active: Schedule window starts
     Inactive --> Disabled: Schedule disabled
-    
+
     Disabled --> Pending: Schedule re-enabled
-    
+
     Terminated --> Pending: Kill switch deactivated
-    
+
     Error --> Pending: Recovery / Retry
-    
+
     note right of Pending: Initial state after creation
     note right of Active: Machine is part of cluster
     note right of ShuttingDown: Grace period in progress

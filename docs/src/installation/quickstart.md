@@ -34,7 +34,7 @@ kubectl get crds | grep 5spot
 Create a file named `my-scheduled-machine.yaml`:
 
 ```yaml
-apiVersion: capi.5spot.io/v1alpha1
+apiVersion: 5spot.finos.org/v1alpha1
 kind: ScheduledMachine
 metadata:
   name: my-first-scheduled-machine

@@ -1,4 +1,3 @@
----
 # 5-Spot Controller ConfigMap
 # Configuration options for the controller
 apiVersion: v1
@@ -14,7 +13,7 @@ data:
   # Logging configuration
   RUST_LOG: "info,kube=warn,hyper=warn,tower=warn"
   RUST_LOG_FORMAT: "json"
-  
+
   # Metrics and health ports
   METRICS_PORT: "8080"
   HEALTH_PORT: "8081"

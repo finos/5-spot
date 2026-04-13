@@ -1,4 +1,3 @@
----
 # 5-Spot Controller PodDisruptionBudget
 # Ensures at least one replica is available during voluntary disruptions
 apiVersion: policy/v1

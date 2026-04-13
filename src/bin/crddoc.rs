@@ -41,19 +41,20 @@ fn main() {
     println!();
     println!("### API Group and Version");
     println!();
-    println!("- **API Group**: `capi.5spot.io`");
+    println!("- **API Group**: `5spot.finos.org`");
     println!("- **API Version**: `v1alpha1`");
     println!("- **Kind**: `ScheduledMachine`");
     println!();
     println!("### Example");
     println!();
     println!("```yaml");
-    println!("apiVersion: capi.5spot.io/v1alpha1");
+    println!("apiVersion: 5spot.finos.org/v1alpha1");
     println!("kind: ScheduledMachine");
     println!("metadata:");
-    println!("  name: example-machine");
+    println!("  name: example-spot-machine");
     println!("  namespace: default");
     println!("spec:");
+    println!("  clusterName: my-cluster");
     println!("  schedule:");
     println!("    daysOfWeek:");
     println!("      - mon-fri");
@@ -61,25 +62,29 @@ fn main() {
     println!("      - 9-17");
     println!("    timezone: America/New_York");
     println!("    enabled: true");
-    println!("  machine:");
-    println!("    address: 192.168.1.100");
-    println!("    user: admin");
-    println!("    port: 22");
-    println!("    useSudo: false");
-    println!("    files: []");
-    println!("  bootstrapRef:");
+    println!("  bootstrapSpec:");
     println!("    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1");
-    println!("    kind: KubeadmConfigTemplate");
-    println!("    name: worker-bootstrap-config");
-    println!("    namespace: default");
-    println!("  infrastructureRef:");
+    println!("    kind: K0sWorkerConfig");
+    println!("    spec:");
+    println!("      version: v1.32.8+k0s.0");
+    println!("      downloadURL: https://github.com/k0sproject/k0s/releases/download/v1.32.8+k0s.0/k0s-v1.32.8+k0s.0-amd64");
+    println!("  infrastructureSpec:");
     println!("    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1");
-    println!("    kind: MachineTemplate");
-    println!("    name: worker-machine-template");
-    println!("    namespace: default");
-    println!("  clusterName: my-cluster");
+    println!("    kind: RemoteMachine");
+    println!("    spec:");
+    println!("      address: 192.168.1.100");
+    println!("      port: 22");
+    println!("      user: root");
+    println!("      sshKeyRef:");
+    println!("        name: my-ssh-key");
+    println!("  machineTemplate:");
+    println!("    labels:");
+    println!("      node-role.kubernetes.io/worker: spot");
+    println!("    annotations:");
+    println!("      example.com/scheduled-by: 5spot");
     println!("  priority: 50");
     println!("  gracefulShutdownTimeout: 5m");
+    println!("  nodeDrainTimeout: 5m");
     println!("  killSwitch: false");
     println!("```");
     println!();
@@ -102,26 +107,46 @@ fn main() {
         "- **enabled** (optional, boolean, default: `true`): Whether the schedule is enabled."
     );
     println!();
-    println!("#### machine");
-    println!();
-    println!("Machine specification for k0smotron.");
-    println!();
-    println!("- **address** (required, string): IP address of the machine.");
-    println!();
-    println!("- **user** (required, string): Username for SSH connection.");
-    println!();
-    println!("- **port** (optional, integer, default: `22`): SSH port.");
-    println!();
-    println!(
-        "- **useSudo** (optional, boolean, default: `false`): Whether to use sudo for commands."
-    );
-    println!();
-    println!("- **files** (optional, array): Files to be passed to user_data upon creation.");
-    println!();
     println!("#### clusterName");
     println!();
     println!("(required, string) Name of the CAPI cluster this machine belongs to.");
-    println!("The bootstrap and infrastructure refs must be configured for this cluster.");
+    println!();
+    println!("#### bootstrapSpec");
+    println!();
+    println!("(required, object) Inline bootstrap configuration that will be created when the schedule is active.");
+    println!("This is a fully unstructured object that must contain:");
+    println!();
+    println!("- **apiVersion** (required, string): API version of the bootstrap resource (e.g., `bootstrap.cluster.x-k8s.io/v1beta1`)");
+    println!("- **kind** (required, string): Kind of the bootstrap resource (e.g., `K0sWorkerConfig`, `KubeadmConfig`)");
+    println!(
+        "- **spec** (required, object): Provider-specific configuration for the bootstrap resource"
+    );
+    println!();
+    println!(
+        "The controller validates that the apiVersion belongs to an allowed bootstrap API group."
+    );
+    println!();
+    println!("#### infrastructureSpec");
+    println!();
+    println!("(required, object) Inline infrastructure configuration that will be created when the schedule is active.");
+    println!("This is a fully unstructured object that must contain:");
+    println!();
+    println!("- **apiVersion** (required, string): API version of the infrastructure resource (e.g., `infrastructure.cluster.x-k8s.io/v1beta1`)");
+    println!("- **kind** (required, string): Kind of the infrastructure resource (e.g., `RemoteMachine`, `AWSMachine`)");
+    println!("- **spec** (required, object): Provider-specific configuration for the infrastructure resource");
+    println!();
+    println!("The controller validates that the apiVersion belongs to an allowed infrastructure API group.");
+    println!();
+    println!("#### machineTemplate");
+    println!();
+    println!("(optional, object) Configuration for the created CAPI Machine resource.");
+    println!();
+    println!(
+        "- **labels** (optional, map of string to string): Labels to apply to the created Machine"
+    );
+    println!("- **annotations** (optional, map of string to string): Annotations to apply to the created Machine");
+    println!();
+    println!("Note: Labels and annotations using reserved prefixes (`5spot.finos.org/`, `cluster.x-k8s.io/`) are rejected.");
     println!();
     println!("#### priority");
     println!();
@@ -132,6 +157,13 @@ fn main() {
     println!("#### gracefulShutdownTimeout");
     println!();
     println!("(optional, string, default: `5m`) Timeout for graceful machine shutdown.");
+    println!(
+        "Format: `<number><unit>` where unit is `s` (seconds), `m` (minutes), or `h` (hours)."
+    );
+    println!();
+    println!("#### nodeDrainTimeout");
+    println!();
+    println!("(optional, string, default: `5m`) Timeout for draining the node before deletion.");
     println!(
         "Format: `<number><unit>` where unit is `s` (seconds), `m` (minutes), or `h` (hours)."
     );
@@ -147,12 +179,12 @@ fn main() {
     println!();
     println!("Current phase of the machine lifecycle. Possible values:");
     println!();
-    println!("- **Pending**: Initial state, schedule not yet evaluated");
-    println!("- **Scheduled**: Machine is within scheduled time window but not yet active");
+    println!("- **Pending**: Initial state, awaiting schedule evaluation");
     println!("- **Active**: Machine is running and part of the cluster");
-    println!("- **UnScheduled**: Machine is outside scheduled time window");
-    println!("- **Removing**: Machine is being removed from cluster");
-    println!("- **Inactive**: Machine has been removed and is inactive");
+    println!("- **ShuttingDown**: Machine is being gracefully removed (draining, etc.)");
+    println!("- **Inactive**: Machine is outside scheduled time window and has been removed");
+    println!("- **Disabled**: Schedule is disabled, machine is not active");
+    println!("- **Terminated**: Machine has been permanently removed");
     println!("- **Error**: An error occurred during processing");
     println!();
     println!("#### conditions");
@@ -165,23 +197,15 @@ fn main() {
     println!("- **message**: Human-readable message");
     println!("- **lastTransitionTime**: Last time the condition transitioned");
     println!();
-    println!("#### machineRef");
+    println!("#### inSchedule");
     println!();
-    println!("Reference to the actual Machine resource:");
+    println!("(boolean) Whether the machine is currently within its scheduled time window.");
     println!();
-    println!("- **name**: Machine name");
-    println!("- **namespace**: Machine namespace");
-    println!("- **uid**: Machine UID");
+    println!("#### message");
     println!();
-    println!("#### lastScheduleTime");
-    println!();
-    println!("Last time the machine was scheduled and activated.");
-    println!();
-    println!("#### nextScheduleTime");
-    println!();
-    println!("Next time the machine will be scheduled (if calculable).");
+    println!("(string) Human-readable message describing the current state.");
     println!();
     println!("#### observedGeneration");
     println!();
-    println!("The generation observed by the controller. Used for change detection.");
+    println!("(integer) The generation observed by the controller. Used for change detection.");
 }

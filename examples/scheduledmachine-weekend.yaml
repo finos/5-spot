@@ -2,7 +2,7 @@
 # This machine will be active Saturday-Sunday, 24 hours
 # Uses cron expression format as an alternative to daysOfWeek/hoursOfDay
 
-apiVersion: 5spot.io/v1alpha1
+apiVersion: 5spot.finos.org/v1alpha1
 kind: ScheduledMachine
 metadata:
   name: weekend-worker

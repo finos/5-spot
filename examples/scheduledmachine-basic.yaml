@@ -5,7 +5,7 @@
 #   2. A RemoteMachine infrastructure resource
 #   3. A CAPI Machine referencing both
 
-apiVersion: 5spot.io/v1alpha1
+apiVersion: 5spot.finos.org/v1alpha1
 kind: ScheduledMachine
 metadata:
   name: business-hours-worker
@@ -24,7 +24,7 @@ spec:
     enabled: true
 
   # Inline bootstrap specification (creates K0sWorkerConfig)
-  # Name is auto-generated as: business-hours-worker-bootstrap
+  # Name is auto-generated as: business-hours-worker
   bootstrapSpec:
     apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
     kind: K0sWorkerConfig
@@ -33,7 +33,7 @@ spec:
       # Add any K0sWorkerConfig-specific fields here
 
   # Inline infrastructure specification (creates RemoteMachine)
-  # Name is auto-generated as: business-hours-worker-infra
+  # Name is auto-generated as: business-hours-worker
   infrastructureSpec:
     apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
     kind: RemoteMachine
@@ -49,7 +49,7 @@ spec:
       node-role.kubernetes.io/worker: ""
       topology.kubernetes.io/zone: zone-a
     annotations:
-      5spot.io/scheduled-by: business-hours-worker
+      5spot.finos.org/scheduled-by: business-hours-worker
 
   # Lifecycle settings
   priority: 50

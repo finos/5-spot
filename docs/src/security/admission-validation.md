@@ -278,7 +278,7 @@ attempted violation, which is useful for SIEM alerting.
 
 ```bash
 kubectl apply -f - <<'EOF'
-apiVersion: capi.5spot.io/v1alpha1
+apiVersion: 5spot.finos.org/v1alpha1
 kind: ScheduledMachine
 metadata:
   name: test-valid
@@ -303,13 +303,13 @@ spec:
 EOF
 ```
 
-Expected: `scheduledmachine.capi.5spot.io/test-valid created`
+Expected: `scheduledmachine.5spot.finos.org/test-valid created`
 
 ### Test invalid duration format (rules 2–3)
 
 ```bash
 kubectl apply -f - <<'EOF'
-apiVersion: capi.5spot.io/v1alpha1
+apiVersion: 5spot.finos.org/v1alpha1
 kind: ScheduledMachine
 metadata:
   name: test-bad-duration
@@ -346,7 +346,7 @@ The ScheduledMachine "test-bad-duration" is invalid:
 
 ```bash
 kubectl apply -f - <<'EOF'
-apiVersion: capi.5spot.io/v1alpha1
+apiVersion: 5spot.finos.org/v1alpha1
 kind: ScheduledMachine
 metadata:
   name: test-bad-apigroup
@@ -383,7 +383,7 @@ The ScheduledMachine "test-bad-apigroup" is invalid:
 
 ```bash
 kubectl apply -f - <<'EOF'
-apiVersion: capi.5spot.io/v1alpha1
+apiVersion: 5spot.finos.org/v1alpha1
 kind: ScheduledMachine
 metadata:
   name: test-cron-conflict
