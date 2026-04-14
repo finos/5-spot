@@ -35,7 +35,7 @@ outputs:
     description: 'Git tag name (e.g., v1.2.3)'
     value: ${{ steps.extract.outputs.tag-name }}
   image-tag:
-    description: 'Docker image tag (e.g., main-2025.12.17, pr-42, v0.2.0)'
+    description: 'Docker image tag (e.g., main-2025-12-17, pr-42, v0.2.0)'
     value: ${{ steps.extract.outputs.image-tag }}
   image-repository:
     description: 'Docker repository name (e.g., finos/myapp)'
@@ -85,9 +85,9 @@ runs:
             ;;
 
           main)
-            # Main branch: use main-YYYY.MM.DD format
-            # Tag format: main-2025.12.17
-            DATE=$(date +%Y.%m.%d)
+            # Main branch: use main-YYYY-MM-DD format
+            # Tag format: main-2025-12-17
+            DATE=$(date +%Y-%m-%d)
             VERSION="0.0.0-main.${DATE}.${{ github.run_number }}"
             TAG_NAME="main-${DATE}"
             IMAGE_TAG="main-${DATE}${IMAGE_TAG_SUFFIX}"
