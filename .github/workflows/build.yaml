@@ -666,6 +666,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: ./artifacts
+          pattern: |
+            5spot-*
+            docker-sbom-*
+            *.intoto.jsonl
+            deploy-manifests
 
       - name: 🧹 Organize release artifacts
         run: |
