@@ -385,14 +385,16 @@ jobs:
 
       # Push to main and release: sign the image with Cosign (keyless, Sigstore).
       # PR images are ephemeral and not deployed, so signing them is skipped.
+      # Sign by digest (not tag) to guarantee we sign exactly what was pushed.
+      - name: Install Cosign
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@v3
+
       - name: Sign container image with Cosign
         if: github.event_name != 'pull_request'
-        uses: firestoned/github-actions/security/cosign-sign@v1.3.6
-        with:
-          image-digest: ${{ steps.docker_build.outputs.digest }}
-          image-tags: ${{ matrix.variant.image-tag }}
-          registry: ghcr.io
-          repository: ${{ matrix.variant.image-repository }}
+        run: |
+          cosign sign --yes \
+            ghcr.io/${{ matrix.variant.image-repository }}@${{ steps.docker_build.outputs.digest }}
 
       # Release only: generate a CycloneDX SBOM for the published image.
       - name: Generate Docker SBOM for ${{ matrix.variant.name }}
@@ -402,6 +404,7 @@ jobs:
           image: ghcr.io/${{ matrix.variant.image-repository }}:${{ matrix.variant.image-tag }}
           format: cyclonedx-json
           output-file: docker-sbom-${{ matrix.variant.name }}.json
+          upload-release-assets: false
 
       - name: Upload Docker SBOM as artifact
         if: github.event_name == 'release'
