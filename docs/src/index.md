@@ -160,4 +160,4 @@ Current version: **v0.1.0-alpha**
 
 ## License
 
-5-Spot is open-source software licensed under both the [MIT License](./license.md) and [Apache License 2.0](./license.md).
+5-Spot is open-source software licensed under the [Apache License 2.0](./license.md).
