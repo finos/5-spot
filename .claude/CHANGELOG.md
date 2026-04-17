@@ -9,6 +9,26 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-04-17] - Bump base image to cc-debian13 and fix GLIBC_2.39 crash (issue #17)
+
+**Author:** Daniel Guns
+
+### Changed
+- `Dockerfile`: Base image bumped from `gcr.io/distroless/cc-debian12:nonroot` (glibc 2.36) to `gcr.io/distroless/cc-debian13:nonroot` (glibc 2.41)
+- `.github/workflows/build.yaml`: Pinned Linux x86_64 runner from `ubuntu-latest` to `ubuntu-24.04` for CI stability
+- `Cargo.lock`: Updated transitive dependency `rustls-webpki` from `0.103.11` to `0.103.12`
+
+### Why
+`ubuntu-latest` now resolves to Ubuntu 24.04 (glibc 2.39), producing binaries that require `GLIBC_2.39` at runtime. The previous `cc-debian12` base only provides glibc 2.36, causing a hard crash at container startup. Bumping to `cc-debian13` (glibc 2.41) resolves the mismatch. Runners are explicitly pinned to `ubuntu-24.04` so CI doesn't break silently when `ubuntu-latest` moves to 26.04. Additionally, two CVEs in `rustls-webpki 0.103.11` (RUSTSEC-2026-0098, RUSTSEC-2026-0099) were patched by bumping to `0.103.12`. Fixes issue #17.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — new base image
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
 ## [2026-04-10 08:50] - Extend Cosign image signing to main-branch pushes
 
 **Author:** Erick Bourgeois
