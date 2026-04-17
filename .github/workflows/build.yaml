@@ -185,7 +185,7 @@ jobs:
       matrix:
         platform:
           - name: Linux x86_64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             artifact_name: 5spot-linux-amd64
             binary_name: 5spot
           - name: Linux ARM64

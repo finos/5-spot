@@ -16,7 +16,7 @@
 #
 # Base image: Google Distroless cc-debian12 (glibc, ~20MB)
 
-ARG BASE_IMAGE=gcr.io/distroless/cc-debian12:nonroot
+ARG BASE_IMAGE=gcr.io/distroless/cc-debian13:nonroot
 
 FROM ${BASE_IMAGE}
 
