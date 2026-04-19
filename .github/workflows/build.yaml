@@ -531,15 +531,18 @@ jobs:
           output-filename: trivy-${{ github.event_name }}-${{ matrix.variant.name }}.json
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Release only: sign binaries with Cosign.
+  # Push-to-main and release: sign binaries with Cosign and emit GitHub
+  # artifact attestations. Skipped on PRs.
   # ─────────────────────────────────────────────────────────────────────────────
   sign-artifacts:
     name: ✍️ Sign Binary Artifacts
-    if: github.event_name == 'release'
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     needs: [build, extract-version]
     permissions:
       id-token: write
+      attestations: write
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -570,6 +573,11 @@ jobs:
         with:
           artifact-path: artifacts/${{ matrix.platform.artifact_name }}/${{ matrix.platform.artifact_name }}.tar.gz
 
+      - name: Attest binary tarball provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: artifacts/${{ matrix.platform.artifact_name }}/${{ matrix.platform.artifact_name }}.tar.gz
+
       - name: Upload signed artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -579,11 +587,11 @@ jobs:
             artifacts/${{ matrix.platform.artifact_name }}/${{ matrix.platform.artifact_name }}.tar.gz.bundle
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Release only: compute SHA-256 hashes of signed tarballs for SLSA.
+  # Push-to-main and release: compute SHA-256 hashes of signed tarballs for SLSA.
   # ─────────────────────────────────────────────────────────────────────────────
   generate-provenance-subjects:
     name: 🔬 Generate SLSA Provenance Subjects
-    if: github.event_name == 'release'
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     needs: [sign-artifacts, extract-version]
     outputs:
@@ -605,11 +613,14 @@ jobs:
           echo "hashes=$(cat checksums.txt | base64 -w0)" >> "$GITHUB_OUTPUT"
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Release only: SLSA Level 3 provenance via the official generator.
+  # Push-to-main and release: SLSA Level 3 provenance via the official generator.
+  # `upload-assets` only applies on release (there is no GitHub Release object
+  # on a push-to-main to attach assets to); on push the provenance lands as a
+  # workflow artifact, verifiable with slsa-verifier or `gh attestation verify`.
   # ─────────────────────────────────────────────────────────────────────────────
   slsa-provenance:
     name: 🏛️ Generate SLSA Provenance
-    if: github.event_name == 'release'
+    if: github.event_name != 'pull_request'
     needs: [generate-provenance-subjects, extract-version]
     permissions:
       actions: read
@@ -618,7 +629,7 @@ jobs:
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
     with:
       base64-subjects: "${{ needs.generate-provenance-subjects.outputs.hashes }}"
-      upload-assets: true
+      upload-assets: ${{ github.event_name == 'release' }}
       provenance-name: "${{ needs.extract-version.outputs.version }}.intoto.jsonl"
 
   # ─────────────────────────────────────────────────────────────────────────────

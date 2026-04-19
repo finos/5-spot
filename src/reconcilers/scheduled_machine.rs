@@ -569,7 +569,47 @@ async fn handle_active_phase(
         return Ok(Action::requeue(Duration::from_secs(TIMER_REQUEUE_SECS)));
     }
 
-    // Happy path: machine active and in schedule
+    // Happy path: machine active and in schedule.
+    //
+    // Surface the CAPI Machine's providerID and full nodeRef on our own
+    // status so operators can correlate `kubectl get scheduledmachine` output
+    // to the underlying VM and Node without manual cross-referencing.
+    // Best-effort: if the fetch or patch fails, log and continue — status
+    // enrichment must never block the reconcile.
+    let machine_name = format!("{name}-machine");
+    match fetch_capi_machine(&ctx.client, &namespace, &machine_name).await {
+        Ok(Some(machine)) => {
+            let (provider_id, node_ref) = extract_machine_refs(&machine);
+            if let Err(e) = patch_machine_refs_status(
+                &ctx.client,
+                &namespace,
+                &name,
+                provider_id.as_deref(),
+                node_ref.as_ref(),
+            )
+            .await
+            {
+                warn!(
+                    resource = %name,
+                    namespace = %namespace,
+                    error = %e,
+                    "Failed to patch providerID/nodeRef status (non-fatal)"
+                );
+            }
+        }
+        Ok(None) => {
+            debug!(resource = %name, "CAPI Machine not found yet — skipping status enrichment");
+        }
+        Err(e) => {
+            warn!(
+                resource = %name,
+                namespace = %namespace,
+                error = %e,
+                "Failed to fetch CAPI Machine for status enrichment (non-fatal)"
+            );
+        }
+    }
+
     debug!(resource = %name, namespace = %namespace, "Machine active and in schedule");
     Ok(Action::requeue(Duration::from_secs(TIMER_REQUEUE_SECS)))
 }
@@ -815,8 +855,9 @@ fn handle_error_phase(
 // Re-export helper functions for use in this module
 use super::helpers::{
     add_finalizer, add_machine_to_cluster, check_grace_period_elapsed, drain_node_with_timeout,
-    evaluate_schedule, get_node_from_machine, handle_deletion, handle_kill_switch, has_finalizer,
-    parse_duration, remove_machine_from_cluster, should_process_resource, update_phase,
+    evaluate_schedule, extract_machine_refs, fetch_capi_machine, get_node_from_machine,
+    handle_deletion, handle_kill_switch, has_finalizer, parse_duration, patch_machine_refs_status,
+    remove_machine_from_cluster, should_process_resource, update_phase,
     update_phase_with_grace_period,
 };
 

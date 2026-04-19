@@ -18,17 +18,24 @@ use std::sync::Arc;
 use anyhow::Result;
 use clap::Parser;
 use five_spot::constants::{
-    DEFAULT_LEASE_DURATION_SECS, DEFAULT_LEASE_GRACE_SECS, DEFAULT_LEASE_NAME,
-    DEFAULT_LEASE_NAMESPACE, DEFAULT_LEASE_RENEW_DEADLINE_SECS, DEFAULT_LEASE_RETRY_PERIOD_SECS,
-    HEALTH_PORT, K8S_API_TIMEOUT_SECS, METRICS_PORT,
+    CAPI_GROUP, CAPI_MACHINE_API_VERSION, CAPI_RESOURCE_MACHINES, DEFAULT_LEASE_DURATION_SECS,
+    DEFAULT_LEASE_GRACE_SECS, DEFAULT_LEASE_NAME, DEFAULT_LEASE_NAMESPACE,
+    DEFAULT_LEASE_RENEW_DEADLINE_SECS, DEFAULT_LEASE_RETRY_PERIOD_SECS, HEALTH_PORT,
+    K8S_API_TIMEOUT_SECS, METRICS_PORT,
 };
 use five_spot::crd::ScheduledMachine;
 use five_spot::health::{start_health_server, HealthState};
+use five_spot::labels::LABEL_SCHEDULED_MACHINE;
 use five_spot::metrics::init_controller_info;
-use five_spot::reconcilers::{error_policy, reconcile_scheduled_machine, Context};
+use five_spot::reconcilers::{
+    error_policy, machine_to_scheduled_machine, node_to_scheduled_machines,
+    reconcile_scheduled_machine, Context,
+};
 use futures::StreamExt;
+use k8s_openapi::api::core::v1::Node;
 use kube::{
-    api::ListParams,
+    api::{ApiResource, GroupVersionKind, ListParams},
+    core::DynamicObject,
     runtime::{watcher::Config, Controller},
     Api, Client,
 };
@@ -260,8 +267,32 @@ async fn main() -> Result<()> {
 
     info!("Starting controller for ScheduledMachine resources");
 
-    // Run the controller
-    Controller::new(scheduled_machines, Config::default())
+    // Secondary watches — event-driven reactivity without polling.
+    // 1. CAPI Machine (dynamic GVK) — filtered by the scheduled-machine label we
+    //    already stamp on every Machine we create. Reverse-mapped via that label.
+    // 2. Kubernetes Node — name-matched against every SM's status.nodeRef.name
+    //    using a snapshot of the controller's own primary-resource Store.
+    let machine_ar = ApiResource::from_gvk_with_plural(
+        &GroupVersionKind::gvk(CAPI_GROUP, CAPI_MACHINE_API_VERSION, "Machine"),
+        CAPI_RESOURCE_MACHINES,
+    );
+    let machines_api: Api<DynamicObject> = Api::all_with(client.clone(), &machine_ar);
+    let nodes_api: Api<Node> = Api::all(client.clone());
+
+    let controller = Controller::new(scheduled_machines, Config::default());
+    let sm_store = controller.store();
+
+    controller
+        .watches_with(
+            machines_api,
+            machine_ar.clone(),
+            Config::default().labels(LABEL_SCHEDULED_MACHINE),
+            |machine: DynamicObject| machine_to_scheduled_machine(&machine),
+        )
+        .watches(nodes_api, Config::default(), move |node: Node| {
+            let snapshot = sm_store.state();
+            node_to_scheduled_machines(&node, snapshot.iter().map(std::convert::AsRef::as_ref))
+        })
         .shutdown_on_signal()
         .run(reconcile_scheduled_machine, error_policy, context)
         .for_each(|res| async move {

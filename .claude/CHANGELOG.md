@@ -9,6 +9,119 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-04-19 15:30] - Sign binaries and generate SLSA provenance on push-to-main (not only on release)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/build.yaml`:
+  - `sign-artifacts` job: `if` flipped from `github.event_name == 'release'` to `!= 'pull_request'`. Added `attestations: write` and `contents: read` permissions. New step runs `actions/attest-build-provenance@v2` on each signed tarball (amd64 + arm64) — GitHub-native attestation in addition to the Cosign signature.
+  - `generate-provenance-subjects` job: `if` flipped to `!= 'pull_request'` so SLSA subject hashes are computed on push-to-main too.
+  - `slsa-provenance` job: `if` flipped to `!= 'pull_request'`; the reusable SLSA generator now runs on every push-to-main. `upload-assets` parameterised to `${{ github.event_name == 'release' }}` so the `.intoto.jsonl` only attaches to the GitHub Release on release events; on push-to-main it lands as a workflow artifact (verifiable via `slsa-verifier` or `gh attestation verify`).
+- `upload-release-assets` unchanged — stays `if: github.event_name == 'release'`; its `needs:` on `sign-artifacts`/`slsa-provenance` resolves cleanly whether those jobs ran (push, release) or were skipped (PR).
+
+### Why
+Every merge to `main` produces a buildable, distributable artifact — it should carry the same supply-chain assurances as a release. With these changes, a `main` build now has: Cosign keyless signature on the container image (already in place), GitHub Artifact Attestation on the container image (already in place), Cosign signature on each binary tarball (new on `main`), GitHub Artifact Attestation on each binary tarball (new), and SLSA Level 3 provenance for the binaries (new on `main`). Consumers pulling a `main-YYYY-MM-DD` build can now cryptographically verify it the same way they would a release.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (CI/CD workflow)
+- [ ] Documentation only
+
+### Operational note
+- Push-to-main runs now take longer (extra ~3–5 min for the SLSA generator + attestations). Expected trade-off.
+- `sign-artifacts` signed-tarball artifact retention is the repo default (90 days) — long enough for verification and audit, well under the release-asset lifetime.
+- Binary SLSA generator dependency pinned at `@v2.1.0` (unchanged) — verify this is the latest patched version periodically.
+
+---
+
+## [2026-04-19 15:00] - Harden OpenSSF Scorecard workflow: SPDX header + pin remaining action
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/scorecard.yaml`: Prepended the project's standard two-line SPDX/Copyright header (`Copyright (c) 2025 Erick Bourgeois, firestoned` + `SPDX-License-Identifier: Apache-2.0`) to match every other workflow in `.github/workflows/`. Pinned the previously unpinned `github/codeql-action/upload-sarif@v3` to the full commit SHA for v3.35.2 (`ce64ddcb0d8d890d2df4a9d1c04ff297367dea2a`) with an inline version comment — brings the last step into line with the other three actions in the file which were already SHA-pinned.
+
+### Why
+OpenSSF Scorecard's own `Pinned-Dependencies` check flags float-tagged actions (`@v3`) as a supply-chain risk, so the scorecard workflow itself should score well on that check. The SPDX header is the repo-wide convention; every other workflow has it. Both changes are compliance housekeeping — no behavior change.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+---
+
+## [2026-04-19 14:00] - Phases 3 + 4: Event-driven `.watches()` on CAPI Machine and Node
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/helpers.rs`: Added two pure mapper functions used as secondary-watch reverse-maps on the Controller builder:
+  - `machine_to_scheduled_machine(&DynamicObject) -> Vec<ObjectRef<ScheduledMachine>>` — reads the `5spot.eribourg.dev/scheduled-machine` label (constant `LABEL_SCHEDULED_MACHINE`) and emits at most one `ObjectRef`. Guards against missing/empty/whitespace label values, missing namespace, and imposter labels with similar prefixes.
+  - `node_to_scheduled_machines<'a, I: IntoIterator<Item = &'a ScheduledMachine>>(&Node, I) -> Vec<ObjectRef<ScheduledMachine>>` — returns all SMs whose `status.nodeRef.name` matches `node.metadata.name`. Returns multiple refs on conflict so the reconciler can surface the issue. O(N) per Node event; documented as acceptable for current scale.
+- `src/reconcilers/mod.rs`: Re-exports both mappers alongside the existing `error_policy`, `evaluate_schedule`, `should_process_resource`.
+- `src/main.rs`: Extended the `Controller` builder with `.watches_with(...)` on CAPI `Machine` (`ApiResource` from GVK, label-filtered `watcher::Config`) and `.watches(...)` on `Node`. The Node mapper closure captures a clone of `controller.store()` (`reflector::Store<ScheduledMachine>`) and calls `state()` on each event to avoid out-of-band API lists.
+- `src/reconcilers/helpers_tests.rs`: Added 14 new unit tests — 7 for `machine_to_scheduled_machine` (positive match, missing label, no labels, empty value, whitespace value, missing namespace, wrong-prefix imposter) and 7 for `node_to_scheduled_machines` (single match, multi-match conflict, no match, empty list, SM-without-status, Node-without-name, empty `nodeRef.name`). Covers positive, negative, and exception paths per the project's 100%-coverage rule.
+
+### Why
+Closes roadmap Phases 3 + 4 of `event-driven-watches-and-status-enrichment.md`. The `ScheduledMachine` controller previously only watched its own CR — all downstream state was polled during reconciles, which CLAUDE.md explicitly forbids ("ALWAYS use event-driven programming… as opposed to polling"). With these two watches, CAPI setting `status.nodeRef` or a Node being drained now enqueues an immediate reconcile via kube-rs's watch stream (<1s debounce) instead of waiting for the next periodic requeue. The label-based reverse map on Machines uses the label we already stamp on every child — zero new ownership semantics, no `controller: true` owner references introduced, no contention with CAPI's own controllers.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — controller now opens additional watches (CAPI `Machine` with label selector; `Node` cluster-wide)
+- [ ] Config change only
+- [ ] Documentation only
+
+### Operational note
+- RBAC: the controller already has `get`/`list`/`watch` on CAPI `Machine` (used for drain lookup) and needs `list`/`watch` on core `Node`. Verify `get,list,watch` on `nodes` is present in the ClusterRole before rollout; if not, add it in the same rollout.
+- Observability: the existing `reconcile_queue_depth` metric will show enqueues driven by Machine and Node events in addition to SM events.
+
+---
+
+## [2026-04-19 10:00] - Phase 2: Close test-coverage gap for async CAPI helpers
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/helpers_tests.rs`: Added 14 `tower-test`-backed unit tests covering positive, negative, and exception paths for the three async helpers introduced in the previous Phase 2 entry:
+  - `fetch_capi_machine` — 200 returns `Some`, 404 returns `Ok(None)`, 500 and 403 map to `CapiError`.
+  - `patch_machine_refs_status` — both-fields patch asserts full body shape, single-field patches assert the other key is **omitted** (not null) so merge-patch never clears existing values, both-`None` case asserts **zero HTTP traffic**, 500 and 404 map to `KubeError`.
+  - `get_node_from_machine` — success returns the node name, machine-404 and nodeRef-missing both return `Ok(None)`, 500 propagates as `CapiError`.
+
+### Why
+Per durable user guidance: every function (public **and** private) must have unit tests covering the happy path, negative cases, and exception/error paths. The original Phase 2 change landed with tests only for the pure `extract_machine_refs` function — the three async helpers, which actually touch the Kubernetes API surface, were undertested. This entry closes that gap so the coverage floor now matches the project rule (not just CLAUDE.md's "public function" minimum).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (test-only change — no runtime behaviour modified)
+
+---
+
+## [2026-04-18 12:00] - Phase 2: Populate providerID and nodeRef from CAPI Machine
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/helpers.rs`: Added three new helpers — `extract_machine_refs` (pure function pulling `providerID` + full `NodeRef` out of a CAPI Machine `DynamicObject`), `fetch_capi_machine` (typed 404 → `Ok(None)` wrapper around the dynamic GET), and `patch_machine_refs_status` (merge-patches both fields onto `ScheduledMachine.status`). Refactored `get_node_from_machine` to delegate to the first two helpers for the drain path.
+- `src/reconcilers/scheduled_machine.rs`: `handle_active_phase` happy path now fetches the CAPI Machine, extracts refs, and patches them onto the SM status. Failures are logged and ignored — status enrichment must never block reconciliation.
+- `src/reconcilers/helpers_tests.rs`: Added 6 TDD cases for `extract_machine_refs` covering fully populated, empty, providerID-only, nodeRef-without-uid, incomplete-nodeRef-returns-None, and malformed-providerID-ignored.
+
+### Why
+Phase 2 of the event-driven watches + status enrichment roadmap. The schema landed in Phase 1; this change actually populates the new fields every time the reconciler visits an active machine, so `kubectl get sm -o jsonpath='{.status.providerID}{"\t"}{.status.nodeRef.name}'` returns meaningful values.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout — controller image carries the new reconcile logic
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
 ## [2026-04-16 17:00] - Phase 1: Enrich ScheduledMachine status with providerID and full nodeRef
 
 **Author:** Erick Bourgeois

@@ -1076,4 +1076,804 @@ mod tests {
             "large retry count should always return max backoff"
         );
     }
+
+    // ========================================================================
+    // extract_machine_refs — pulls providerID + full NodeRef from a CAPI Machine
+    // ========================================================================
+
+    fn machine_dyn(data: serde_json::Value) -> kube::core::DynamicObject {
+        kube::core::DynamicObject {
+            types: None,
+            metadata: kube::core::ObjectMeta::default(),
+            data,
+        }
+    }
+
+    #[test]
+    fn test_extract_machine_refs_fully_populated() {
+        let m = machine_dyn(serde_json::json!({
+            "spec": { "providerID": "libvirt:///uuid-abc-123" },
+            "status": {
+                "nodeRef": {
+                    "apiVersion": "v1",
+                    "kind": "Node",
+                    "name": "worker-01",
+                    "uid": "11111111-2222-3333-4444-555555555555"
+                }
+            }
+        }));
+        let (provider_id, node_ref) = extract_machine_refs(&m);
+        assert_eq!(provider_id.as_deref(), Some("libvirt:///uuid-abc-123"));
+        let nref = node_ref.expect("nodeRef must be populated");
+        assert_eq!(nref.api_version, "v1");
+        assert_eq!(nref.kind, "Node");
+        assert_eq!(nref.name, "worker-01");
+        assert_eq!(
+            nref.uid.as_deref(),
+            Some("11111111-2222-3333-4444-555555555555")
+        );
+    }
+
+    #[test]
+    fn test_extract_machine_refs_empty_machine_returns_none_none() {
+        let m = machine_dyn(serde_json::json!({}));
+        let (p, n) = extract_machine_refs(&m);
+        assert!(p.is_none());
+        assert!(n.is_none());
+    }
+
+    #[test]
+    fn test_extract_machine_refs_only_provider_id() {
+        let m = machine_dyn(serde_json::json!({
+            "spec": { "providerID": "aws:///us-east-1a/i-0abcd1234" }
+        }));
+        let (p, n) = extract_machine_refs(&m);
+        assert_eq!(p.as_deref(), Some("aws:///us-east-1a/i-0abcd1234"));
+        assert!(n.is_none(), "no status.nodeRef means no NodeRef");
+    }
+
+    #[test]
+    fn test_extract_machine_refs_node_ref_without_uid() {
+        let m = machine_dyn(serde_json::json!({
+            "status": {
+                "nodeRef": {
+                    "apiVersion": "v1",
+                    "kind": "Node",
+                    "name": "worker-02"
+                }
+            }
+        }));
+        let (p, n) = extract_machine_refs(&m);
+        assert!(p.is_none());
+        let nref = n.expect("nodeRef must be populated");
+        assert_eq!(nref.name, "worker-02");
+        assert!(nref.uid.is_none(), "uid is optional");
+    }
+
+    #[test]
+    fn test_extract_machine_refs_incomplete_node_ref_returns_none() {
+        // Old CAPI versions or in-flight Machines may have a partial nodeRef.
+        // We treat anything missing apiVersion/kind/name as "not ready yet" so
+        // the status is only populated once CAPI has fully resolved the Node.
+        let m = machine_dyn(serde_json::json!({
+            "status": { "nodeRef": { "name": "legacy" } }
+        }));
+        let (_, n) = extract_machine_refs(&m);
+        assert!(
+            n.is_none(),
+            "nodeRef missing apiVersion/kind must be treated as None"
+        );
+    }
+
+    #[test]
+    fn test_extract_machine_refs_provider_id_wrong_type_ignored() {
+        // Defensive: if providerID is somehow not a string, we do NOT want to
+        // panic or return garbage — treat as absent.
+        let m = machine_dyn(serde_json::json!({
+            "spec": { "providerID": 42 }
+        }));
+        let (p, _) = extract_machine_refs(&m);
+        assert!(p.is_none());
+    }
+
+    // ========================================================================
+    // fetch_capi_machine — mock-Client tests (positive / negative / exception)
+    // ========================================================================
+
+    fn capi_machine_body(
+        name: &str,
+        namespace: &str,
+        provider_id: Option<&str>,
+        node_ref_name: Option<&str>,
+    ) -> Vec<u8> {
+        let mut obj = serde_json::json!({
+            "apiVersion": "cluster.x-k8s.io/v1beta1",
+            "kind": "Machine",
+            "metadata": { "name": name, "namespace": namespace, "resourceVersion": "1" },
+            "spec": {},
+            "status": {}
+        });
+        if let Some(pid) = provider_id {
+            obj["spec"]["providerID"] = serde_json::json!(pid);
+        }
+        if let Some(nname) = node_ref_name {
+            obj["status"]["nodeRef"] = serde_json::json!({
+                "apiVersion": "v1",
+                "kind": "Node",
+                "name": nname,
+                "uid": "uid-1"
+            });
+        }
+        serde_json::to_vec(&obj).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_fetch_capi_machine_success_returns_some() {
+        let (client, handle) = mock_client_pair();
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (req, send) = h.next_request().await.expect("expected GET Machine");
+            assert_eq!(req.method(), http::Method::GET);
+            assert!(
+                req.uri()
+                    .path()
+                    .contains("/apis/cluster.x-k8s.io/v1beta1/namespaces/default/machines/sm-m"),
+                "should target CAPI Machine path, got: {}",
+                req.uri().path()
+            );
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(capi_machine_body(
+                        "sm-m",
+                        "default",
+                        Some("libvirt:///abc"),
+                        Some("node-1"),
+                    )))
+                    .unwrap(),
+            );
+        });
+
+        let machine = fetch_capi_machine(&client, "default", "sm-m")
+            .await
+            .expect("200 response must succeed");
+        let machine = machine.expect("200 must yield Some");
+        let (pid, nref) = extract_machine_refs(&machine);
+        assert_eq!(pid.as_deref(), Some("libvirt:///abc"));
+        assert_eq!(nref.expect("nodeRef").name, "node-1");
+
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_fetch_capi_machine_404_returns_ok_none() {
+        let (client, handle) = mock_client_pair();
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("GET Machine");
+            send.send_response(
+                Response::builder()
+                    .status(404)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_error_body(
+                        404,
+                        "machines \"missing\" not found",
+                    )))
+                    .unwrap(),
+            );
+        });
+
+        let result = fetch_capi_machine(&client, "default", "missing")
+            .await
+            .expect("404 must map to Ok(None), not Err");
+        assert!(
+            result.is_none(),
+            "404 must yield None (Machine not yet created)"
+        );
+
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_fetch_capi_machine_500_returns_capi_error() {
+        let (client, handle) = mock_client_pair();
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("GET Machine");
+            send.send_response(
+                Response::builder()
+                    .status(500)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_error_body(500, "internal server error")))
+                    .unwrap(),
+            );
+        });
+
+        let err = fetch_capi_machine(&client, "default", "broken")
+            .await
+            .expect_err("500 must propagate as Err");
+        assert!(
+            matches!(err, ReconcilerError::CapiError(_)),
+            "non-404 must map to CapiError, got: {err:?}"
+        );
+
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_fetch_capi_machine_403_forbidden_returns_capi_error() {
+        let (client, handle) = mock_client_pair();
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("GET Machine");
+            send.send_response(
+                Response::builder()
+                    .status(403)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_error_body(
+                        403,
+                        "forbidden: watch Machines in namespace default",
+                    )))
+                    .unwrap(),
+            );
+        });
+
+        let err = fetch_capi_machine(&client, "default", "anything")
+            .await
+            .expect_err("403 must propagate as Err");
+        assert!(
+            matches!(err, ReconcilerError::CapiError(_)),
+            "403 must map to CapiError, got: {err:?}"
+        );
+
+        srv.await.unwrap();
+    }
+
+    // ========================================================================
+    // patch_machine_refs_status — mock-Client tests + body-shape assertions
+    // ========================================================================
+
+    async fn collect_json_body(body: Body) -> serde_json::Value {
+        use http_body_util::BodyExt;
+        let bytes = body.collect().await.expect("body collect").to_bytes();
+        serde_json::from_slice(&bytes).expect("body must be JSON")
+    }
+
+    fn sample_node_ref() -> NodeRef {
+        NodeRef {
+            api_version: "v1".to_string(),
+            kind: "Node".to_string(),
+            name: "node-1".to_string(),
+            uid: Some("uid-abc".to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_patch_machine_refs_status_both_fields_success() {
+        let (client, handle) = mock_client_pair();
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (req, send) = h.next_request().await.expect("expected PATCH");
+            assert_eq!(req.method(), http::Method::PATCH);
+            assert!(
+                req.uri()
+                    .path()
+                    .ends_with("/scheduledmachines/test-sm/status"),
+                "must target /status subresource, got: {}",
+                req.uri().path()
+            );
+            let body = collect_json_body(req.into_body()).await;
+            assert_eq!(body["status"]["providerID"], "libvirt:///abc");
+            assert_eq!(body["status"]["nodeRef"]["name"], "node-1");
+            assert_eq!(body["status"]["nodeRef"]["apiVersion"], "v1");
+            assert_eq!(body["status"]["nodeRef"]["kind"], "Node");
+            assert_eq!(body["status"]["nodeRef"]["uid"], "uid-abc");
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(sm_response_body("test-sm", "default", "Active")))
+                    .unwrap(),
+            );
+        });
+
+        let nref = sample_node_ref();
+        patch_machine_refs_status(
+            &client,
+            "default",
+            "test-sm",
+            Some("libvirt:///abc"),
+            Some(&nref),
+        )
+        .await
+        .expect("both-field patch must succeed");
+
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_patch_machine_refs_status_only_provider_id_omits_node_ref() {
+        let (client, handle) = mock_client_pair();
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (req, send) = h.next_request().await.expect("PATCH");
+            let body = collect_json_body(req.into_body()).await;
+            assert_eq!(body["status"]["providerID"], "aws:///i-0");
+            assert!(
+                body["status"].get("nodeRef").is_none(),
+                "nodeRef MUST be omitted (not null) when None — merge patch must not clear existing value"
+            );
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(sm_response_body("test-sm", "default", "Active")))
+                    .unwrap(),
+            );
+        });
+
+        patch_machine_refs_status(&client, "default", "test-sm", Some("aws:///i-0"), None)
+            .await
+            .expect("provider-id-only patch must succeed");
+
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_patch_machine_refs_status_only_node_ref_omits_provider_id() {
+        let (client, handle) = mock_client_pair();
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (req, send) = h.next_request().await.expect("PATCH");
+            let body = collect_json_body(req.into_body()).await;
+            assert!(
+                body["status"].get("providerID").is_none(),
+                "providerID MUST be omitted when None"
+            );
+            assert_eq!(body["status"]["nodeRef"]["name"], "node-1");
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(sm_response_body("test-sm", "default", "Active")))
+                    .unwrap(),
+            );
+        });
+
+        let nref = sample_node_ref();
+        patch_machine_refs_status(&client, "default", "test-sm", None, Some(&nref))
+            .await
+            .expect("node-ref-only patch must succeed");
+
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_patch_machine_refs_status_both_none_is_noop_no_http_call() {
+        // When both args are None there MUST be zero network traffic —
+        // calling with nothing to write should not issue a patch.
+        let (client, handle) = mock_client_pair();
+        let watcher = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            // Race with a tiny timeout — if a request is made, fail.
+            tokio::select! {
+                req = h.next_request() => {
+                    panic!("no HTTP call expected when both fields are None, got: {:?}",
+                        req.map(|(r, _)| r.uri().to_string()));
+                }
+                () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
+                    // expected: no request
+                }
+            }
+        });
+
+        patch_machine_refs_status(&client, "default", "test-sm", None, None)
+            .await
+            .expect("no-op patch must return Ok");
+
+        watcher.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_patch_machine_refs_status_500_returns_kube_error() {
+        let (client, handle) = mock_client_pair();
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("PATCH");
+            send.send_response(
+                Response::builder()
+                    .status(500)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_error_body(500, "internal server error")))
+                    .unwrap(),
+            );
+        });
+
+        let nref = sample_node_ref();
+        let err = patch_machine_refs_status(
+            &client,
+            "default",
+            "test-sm",
+            Some("libvirt:///x"),
+            Some(&nref),
+        )
+        .await
+        .expect_err("500 must propagate as Err");
+        assert!(
+            matches!(err, ReconcilerError::KubeError(_)),
+            "patch_status errors flow through kube::Error -> KubeError, got: {err:?}"
+        );
+
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_patch_machine_refs_status_404_returns_kube_error() {
+        let (client, handle) = mock_client_pair();
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("PATCH");
+            send.send_response(
+                Response::builder()
+                    .status(404)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_error_body(
+                        404,
+                        "scheduledmachines \"gone\" not found",
+                    )))
+                    .unwrap(),
+            );
+        });
+
+        let err = patch_machine_refs_status(&client, "default", "gone", Some("libvirt:///x"), None)
+            .await
+            .expect_err("404 must propagate as Err (no silent success)");
+        assert!(matches!(err, ReconcilerError::KubeError(_)));
+
+        srv.await.unwrap();
+    }
+
+    // ========================================================================
+    // get_node_from_machine — thin wrapper: verify delegation behaviour
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_get_node_from_machine_success_returns_node_name() {
+        let (client, handle) = mock_client_pair();
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("GET Machine");
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(capi_machine_body(
+                        "sm-m",
+                        "default",
+                        None,
+                        Some("worker-99"),
+                    )))
+                    .unwrap(),
+            );
+        });
+
+        let node = get_node_from_machine(&client, "default", "sm-m")
+            .await
+            .expect("fetch must succeed");
+        assert_eq!(node.as_deref(), Some("worker-99"));
+
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_get_node_from_machine_machine_404_returns_ok_none() {
+        let (client, handle) = mock_client_pair();
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("GET Machine");
+            send.send_response(
+                Response::builder()
+                    .status(404)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_error_body(404, "not found")))
+                    .unwrap(),
+            );
+        });
+
+        let node = get_node_from_machine(&client, "default", "sm-m")
+            .await
+            .expect("404 on machine must yield Ok(None)");
+        assert!(node.is_none());
+
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_get_node_from_machine_no_node_ref_returns_none() {
+        // Machine exists but status.nodeRef isn't populated yet — CAPI is still reconciling.
+        let (client, handle) = mock_client_pair();
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("GET Machine");
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(capi_machine_body("sm-m", "default", None, None)))
+                    .unwrap(),
+            );
+        });
+
+        let node = get_node_from_machine(&client, "default", "sm-m")
+            .await
+            .expect("must succeed");
+        assert!(node.is_none(), "no nodeRef → None (wait for CAPI)");
+
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_get_node_from_machine_500_returns_capi_error() {
+        let (client, handle) = mock_client_pair();
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("GET Machine");
+            send.send_response(
+                Response::builder()
+                    .status(500)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_error_body(500, "boom")))
+                    .unwrap(),
+            );
+        });
+
+        let err = get_node_from_machine(&client, "default", "sm-m")
+            .await
+            .expect_err("500 must propagate");
+        assert!(matches!(err, ReconcilerError::CapiError(_)));
+
+        srv.await.unwrap();
+    }
+
+    // ========================================================================
+    // machine_to_scheduled_machine — label-based reverse mapper (Phase 3)
+    //   A CAPI Machine event → 0 or 1 ObjectRef<ScheduledMachine> lookups
+    //   via `5spot.eribourg.dev/scheduled-machine` label.
+    // ========================================================================
+
+    fn machine_with_labels(
+        labels: &[(&str, &str)],
+        namespace: Option<&str>,
+    ) -> kube::core::DynamicObject {
+        let mut meta = kube::core::ObjectMeta::default();
+        if !labels.is_empty() {
+            let mut m = std::collections::BTreeMap::new();
+            for (k, v) in labels {
+                m.insert((*k).to_string(), (*v).to_string());
+            }
+            meta.labels = Some(m);
+        }
+        meta.namespace = namespace.map(std::string::ToString::to_string);
+        kube::core::DynamicObject {
+            types: None,
+            metadata: meta,
+            data: serde_json::json!({}),
+        }
+    }
+
+    #[test]
+    fn test_machine_to_sm_label_present_returns_one_ref() {
+        let m = machine_with_labels(
+            &[(crate::labels::LABEL_SCHEDULED_MACHINE, "my-sm")],
+            Some("team-ns"),
+        );
+        let refs = machine_to_scheduled_machine(&m);
+        assert_eq!(refs.len(), 1, "exactly one ObjectRef expected");
+        let r = &refs[0];
+        assert_eq!(r.name, "my-sm");
+        assert_eq!(r.namespace.as_deref(), Some("team-ns"));
+    }
+
+    #[test]
+    fn test_machine_to_sm_missing_label_returns_empty() {
+        let m = machine_with_labels(
+            &[("app.kubernetes.io/name", "something-else")],
+            Some("default"),
+        );
+        assert!(machine_to_scheduled_machine(&m).is_empty());
+    }
+
+    #[test]
+    fn test_machine_to_sm_no_labels_at_all_returns_empty() {
+        let m = machine_with_labels(&[], Some("default"));
+        assert!(machine_to_scheduled_machine(&m).is_empty());
+    }
+
+    #[test]
+    fn test_machine_to_sm_empty_label_value_is_rejected() {
+        // Defensive: an empty-string SM name is never valid and must NOT enqueue a reconcile.
+        let m = machine_with_labels(
+            &[(crate::labels::LABEL_SCHEDULED_MACHINE, "")],
+            Some("default"),
+        );
+        assert!(
+            machine_to_scheduled_machine(&m).is_empty(),
+            "empty label value must produce no ObjectRef (would enqueue invalid reconcile)"
+        );
+    }
+
+    #[test]
+    fn test_machine_to_sm_whitespace_label_value_is_rejected() {
+        // Defensive: whitespace-only SM names are also invalid.
+        let m = machine_with_labels(
+            &[(crate::labels::LABEL_SCHEDULED_MACHINE, "   ")],
+            Some("default"),
+        );
+        assert!(machine_to_scheduled_machine(&m).is_empty());
+    }
+
+    #[test]
+    fn test_machine_to_sm_missing_namespace_returns_empty() {
+        // A namespaced CAPI Machine without a namespace is malformed — skip it rather than
+        // enqueue a cluster-scoped lookup that would never resolve.
+        let m = machine_with_labels(&[(crate::labels::LABEL_SCHEDULED_MACHINE, "my-sm")], None);
+        assert!(
+            machine_to_scheduled_machine(&m).is_empty(),
+            "Machine without namespace must produce no ObjectRef"
+        );
+    }
+
+    #[test]
+    fn test_machine_to_sm_wrong_prefix_label_is_ignored() {
+        // Similar key (different prefix) must not be confused with the real label.
+        let m = machine_with_labels(
+            &[("5spot.finos.org/scheduled-machine", "imposter")],
+            Some("default"),
+        );
+        assert!(machine_to_scheduled_machine(&m).is_empty());
+    }
+
+    // ========================================================================
+    // node_to_scheduled_machines — name-lookup mapper (Phase 4)
+    //   A Node event → ObjectRef<ScheduledMachine> for each SM whose
+    //   status.nodeRef.name matches node.metadata.name.
+    // ========================================================================
+
+    fn sm_with_node_ref(
+        name: &str,
+        namespace: &str,
+        node_name: Option<&str>,
+    ) -> crate::crd::ScheduledMachine {
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+        let mut sm = crate::crd::ScheduledMachine {
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                namespace: Some(namespace.to_string()),
+                ..Default::default()
+            },
+            spec: crate::crd::ScheduledMachineSpec {
+                cluster_name: "test-cluster".to_string(),
+                bootstrap_spec: crate::crd::EmbeddedResource(serde_json::json!({
+                    "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
+                    "kind": "K0sWorkerConfig",
+                    "spec": {}
+                })),
+                infrastructure_spec: crate::crd::EmbeddedResource(serde_json::json!({
+                    "apiVersion": "infrastructure.cluster.x-k8s.io/v1beta1",
+                    "kind": "RemoteMachine",
+                    "spec": {}
+                })),
+                machine_template: None,
+                schedule: crate::crd::ScheduleSpec {
+                    days_of_week: vec!["mon-fri".to_string()],
+                    hours_of_day: vec!["9-17".to_string()],
+                    timezone: "UTC".to_string(),
+                    enabled: true,
+                },
+                priority: 50,
+                graceful_shutdown_timeout: "5m".to_string(),
+                node_drain_timeout: "5m".to_string(),
+                kill_switch: false,
+            },
+            status: None,
+        };
+        if let Some(nname) = node_name {
+            sm.status = Some(crate::crd::ScheduledMachineStatus {
+                phase: Some("Active".to_string()),
+                node_ref: Some(NodeRef {
+                    api_version: "v1".to_string(),
+                    kind: "Node".to_string(),
+                    name: nname.to_string(),
+                    uid: None,
+                }),
+                ..Default::default()
+            });
+        }
+        sm
+    }
+
+    fn node_named(name: &str) -> k8s_openapi::api::core::v1::Node {
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+        k8s_openapi::api::core::v1::Node {
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_node_to_sms_single_match_returns_one_ref() {
+        let node = node_named("worker-1");
+        let sms = [
+            sm_with_node_ref("sm-a", "default", Some("worker-1")),
+            sm_with_node_ref("sm-b", "default", Some("worker-2")),
+        ];
+        let refs = node_to_scheduled_machines(&node, sms.iter());
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].name, "sm-a");
+        assert_eq!(refs[0].namespace.as_deref(), Some("default"));
+    }
+
+    #[test]
+    fn test_node_to_sms_multiple_matches_returns_all() {
+        // Defensive: if two SMs claim the same Node (misconfiguration), reconcile BOTH
+        // so the operator can surface the conflict via status.
+        let node = node_named("worker-1");
+        let sms = [
+            sm_with_node_ref("sm-a", "ns-1", Some("worker-1")),
+            sm_with_node_ref("sm-b", "ns-2", Some("worker-1")),
+        ];
+        let refs = node_to_scheduled_machines(&node, sms.iter());
+        assert_eq!(refs.len(), 2, "both conflicting SMs must be enqueued");
+        let names: std::collections::HashSet<_> = refs.iter().map(|r| r.name.as_str()).collect();
+        assert!(names.contains("sm-a"));
+        assert!(names.contains("sm-b"));
+    }
+
+    #[test]
+    fn test_node_to_sms_no_match_returns_empty() {
+        let node = node_named("worker-999");
+        let sms = [
+            sm_with_node_ref("sm-a", "default", Some("worker-1")),
+            sm_with_node_ref("sm-b", "default", Some("worker-2")),
+        ];
+        assert!(node_to_scheduled_machines(&node, sms.iter()).is_empty());
+    }
+
+    #[test]
+    fn test_node_to_sms_empty_list_returns_empty() {
+        let node = node_named("worker-1");
+        let sms: Vec<crate::crd::ScheduledMachine> = Vec::new();
+        assert!(node_to_scheduled_machines(&node, sms.iter()).is_empty());
+    }
+
+    #[test]
+    fn test_node_to_sms_sm_without_status_is_skipped() {
+        let node = node_named("worker-1");
+        let sms = [sm_with_node_ref("sm-a", "default", None)];
+        assert!(
+            node_to_scheduled_machines(&node, sms.iter()).is_empty(),
+            "SMs with no status.nodeRef must be skipped, not matched"
+        );
+    }
+
+    #[test]
+    fn test_node_to_sms_node_with_no_name_returns_empty() {
+        // Defensive: Node without metadata.name should not match anything — especially
+        // not SMs that also happen to have an empty/missing nodeRef.name.
+        let node = k8s_openapi::api::core::v1::Node::default();
+        let sms = [sm_with_node_ref("sm-a", "default", Some(""))];
+        assert!(node_to_scheduled_machines(&node, sms.iter()).is_empty());
+    }
+
+    #[test]
+    fn test_node_to_sms_empty_node_ref_name_is_not_matched() {
+        // SM with an empty-string nodeRef.name must never match anything.
+        let node = node_named("worker-1");
+        let sms = [sm_with_node_ref("sm-a", "default", Some(""))];
+        assert!(node_to_scheduled_machines(&node, sms.iter()).is_empty());
+    }
 }

@@ -49,7 +49,7 @@ use crate::constants::{
     POD_EVICTION_GRACE_PERIOD_SECS, REASON_GRACE_PERIOD, REASON_KILL_SWITCH,
     REASON_RECONCILE_SUCCEEDED, RESERVED_LABEL_PREFIXES, TIMER_REQUEUE_SECS,
 };
-use crate::crd::{Condition, ScheduledMachine, ScheduledMachineStatus};
+use crate::crd::{Condition, NodeRef, ScheduledMachine, ScheduledMachineStatus};
 use crate::metrics::{record_node_drain, record_pod_eviction};
 
 // ============================================================================
@@ -1149,48 +1149,72 @@ pub async fn remove_machine_from_cluster(
 }
 
 // ============================================================================
-// Node Draining
+// CAPI Machine status extraction
 // ============================================================================
 
-/// Get the Kubernetes Node associated with a CAPI Machine
+/// Pull `providerID` and the full `NodeRef` out of a CAPI Machine `DynamicObject`.
+///
+/// Pure: no I/O, safe to unit-test. Treats partial data as "not yet populated":
+/// a `nodeRef` missing `apiVersion`, `kind`, or `name` yields `None` for the
+/// ref rather than a half-filled struct.
+///
+/// # Returns
+/// `(providerID, nodeRef)` — either or both may be `None` while CAPI is still
+/// reconciling the underlying Machine.
+#[must_use]
+pub fn extract_machine_refs(
+    machine: &kube::core::DynamicObject,
+) -> (Option<String>, Option<NodeRef>) {
+    let provider_id = machine
+        .data
+        .get("spec")
+        .and_then(|s| s.get("providerID"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+
+    let node_ref = machine
+        .data
+        .get("status")
+        .and_then(|s| s.get("nodeRef"))
+        .and_then(|nr| {
+            let api_version = nr.get("apiVersion").and_then(serde_json::Value::as_str)?;
+            let kind = nr.get("kind").and_then(serde_json::Value::as_str)?;
+            let name = nr.get("name").and_then(serde_json::Value::as_str)?;
+            let uid = nr
+                .get("uid")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            Some(NodeRef {
+                api_version: api_version.to_string(),
+                kind: kind.to_string(),
+                name: name.to_string(),
+                uid,
+            })
+        });
+
+    (provider_id, node_ref)
+}
+
+/// Fetch the CAPI Machine for a `ScheduledMachine` by conventional name.
+///
+/// Returns `Ok(None)` on 404 so callers can treat a missing Machine as
+/// "not yet created" rather than an error.
 ///
 /// # Errors
-/// Returns error if Machine not found, has no nodeRef, or Node lookup fails
-pub async fn get_node_from_machine(
+/// Returns `ReconcilerError::CapiError` on any non-404 Kubernetes API failure.
+pub async fn fetch_capi_machine(
     client: &Client,
     namespace: &str,
     machine_name: &str,
-) -> Result<Option<String>, ReconcilerError> {
+) -> Result<Option<kube::core::DynamicObject>, ReconcilerError> {
     let ar = kube::api::ApiResource::from_gvk_with_plural(
         &kube::api::GroupVersionKind::gvk(CAPI_GROUP, CAPI_MACHINE_API_VERSION, "Machine"),
         CAPI_RESOURCE_MACHINES,
     );
     let machines: Api<kube::core::DynamicObject> =
         Api::namespaced_with(client.clone(), namespace, &ar);
-
     match machines.get(machine_name).await {
-        Ok(machine) => {
-            // Extract nodeRef from Machine status
-            if let Some(status) = machine.data.get("status") {
-                if let Some(node_ref) = status.get("nodeRef") {
-                    if let Some(node_name) = node_ref.get("name") {
-                        if let Some(name_str) = node_name.as_str() {
-                            debug!(
-                                machine = %machine_name,
-                                node = %name_str,
-                                "Found Node reference in Machine status"
-                            );
-                            return Ok(Some(name_str.to_string()));
-                        }
-                    }
-                }
-            }
-            debug!(
-                machine = %machine_name,
-                "Machine has no nodeRef in status yet"
-            );
-            Ok(None)
-        }
+        Ok(m) => Ok(Some(m)),
         Err(kube::Error::Api(e)) if e.code == 404 => {
             debug!(machine = %machine_name, "Machine not found");
             Ok(None)
@@ -1199,6 +1223,153 @@ pub async fn get_node_from_machine(
             "Failed to get Machine {machine_name}: {e}"
         ))),
     }
+}
+
+/// Patch `providerID` and/or `nodeRef` onto `ScheduledMachine.status`.
+///
+/// No-op when both arguments are `None`. Uses a Merge patch so other status
+/// fields (phase, conditions, timestamps) are preserved. Fields are only
+/// written when `Some` — `None` values do NOT clear the existing value.
+///
+/// # Errors
+/// Returns `ReconcilerError` if the status subresource patch fails.
+pub async fn patch_machine_refs_status(
+    client: &Client,
+    namespace: &str,
+    name: &str,
+    provider_id: Option<&str>,
+    node_ref: Option<&NodeRef>,
+) -> Result<(), ReconcilerError> {
+    let mut status_fields = serde_json::Map::new();
+    if let Some(pid) = provider_id {
+        status_fields.insert("providerID".to_string(), json!(pid));
+    }
+    if let Some(nref) = node_ref {
+        status_fields.insert("nodeRef".to_string(), json!(nref));
+    }
+    if status_fields.is_empty() {
+        return Ok(());
+    }
+
+    let patch = json!({ "status": serde_json::Value::Object(status_fields) });
+    let api: Api<ScheduledMachine> = Api::namespaced(client.clone(), namespace);
+    api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await?;
+    debug!(
+        resource = %name,
+        namespace = %namespace,
+        has_provider_id = provider_id.is_some(),
+        has_node_ref = node_ref.is_some(),
+        "Patched Machine refs into ScheduledMachine status"
+    );
+    Ok(())
+}
+
+// ============================================================================
+// Node Draining
+// ============================================================================
+
+/// Get the Kubernetes Node name associated with a CAPI Machine, resolving via
+/// `status.nodeRef.name`.
+///
+/// Thin wrapper around [`fetch_capi_machine`] + [`extract_machine_refs`] kept
+/// for callers that only need the drain target name.
+///
+/// # Errors
+/// Returns `ReconcilerError::CapiError` on non-404 API failures.
+pub async fn get_node_from_machine(
+    client: &Client,
+    namespace: &str,
+    machine_name: &str,
+) -> Result<Option<String>, ReconcilerError> {
+    let Some(machine) = fetch_capi_machine(client, namespace, machine_name).await? else {
+        return Ok(None);
+    };
+    let (_, node_ref) = extract_machine_refs(&machine);
+    let Some(nref) = node_ref else {
+        debug!(
+            machine = %machine_name,
+            "Machine has no nodeRef in status yet"
+        );
+        return Ok(None);
+    };
+    debug!(
+        machine = %machine_name,
+        node = %nref.name,
+        "Found Node reference in Machine status"
+    );
+    Ok(Some(nref.name))
+}
+
+// ============================================================================
+// Secondary-watch mappers (label/name → ObjectRef<ScheduledMachine>)
+// ============================================================================
+
+/// Map a CAPI Machine event to the owning `ScheduledMachine`.
+///
+/// Uses the `5spot.eribourg.dev/scheduled-machine` label that the reconciler
+/// already stamps on every Machine it creates. Returns an empty vec when the
+/// label is missing, empty, whitespace-only, or when the Machine has no
+/// namespace — any of those would produce an ill-formed reconcile request.
+///
+/// Returns `Vec` (rather than `Option`) so it composes directly with the
+/// `kube::runtime::Controller::watches()` mapper contract
+/// (`IntoIterator<Item = ObjectRef<K>>`).
+#[must_use]
+pub fn machine_to_scheduled_machine(
+    machine: &kube::core::DynamicObject,
+) -> Vec<kube::runtime::reflector::ObjectRef<ScheduledMachine>> {
+    let Some(labels) = machine.metadata.labels.as_ref() else {
+        return Vec::new();
+    };
+    let Some(raw_name) = labels.get(crate::labels::LABEL_SCHEDULED_MACHINE) else {
+        return Vec::new();
+    };
+    let name = raw_name.trim();
+    if name.is_empty() {
+        return Vec::new();
+    }
+    let Some(namespace) = machine.metadata.namespace.as_deref() else {
+        return Vec::new();
+    };
+    vec![kube::runtime::reflector::ObjectRef::<ScheduledMachine>::new(name).within(namespace)]
+}
+
+/// Map a `Node` event to all `ScheduledMachine`s whose
+/// `status.nodeRef.name == node.metadata.name`.
+///
+/// Runs `O(N)` over the supplied SM iterator. Fine at small scale (tens to
+/// hundreds of SMs); if the cluster ever hosts thousands, swap in a reverse
+/// index keyed by the last-observed `nodeRef.name`.
+#[must_use]
+pub fn node_to_scheduled_machines<'a, I>(
+    node: &k8s_openapi::api::core::v1::Node,
+    scheduled_machines: I,
+) -> Vec<kube::runtime::reflector::ObjectRef<ScheduledMachine>>
+where
+    I: IntoIterator<Item = &'a ScheduledMachine>,
+{
+    let Some(node_name) = node.metadata.name.as_deref() else {
+        return Vec::new();
+    };
+    if node_name.is_empty() {
+        return Vec::new();
+    }
+    scheduled_machines
+        .into_iter()
+        .filter_map(|sm| {
+            let nref = sm.status.as_ref()?.node_ref.as_ref()?;
+            if nref.name.is_empty() || nref.name != node_name {
+                return None;
+            }
+            let name = sm.metadata.name.as_deref()?;
+            let namespace = sm.metadata.namespace.as_deref()?;
+            Some(
+                kube::runtime::reflector::ObjectRef::<ScheduledMachine>::new(name)
+                    .within(namespace),
+            )
+        })
+        .collect()
 }
 
 /// Cordon a Kubernetes Node (mark as unschedulable)
