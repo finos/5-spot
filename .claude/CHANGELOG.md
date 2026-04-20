@@ -9,6 +9,27 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-04-20 00:15] - Grant `update` on `scheduledmachines/finalizers` to unblock Machine creation
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `deploy/deployment/rbac/clusterrole.yaml`: New rule granting `update` on `scheduledmachines/finalizers` under the `5spot.finos.org` API group. Added as a separate rule (rather than widening the existing `scheduledmachines` / `scheduledmachines/status` rule) so the verb surface on the finalizers subresource stays exactly at the minimum the API-server admission check requires. Inline comment documents the link back to `src/reconcilers/helpers.rs` where `blockOwnerDeletion: true` is set, and quotes the exact API-server error that the missing rule produces.
+
+### Why
+`src/reconcilers/helpers.rs:859` stamps `blockOwnerDeletion: true` on the `ownerReference` it writes from every child CAPI `Machine` back to its parent `ScheduledMachine`. Kubernetes treats `blockOwnerDeletion` as functionally equivalent to holding a finalizer on the owner, so during admission it checks that the creating service account has `update` on `<owner-resource>/finalizers` — a separate subresource in RBAC terms from the main `scheduledmachines` resource and from `scheduledmachines/status`. The controller's ClusterRole has shipped since the initial commit with full CRUD on `scheduledmachines` and `scheduledmachines/status` but without any rule for the `finalizers` subresource, so every Machine creation is rejected by the API server with `machines.cluster.x-k8s.io "<name>" is forbidden: cannot set blockOwnerDeletion if an ownerReference refers to a resource you can't set finalizers on`. This is a latent RBAC bug, not a regression. The fix grants exactly the verb the API server checks (`update`); no broader verb set is needed and granting more would violate least-privilege.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (re-apply the ClusterRole; no controller restart required — RBAC changes are picked up on the next API request)
+- [ ] Config change only
+- [ ] Documentation only
+
+### Follow-up (optional, not in this commit)
+- Integration test that creates a `ScheduledMachine` against a kind cluster with the shipped ClusterRole and asserts the child `Machine` is admitted. Would catch any future regression in RBAC vs. `ownerReference` shape without waiting for a prod cluster rollout to expose it.
+
+---
+
 ## [2026-04-19 21:50] - Triage GHSA-cq8v-f236-94qc (rand soundness); widen VEX identifier shapes
 
 **Author:** Erick Bourgeois

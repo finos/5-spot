@@ -12,6 +12,22 @@ rules:
     resources: ["scheduledmachines", "scheduledmachines/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
+  # ScheduledMachine finalizers — required because the controller sets
+  # `blockOwnerDeletion: true` on the ownerReference it writes from every
+  # child CAPI Machine back to its parent ScheduledMachine
+  # (src/reconcilers/helpers.rs). The API server treats blockOwnerDeletion
+  # as equivalent to holding a finalizer on the owner, so it checks that
+  # the creating identity has `update` on <owner-resource>/finalizers.
+  # Without this rule, Machine creation is rejected with:
+  #   cannot set blockOwnerDeletion if an ownerReference refers to a
+  #   resource you can't set finalizers on
+  # Verb is intentionally just `update` — the minimum the subresource
+  # check requires; the broader CRUD set on the main resource above is
+  # not needed here.
+  - apiGroups: ["5spot.finos.org"]
+    resources: ["scheduledmachines/finalizers"]
+    verbs: ["update"]
+
   # CAPI Machine management
   - apiGroups: ["cluster.x-k8s.io"]
     resources: ["machines", "machines/status"]
