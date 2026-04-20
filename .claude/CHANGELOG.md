@@ -9,6 +9,45 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-04-19 20:45] - Fix vexctl installer 404 in build.yaml
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/build.yaml` (Install vexctl step): Changed the download URL from the non-existent `vexctl_${VEXCTL_VERSION}_linux_amd64.tar.gz` tarball to the raw binary `vexctl-linux-amd64`. Removed the `tar -xzf` step accordingly. Kept the version pin at `0.3.0` and the inline comment, expanded to describe the actual asset layout (raw binaries + detached Cosign `.sig`/`.pem` per platform).
+
+### Why
+The OpenVEX project does not publish versioned tarballs for vexctl. Their release assets are raw platform binaries named `vexctl-<os>-<arch>` (hyphens, no version, no `.tar.gz`). The workflow was copy-pasted from the Grype install step — which *does* ship tarballs in the format `grype_<version>_<os>_<arch>.tar.gz` — so the pattern looked reasonable but 404ed on the first CI run. Verified the correct asset name against `api.github.com/repos/openvex/vexctl/releases/tags/v0.3.0`. Grype's own installer was audited and is correct.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (CI workflow)
+- [ ] Documentation only
+
+### Follow-up (optional, not in this commit)
+vexctl ships detached Cosign signatures (`vexctl-linux-amd64.sig` + `.pem`). A follow-up could verify the binary with `cosign verify-blob` before installing, closing a small supply-chain gap on the installer itself.
+
+---
+
+## [2026-04-19 20:30] - Add Community section to README (FINOS Slack #5-spot)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `README.md`: New `## Community` section between `## Contributing` and `## Security`, pointing to `#5-spot` on the FINOS Slack workspace (<https://finos-lf.slack.com/channels/5-spot>, join at <https://finos.org/slack>), plus GitHub Issues and GitHub Discussions as the other two canonical contact surfaces. Security-sensitive reports are explicitly redirected back to the Security section so they do not land in public Issues.
+
+### Why
+New contributors and users landing on the repo had no documented way to reach the project maintainers for usage questions short of opening an Issue. Publishing the FINOS Slack channel — now that the project lives under the FINOS org — gives a low-friction conversation surface and matches what every other FINOS project does.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
 ## [2026-04-19 20:15] - Rename Service to `controller` (RFC 1035 compliance)
 
 **Author:** Erick Bourgeois

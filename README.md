@@ -470,6 +470,20 @@ Contributions welcome! Please:
 5. Ensure all tests pass
 6. Install git hooks: `make install-git-hooks` (prevents committing secrets)
 
+## Community
+
+- **Slack**: [`#5-spot`](https://finos-lf.slack.com/channels/5-spot) on the FINOS
+  Slack workspace. Join the workspace at <https://finos.org/slack> if you
+  don't already have access. Use `#5-spot` for usage questions, schedule and
+  reconciliation behaviour, CAPI integration questions, and release
+  coordination.
+- **GitHub Issues**: <https://github.com/finos/5-spot/issues> for bugs,
+  feature requests, and CRD schema discussion. Security-sensitive reports
+  should follow the process in [Security](#security) below, not Issues.
+- **GitHub Discussions**: <https://github.com/finos/5-spot/discussions> for
+  longer-form design and architecture conversations that outgrow a Slack
+  thread.
+
 ## Security
 
 - **Gitleaks**: Pre-commit and CI secret scanning

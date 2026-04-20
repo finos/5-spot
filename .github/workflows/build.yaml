@@ -23,12 +23,16 @@ on:
     types:
       - published
 
-# Defaults for jobs that do not declare their own permissions block.
-# Jobs with special needs (docker, attest, sign, upload) override at job level.
+# Top-level GITHUB_TOKEN is read-only by default (OpenSSF Scorecard
+# Token-Permissions rule). Jobs that need elevated scopes — id-token:write
+# for keyless Cosign / Sigstore, security-events:write for SARIF upload to
+# Code Scanning, packages:write for GHCR push, attestations:write for
+# actions/attest-build-provenance, contents:write for release-asset upload
+# — declare them explicitly at job level. See the docker / attest /
+# build-vex / semgrep-sast / iac-scan / grype / sign-artifacts /
+# slsa-provenance / upload-release-assets jobs below.
 permissions:
   contents: read
-  id-token: write
-  security-events: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -553,9 +557,12 @@ jobs:
           VEXCTL_VERSION: '0.3.0'
         run: |
           set -euo pipefail
-          url="https://github.com/openvex/vexctl/releases/download/v${VEXCTL_VERSION}/vexctl_${VEXCTL_VERSION}_linux_amd64.tar.gz"
-          curl -fsSLo vexctl.tgz "$url"
-          tar -xzf vexctl.tgz vexctl
+          # OpenVEX publishes vexctl as raw platform binaries (no tarball,
+          # no version in the asset name), plus detached Cosign signatures.
+          # Asset layout: vexctl-<os>-<arch>, vexctl-<os>-<arch>.sig,
+          # vexctl-<os>-<arch>.pem. See the release page for the full list.
+          url="https://github.com/openvex/vexctl/releases/download/v${VEXCTL_VERSION}/vexctl-linux-amd64"
+          curl -fsSLo vexctl "$url"
           sudo install -m 0755 vexctl /usr/local/bin/vexctl
           vexctl version
 
