@@ -47,6 +47,11 @@ run_case "empty-dir"      "$FIXTURES/empty-dir"      0
 run_case "valid-single"   "$FIXTURES/valid-single"   0
 run_case "valid-multiple" "$FIXTURES/valid-multiple" 0
 run_case "valid-affected" "$FIXTURES/valid-affected" 0
+# Non-CVE identifiers (GHSA + RUSTSEC) accepted since 2026-04-20 —
+# first real encounter was GHSA-cq8v-f236-94qc (rand soundness) which
+# ships without a CVE ID.
+run_case "valid-ghsa"     "$FIXTURES/valid-ghsa"     0
+run_case "valid-rustsec"  "$FIXTURES/valid-rustsec"  0
 
 # Negative paths — one per validation rule.
 run_case "malformed-toml"            "$FIXTURES/malformed-toml"            1
@@ -56,6 +61,8 @@ run_case "missing-products"          "$FIXTURES/missing-products"          1
 run_case "missing-author"            "$FIXTURES/missing-author"            1
 run_case "missing-timestamp"         "$FIXTURES/missing-timestamp"         1
 run_case "invalid-cve-format"        "$FIXTURES/invalid-cve-format"        1
+run_case "invalid-ghsa-format"       "$FIXTURES/invalid-ghsa-format"       1
+run_case "invalid-rustsec-format"    "$FIXTURES/invalid-rustsec-format"    1
 run_case "invalid-status"            "$FIXTURES/invalid-status"            1
 run_case "empty-products"            "$FIXTURES/empty-products"            1
 run_case "bad-timestamp"             "$FIXTURES/bad-timestamp"             1
@@ -63,6 +70,7 @@ run_case "missing-justification"     "$FIXTURES/missing-justification"     1
 run_case "invalid-justification"     "$FIXTURES/invalid-justification"     1
 run_case "missing-action-statement"  "$FIXTURES/missing-action-statement"  1
 run_case "duplicate-cve"             "$FIXTURES/duplicate-cve"             1
+run_case "duplicate-ghsa"            "$FIXTURES/duplicate-ghsa"            1
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

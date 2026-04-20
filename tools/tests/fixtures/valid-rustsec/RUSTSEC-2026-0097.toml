@@ -1,0 +1,7 @@
+cve = "RUSTSEC-2026-0097"
+status = "not_affected"
+justification = "vulnerable_code_not_in_execute_path"
+impact_statement = "The affected code path is never invoked by 5-Spot."
+products = ["pkg:oci/5-spot-chainguard"]
+author = "erick.bourgeois@gmail.com"
+timestamp = "2026-04-19T00:00:00Z"

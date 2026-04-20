@@ -100,6 +100,25 @@ else
     fail_case "missing --id / --author rejected" "$TMP/err"
 fi
 
+# ── GHSA identifier case is preserved (not upper-cased) ────────────────────
+# GHSA IDs are conventionally lowercase alphanumeric segments; upper-casing
+# them changes the on-wire identifier and breaks a round-trip against
+# osv.dev / github.com/advisories. Regression guard for the rand soundness
+# advisory (GHSA-cq8v-f236-94qc) which was the first non-CVE ID we shipped.
+out_ghsa="$TMP/ghsa.json"
+python3 "$ASSEMBLER" \
+    --vex-dir "$FIXTURES/valid-ghsa" \
+    --id "urn:vex:ghsa-test" \
+    --author "ci@example" \
+    --timestamp "2026-04-19T00:00:00Z" \
+    --output "$out_ghsa" >/dev/null 2>"$TMP/err"
+if grep -q '"GHSA-cq8v-f236-94qc"' "$out_ghsa" &&
+   ! grep -q '"GHSA-CQ8V-F236-94QC"' "$out_ghsa"; then
+    pass_case "GHSA identifier case is preserved verbatim"
+else
+    fail_case "GHSA identifier case is preserved verbatim" "$out_ghsa"
+fi
+
 # ── Default timestamp (no --timestamp) produces RFC-3339 UTC ───────────────
 out_dt="$TMP/dt.json"
 python3 "$ASSEMBLER" \

@@ -1,0 +1,36 @@
+# osv-scanner.toml — OSV-Scanner ignore list.
+#
+# This file is consumed by osv-scanner (and, transitively, by the OpenSSF
+# Scorecard `Vulnerabilities` check, which runs osv-scanner against the
+# lockfiles it finds in the repository). Entries listed here are reported
+# as informational but do not fail the scan, so Scorecard can restore the
+# Vulnerabilities score to 10/10 while we carry the underlying transitive
+# dependency.
+#
+# Every ignore MUST include:
+#   - `id`               — the advisory ID (CVE / GHSA / RUSTSEC).
+#   - `reason`           — a short justification mirroring the matching
+#                          statement in `.vex/`. If the reason here and
+#                          the VEX impact_statement drift, the VEX doc is
+#                          the source of truth; keep this file aligned.
+#   - `ignoreUntil`      — a reassessment date. Past that date osv-scanner
+#                          will resume treating the advisory as unignored,
+#                          forcing a re-triage.
+#
+# File format reference:
+#   https://google.github.io/osv-scanner/configuration/
+
+[[IgnoredVulns]]
+id = "GHSA-cq8v-f236-94qc"
+ignoreUntil = "2026-10-19"
+reason = """
+rand 0.8.6 is pulled transitively via warp 0.3.7 -> tokio-tungstenite 0.21 ->
+tungstenite 0.21 and is used exclusively for websocket frame masking. The
+advisory requires ThreadRng to be invoked from inside a custom log::Log
+implementation during reseed; 5-Spot's tracing-subscriber stack never
+calls rand from a logger emit path, so the unsound code is not in the
+execute path. Full remediation requires warp 0.3 -> 0.4 / axum migration
+to pick up tokio-tungstenite 0.22+ (rand >= 0.9.3). Triage recorded in
+.vex/GHSA-cq8v-f236-94qc.toml (OpenVEX: not_affected,
+vulnerable_code_not_in_execute_path). Reassess by 2026-10-19.
+"""

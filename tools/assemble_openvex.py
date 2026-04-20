@@ -43,8 +43,13 @@ def _load_statement(path: Path) -> dict:
     with path.open("rb") as fh:
         doc = tomllib.load(fh)
 
+    # Preserve the identifier verbatim — CVE-YYYY-NNNN+ is uppercase by
+    # MITRE convention, but GHSA-xxxx-xxxx-xxxx segments are lowercase,
+    # and upper-casing them breaks round-tripping against osv.dev and
+    # github.com/advisories (which treat GHSA IDs case-insensitively for
+    # matching but render them in their canonical lowercase form).
     statement: dict = {
-        "vulnerability": {"name": doc["cve"].upper()},
+        "vulnerability": {"name": doc["cve"]},
         "products": [{"@id": product} for product in doc["products"]],
         "status": doc["status"],
         "timestamp": _ts_to_str(doc["timestamp"]),

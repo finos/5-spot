@@ -32,7 +32,25 @@ VALID_JUSTIFICATIONS = frozenset(
 # Fields required on every file regardless of status.
 REQUIRED_ALWAYS = ("cve", "status", "products", "author", "timestamp")
 
+# Accepted vulnerability identifiers. The TOML field is still named `cve`
+# for backward compatibility with the existing .vex/ files, but the value
+# may be any of:
+#   - CVE-YYYY-NNNN+    (MITRE CVE)
+#   - GHSA-xxxx-xxxx-xxxx  (GitHub Security Advisory, case-insensitive)
+#   - RUSTSEC-YYYY-NNNN (RustSec advisory DB)
+# First real non-CVE encounter was GHSA-cq8v-f236-94qc (rand soundness)
+# which ships without a CVE ID, so CVE-only would make it unrepresentable.
 _CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,}$")
+_GHSA_RE = re.compile(r"^GHSA(-[a-z0-9]{4}){3}$", re.IGNORECASE)
+_RUSTSEC_RE = re.compile(r"^RUSTSEC-\d{4}-\d{4}$")
+
+
+def _is_accepted_id(value: str) -> bool:
+    return bool(
+        _CVE_RE.match(value)
+        or _GHSA_RE.match(value)
+        or _RUSTSEC_RE.match(value)
+    )
 
 # RFC-3339 in UTC (Z suffix) — we intentionally keep this narrow so every VEX
 # timestamp is directly comparable without timezone arithmetic.
@@ -74,9 +92,11 @@ def validate_file(path: Path) -> tuple[str | None, list[str]]:
     timestamp = doc["timestamp"]
     author = doc["author"]
 
-    if not isinstance(cve, str) or not _CVE_RE.match(cve):
+    if not isinstance(cve, str) or not _is_accepted_id(cve):
         errors.append(
-            f"{path}: 'cve' must match CVE-YYYY-NNNN+, got {cve!r}"
+            f"{path}: 'cve' must be a CVE-YYYY-NNNN+, "
+            f"GHSA-xxxx-xxxx-xxxx, or RUSTSEC-YYYY-NNNN identifier, "
+            f"got {cve!r}"
         )
 
     if status not in VALID_STATUSES:

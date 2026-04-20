@@ -9,6 +9,35 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-04-19 21:50] - Triage GHSA-cq8v-f236-94qc (rand soundness); widen VEX identifier shapes
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `osv-scanner.toml` (new, at repo root): Ignore entry for `GHSA-cq8v-f236-94qc` with `ignoreUntil = 2026-10-19` and a reason that mirrors the VEX statement. This is the file shape Scorecard's `Vulnerabilities` check (and osv-scanner itself) expect — per the remediation text in the Scorecard finding.
+- `.vex/GHSA-cq8v-f236-94qc.toml` (new): OpenVEX statement with `status = not_affected`, `justification = vulnerable_code_not_in_execute_path`, explicit impact statement. Applies to both the Chainguard and Distroless product identifiers.
+- `tools/validate_vex.py`: Widened the accepted identifier set from `CVE-YYYY-NNNN+` only to also accept `GHSA-xxxx-xxxx-xxxx` (case-insensitive) and `RUSTSEC-YYYY-NNNN`. The TOML field is still named `cve` for backward compatibility with the existing 11 statement files. New `_is_accepted_id()` helper composes the three regexes; error message updated to list all three shapes.
+- `tools/assemble_openvex.py`: Dropped the `.upper()` on `doc["cve"]` when rendering `vulnerability.name`. GHSA ID segments are canonically lowercase and upper-casing them breaks round-tripping against osv.dev / github.com/advisories. CVE IDs in existing files are already uppercase, so this is a no-op for them.
+- `tools/tests/validate-vex-tests.sh`: Added happy-path cases `valid-ghsa` and `valid-rustsec`, plus negative cases `invalid-ghsa-format`, `invalid-rustsec-format`, and `duplicate-ghsa` (uniqueness check across case variants of a GHSA ID).
+- `tools/tests/fixtures/{valid-ghsa,valid-rustsec,invalid-ghsa-format,invalid-rustsec-format,duplicate-ghsa}/` (new fixture dirs).
+- `tools/tests/assemble-openvex-tests.sh`: Added regression guard asserting `GHSA-cq8v-f236-94qc` is emitted verbatim (not upper-cased) into `vulnerability.name`.
+- `.vex/README.md`: Documented the expanded identifier format.
+
+### Why
+OpenSSF Scorecard's `Vulnerabilities` rule flagged `GHSA-cq8v-f236-94qc` (rand soundness when a custom `log` logger calls `rand::rng()` mid-reseed) on `rand 0.8.6`, pulled transitively via `warp 0.3.7` → `tokio-tungstenite 0.21` → `tungstenite 0.21` where rand is used exclusively for websocket frame masking. The vulnerable path requires the `log` logger itself to call into rand during a reseed, which 5-Spot's tracing-subscriber stack never does. The advisory ships without a CVE ID, which the existing VEX validator (`CVE-YYYY-NNNN+` only) rejected — making it the first advisory the VEX pipeline could not represent. Widening the validator to accept GHSA + RUSTSEC identifiers unblocks this triage and every future non-CVE advisory without forcing a field rename of the existing 11 files. The full fix (rand >= 0.9.3) requires crossing a warp 0.3.x semver boundary (warp 0.3 hard-pins tokio-tungstenite ^0.21) and is tracked as a follow-up, not attempted here.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (CI / supply-chain)
+- [ ] Documentation only
+
+### Follow-up (optional, not in this commit)
+- Warp 0.3 → 0.4 or axum migration so `tokio-tungstenite` and the transitive `rand` can be bumped past the vulnerable range; remove `osv-scanner.toml` entry and the VEX statement when that lands.
+- Consider renaming the TOML field from `cve` to `id` once every existing statement has been regenerated; not worth the churn today.
+
+---
+
 ## [2026-04-19 21:25] - Remove bogus `vexctl validate` step from build-vex job
 
 **Author:** Erick Bourgeois

@@ -35,8 +35,16 @@ statement is explicitly authored and reviewed.
 
 ## File format
 
-One TOML file per CVE, named `<CVE-ID>.toml` (case-insensitive match on the
-`cve` field; file name is informational).
+One TOML file per advisory, named `<identifier>.toml` (case-insensitive match
+on the `cve` field; file name is informational). Accepted identifier shapes:
+
+- `CVE-YYYY-NNNN+` — MITRE CVE (the common case).
+- `GHSA-xxxx-xxxx-xxxx` — GitHub Security Advisory. Use this when the advisory
+  has no assigned CVE yet (e.g. `GHSA-cq8v-f236-94qc`).
+- `RUSTSEC-YYYY-NNNN` — RustSec advisory DB.
+
+The TOML field is still named `cve` for backward compatibility with the
+original file format; the value may be any of the above.
 
 ```toml
 cve = "CVE-2025-12345"

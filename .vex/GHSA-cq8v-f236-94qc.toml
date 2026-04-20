@@ -1,0 +1,33 @@
+# rand soundness when a custom `log` logger calls rand::rng() and triggers
+# ThreadRng reseeding at warn- or trace-level.
+#
+# Reachable-only-if ALL of:
+#   1. the `log` and `thread_rng` rand features are enabled,
+#   2. a custom logger implementation is registered,
+#   3. that logger itself calls rand::rng() / a TryRng method on ThreadRng,
+#   4. ThreadRng reseeds (every 64 kB) while the logger is on the stack,
+#   5. trace-level is on OR warn-level is on with getrandom unavailable.
+#
+# In 5-Spot's dependency graph, the only vulnerable rand 0.8.6 is pulled
+# transitively via warp 0.3.7 → tokio-tungstenite 0.21 → tungstenite 0.21,
+# where rand is used exclusively for websocket client frame-masking keys
+# (tungstenite::protocol::frame::mask). That code path is not invoked
+# from, or reachable by, any `log` / `tracing` logger implementation in
+# this project — 5-Spot uses tracing-subscriber's stock fmt + json
+# layers with env-filter, none of which touch rand from within emit().
+#
+# The full fix (rand >= 0.9.3) requires warp → tokio-tungstenite 0.22+,
+# which warp 0.3.x does not support. Tracked for removal when the warp
+# 0.3 → 0.4 / axum migration lands; until then this statement documents
+# the non-exploitability and a Scorecard-side ignore is recorded in
+# osv-scanner.toml at the repo root.
+cve = "GHSA-cq8v-f236-94qc"
+status = "not_affected"
+justification = "vulnerable_code_not_in_execute_path"
+impact_statement = "Vulnerable rand 0.8.6 is pulled transitively by tungstenite 0.21 for websocket frame masking only. The advisory requires ThreadRng to be invoked from within a custom log::Log implementation during reseed; 5-Spot's tracing-subscriber stack does not call into rand from any logger emit path, so the unsound code is not in the execute path."
+products = [
+    "pkg:oci/5-spot-chainguard",
+    "pkg:oci/5-spot-distroless",
+]
+author = "erick.bourgeois@gmail.com"
+timestamp = "2026-04-19T00:00:00Z"
