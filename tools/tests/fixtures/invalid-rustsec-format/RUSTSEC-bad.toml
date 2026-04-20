@@ -1,0 +1,5 @@
+cve = "RUSTSEC-2026-97"
+status = "fixed"
+products = ["pkg:oci/5-spot-chainguard"]
+author = "erick.bourgeois@gmail.com"
+timestamp = "2026-04-19T00:00:00Z"
