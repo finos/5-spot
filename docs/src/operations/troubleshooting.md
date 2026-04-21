@@ -202,6 +202,121 @@ kubectl logs -n 5spot-system -l app=5spot-controller -f | \
   kubectl annotate scheduledmachine <name> 5spot.finos.org/force-reconcile="$(date -u +%s)" --overwrite
   ```
 
+## Emergency Reclaim (Kill Switch)
+
+See [Emergency Reclaim](../concepts/emergency-reclaim.md) for the full lifecycle.
+This section covers the diagnostic angles most operators hit in the field.
+
+### ScheduledMachine stuck in `EmergencyRemove`
+
+**Symptoms:**
+
+- `kubectl get scheduledmachine` shows `PHASE=EmergencyRemove` and does not move to `Disabled`.
+- The node still appears in the cluster.
+
+**Diagnosis:**
+
+```bash
+# Is the reclaim annotation still on the Node? (expected during eject, cleared at end)
+kubectl get node <node-name> -o jsonpath='{.metadata.annotations}' | jq \
+  'with_entries(select(.key | startswith("5spot.finos.org/reclaim")))'
+
+# Controller logs for the emergency-remove handler
+kubectl logs -n 5spot-system -l app=5spot-controller --tail=200 | \
+  jq -c 'select(.fields.phase == "EmergencyRemove")'
+
+# Events on the ScheduledMachine
+kubectl describe scheduledmachine/<name> | grep -A 5 Events
+```
+
+**Common causes:**
+
+1. **Drain is blocked by non-evictable pods.** The handler uses `--force --disable-eviction`, so this should be rare — if it happens, a pod is probably stuck in `Terminating` waiting on a finalizer of its own.
+2. **CAPI Machine deletion is blocked.** Check `kubectl describe machine/<machine-name>` for a finalizer that has not been cleared.
+3. **Controller crashed mid-handler.** On restart the annotation is still there (cleared last), so the handler will retry from the top — the operation is idempotent.
+
+### Node keeps getting ejected every schedule window
+
+**Symptom:** The `ScheduledMachine` cycles `Disabled → Pending → Active → EmergencyRemove → Disabled → ...` at every schedule boundary.
+
+**Cause:** The matched process is still running, the user re-enabled the schedule without quitting it first, and the agent correctly re-fired on the next poll.
+
+**Confirm:**
+
+```bash
+# Check what the agent matched on
+kubectl logs -n 5spot-system -l app=5spot-reclaim-agent --tail=50 | jq -c 'select(.fields.matched_pattern)'
+
+# Check the condition reason on the ScheduledMachine
+kubectl get scheduledmachine/<name> -o jsonpath='{.status.conditions}' | jq \
+  '.[] | select(.reason == "EmergencyReclaimDisabledSchedule")'
+```
+
+**Solution:** Quit the matched process on the node, then re-enable:
+
+```bash
+kubectl patch scheduledmachine/<name> --type merge \
+  -p '{"spec":{"schedule":{"enabled":true}}}'
+```
+
+If the user does not want this node in the reclaim path at all, clear `killIfCommands`:
+
+```bash
+kubectl patch scheduledmachine/<name> --type merge \
+  -p '{"spec":{"killIfCommands":null}}'
+```
+
+### Reclaim agent never fires on a known-matching process
+
+**Symptoms:** User has a matching process running, but the Node never gets annotated.
+
+**Checklist:**
+
+1. **Is the agent pod actually running on the node?**
+   ```bash
+   kubectl get pods -n 5spot-system -l app=5spot-reclaim-agent -o wide
+   ```
+   If no pod lands on the target node, the `5spot.finos.org/reclaim-agent=enabled` label is probably missing. Check the node labels:
+   ```bash
+   kubectl get node <node-name> --show-labels | grep reclaim-agent
+   ```
+
+2. **Is the per-node ConfigMap present and readable?**
+   The agent no longer mounts its config from a file — it watches the per-node `ConfigMap` named `reclaim-agent-<NODE_NAME>` in `5spot-system` via the kube API and hot-reloads on every change. Check the ConfigMap directly:
+   ```bash
+   kubectl get cm -n 5spot-system reclaim-agent-<node-name> -o jsonpath='{.data.reclaim\.toml}'
+   ```
+   Missing ConfigMap → agent idles (no proc scanning) until one appears. Empty `match_commands` + empty `match_argv_substrings` = agent is armed but inert (never matches) by design. The agent logs `configmap applied — rearming scanner` at INFO on every observed change; tail the pod logs to confirm it sees yours:
+   ```bash
+   kubectl logs -n 5spot-system <agent-pod> | grep configmap
+   ```
+
+3. **Is the agent reading real `/proc`?**
+   ```bash
+   kubectl exec -n 5spot-system <agent-pod> -- ls /host/proc | head
+   ```
+   Expect many numeric directory names. If you only see `1` and `self`, the pod's `hostPID: true` mount is broken — re-check the DaemonSet template.
+
+4. **Match is case-sensitive.** `match_commands = ["Java"]` does **not** match a `java` process. Lowercase the pattern to match the typical JVM binary name.
+
+5. **The agent only reads `/proc/<pid>/comm` (exact basename) and `/proc/<pid>/cmdline` (substring).** A process whose `comm` is `java-wrapper` but argv starts with `/opt/jdk/bin/java ...` matches on `cmdline` (substring), not on `comm` (exact).
+
+### `EmergencyReclaim` event fires but schedule is not disabled
+
+**Symptom:** The `EmergencyReclaim` event is on the `ScheduledMachine`, but `spec.schedule.enabled` is still `true`.
+
+**This indicates the controller crashed between the drain/delete steps and the `enabled=false` PATCH.** The Node annotation is cleared *after* the PATCH, so the controller will see the annotation on the next reconcile and retry. If it does not, check:
+
+```bash
+# Is the EmergencyReclaimDisabledSchedule event present?
+kubectl get events --field-selector reason=EmergencyReclaimDisabledSchedule \
+  --sort-by='.lastTimestamp'
+
+# If yes, but spec.schedule.enabled is still true, the PATCH may have lost a race
+# with a user edit. Check the generation on the ScheduledMachine:
+kubectl get scheduledmachine/<name> -o jsonpath='{.metadata.generation} {.status.observedGeneration}'
+```
+
 ## Error Messages
 
 ### "Resource not owned by this instance"

@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
 # SPDX-License-Identifier: Apache-2.0
 
-.PHONY: help install build build-debug build-linux-amd64 build-linux-arm64 build-macos-arm64 prepare-binaries-linux-amd64 prepare-binaries-linux-arm64 test test-lib lint format clean crds crddoc docs docs-serve docs-clean docs-rustdoc calm-diagrams calm-validate run-local docker-build docker-build-amd64 docker-build-arm64 docker-build-chainguard docker-push docker-buildx docker-buildx-chainguard gitleaks gitleaks-install install-git-hooks security-scan-local sbom audit
+.PHONY: help install build build-debug build-linux-amd64 build-linux-arm64 build-macos-arm64 prepare-binaries-linux-amd64 prepare-binaries-linux-arm64 test test-lib lint format clean crds crddoc docs docs-serve docs-clean docs-rustdoc calm-diagrams calm-validate run-local docker-build docker-build-amd64 docker-build-arm64 docker-build-chainguard docker-push docker-buildx docker-buildx-chainguard gitleaks gitleaks-install install-git-hooks security-scan-local sbom audit kind-install kind-create kind-delete kind-load kind-deploy kind-example kind-setup kind-status
 
 # CALM (FINOS Common Architecture Language Model) configuration
 CALM_CLI_VERSION ?= 1.37.0
@@ -36,6 +36,17 @@ CONTAINER_TOOL ?= docker
 
 # Security tool versions
 GITLEAKS_VERSION ?= 8.21.2
+
+# Kind (local Kubernetes) configuration
+KIND_VERSION ?= 0.24.0
+KIND_CLUSTER_NAME ?= 5spot-dev
+KIND_NODE_IMAGE ?= kindest/node:v1.31.0
+# Image reference used for the locally built kind image. The `local-dev` tag
+# makes it unambiguous that the image is a developer build (not a released
+# version). `kind-deploy` applies the checked-in Deployment (pinned to
+# ghcr.io/finos/5-spot:v0.1.0) and then overrides the container image to
+# $(KIND_IMAGE) via `kubectl set image` so the locally loaded image is used.
+KIND_IMAGE ?= ghcr.io/finos/5-spot:local-dev
 
 # Python/Poetry package index configuration (for corporate environments)
 # Set PYPI_INDEX_URL to use a custom PyPI mirror (e.g., Artifactory)
@@ -437,3 +448,154 @@ sbom: ## Generate CycloneDX SBOM (Software Bill of Materials)
 audit: ## Check dependencies for security vulnerabilities (installs cargo-audit if missing)
 	@command -v cargo-audit >/dev/null 2>&1 || { echo "Installing cargo-audit..."; cargo install cargo-audit; }
 	@cargo audit
+
+# ============================================================
+# Kind Cluster (local testing for ScheduledMachine)
+# ============================================================
+
+kind-install: ## Install kind CLI if missing (verifies checksum)
+	@if ! command -v kind >/dev/null 2>&1; then \
+		echo "Installing kind v$(KIND_VERSION)..."; \
+		OS=$$(uname -s | tr '[:upper:]' '[:lower:]'); \
+		ARCH=$$(uname -m); \
+		case "$$ARCH" in \
+			x86_64) ARCH="amd64" ;; \
+			aarch64|arm64) ARCH="arm64" ;; \
+		esac; \
+		BIN="kind-$${OS}-$${ARCH}"; \
+		BASE_URL="https://github.com/kubernetes-sigs/kind/releases/download/v$(KIND_VERSION)"; \
+		echo "Downloading $$BIN..."; \
+		curl -sSLf -o /tmp/$$BIN "$$BASE_URL/$$BIN"; \
+		echo "Downloading checksum..."; \
+		curl -sSLf -o /tmp/$$BIN.sha256sum "$$BASE_URL/$$BIN.sha256sum"; \
+		echo "Verifying checksum..."; \
+		cd /tmp && \
+			EXPECTED=$$(awk '{print $$1}' $$BIN.sha256sum) && \
+			if command -v sha256sum >/dev/null 2>&1; then \
+				ACTUAL=$$(sha256sum $$BIN | awk '{print $$1}'); \
+			else \
+				ACTUAL=$$(shasum -a 256 $$BIN | awk '{print $$1}'); \
+			fi && \
+			if [ "$$EXPECTED" != "$$ACTUAL" ]; then \
+				echo "ERROR: checksum mismatch (expected $$EXPECTED, got $$ACTUAL)"; \
+				rm -f /tmp/$$BIN /tmp/$$BIN.sha256sum; \
+				exit 1; \
+			fi; \
+		chmod +x /tmp/$$BIN; \
+		sudo mv /tmp/$$BIN /usr/local/bin/kind; \
+		rm -f /tmp/$$BIN.sha256sum; \
+		echo "✓ kind v$(KIND_VERSION) installed"; \
+	else \
+		echo "✓ kind already installed: $$(kind version)"; \
+	fi
+	@command -v kubectl >/dev/null 2>&1 || { echo "ERROR: kubectl not found on PATH. Install kubectl and retry."; exit 1; }
+
+kind-create: kind-install ## Create local kind cluster for testing ScheduledMachine
+	@if kind get clusters 2>/dev/null | grep -qx $(KIND_CLUSTER_NAME); then \
+		echo "✓ kind cluster '$(KIND_CLUSTER_NAME)' already exists"; \
+	else \
+		echo "Creating kind cluster '$(KIND_CLUSTER_NAME)' using $(KIND_NODE_IMAGE)..."; \
+		kind create cluster --name $(KIND_CLUSTER_NAME) --image $(KIND_NODE_IMAGE) --wait 120s; \
+		echo "✓ cluster '$(KIND_CLUSTER_NAME)' ready"; \
+	fi
+	@kubectl --context kind-$(KIND_CLUSTER_NAME) cluster-info
+
+kind-delete: ## Delete the local kind cluster
+	@if kind get clusters 2>/dev/null | grep -qx $(KIND_CLUSTER_NAME); then \
+		kind delete cluster --name $(KIND_CLUSTER_NAME); \
+		echo "✓ cluster '$(KIND_CLUSTER_NAME)' deleted"; \
+	else \
+		echo "✓ no cluster named '$(KIND_CLUSTER_NAME)' — nothing to delete"; \
+	fi
+
+kind-load: ## Build image for host arch (native cross-compile, bypassing cross) and load it into the kind cluster
+	@if ! kind get clusters 2>/dev/null | grep -qx $(KIND_CLUSTER_NAME); then \
+		echo "ERROR: kind cluster '$(KIND_CLUSTER_NAME)' does not exist. Run: make kind-create"; \
+		exit 1; \
+	fi
+	@HOST_ARCH=$$(uname -m); \
+		case "$$HOST_ARCH" in \
+			arm64|aarch64) TRIPLE=aarch64-unknown-linux-gnu; DOCKER_ARCH=arm64; LINKER=aarch64-unknown-linux-gnu-gcc ;; \
+			x86_64|amd64)  TRIPLE=x86_64-unknown-linux-gnu;  DOCKER_ARCH=amd64; LINKER=x86_64-unknown-linux-gnu-gcc ;; \
+			*) echo "ERROR: unsupported host arch: $$HOST_ARCH"; exit 1 ;; \
+		esac; \
+		echo "Host $$HOST_ARCH -> building linux/$$DOCKER_ARCH image"; \
+		if ! command -v $$LINKER >/dev/null 2>&1; then \
+			echo "ERROR: linker '$$LINKER' not found on PATH."; \
+			echo "  On macOS: brew tap messense/macos-cross-toolchains && brew install $$TRIPLE"; \
+			echo "  On Linux: install the matching gcc cross toolchain for your distro."; \
+			exit 1; \
+		fi; \
+		if ! rustup target list --installed | grep -qx "$$TRIPLE"; then \
+			echo "Adding rustup target $$TRIPLE..."; \
+			rustup target add "$$TRIPLE"; \
+		fi; \
+		echo "Compiling 5spot for $$TRIPLE..."; \
+		cargo build --release --target "$$TRIPLE"; \
+		echo "Staging binary at binaries/$$DOCKER_ARCH/5spot..."; \
+		mkdir -p "binaries/$$DOCKER_ARCH"; \
+		cp "target/$$TRIPLE/release/5spot" "binaries/$$DOCKER_ARCH/5spot"; \
+		echo "Building docker image $(KIND_IMAGE) (linux/$$DOCKER_ARCH)..."; \
+		$(CONTAINER_TOOL) build \
+			--build-arg TARGETARCH=$$DOCKER_ARCH \
+			--build-arg VERSION="$(VERSION)" \
+			--build-arg GIT_SHA="$(GIT_SHA)" \
+			--build-arg BASE_IMAGE="$(BASE_IMAGE)" \
+			-t $(KIND_IMAGE) .; \
+		echo "Loading $(KIND_IMAGE) into kind cluster '$(KIND_CLUSTER_NAME)'..."; \
+		kind load docker-image $(KIND_IMAGE) --name $(KIND_CLUSTER_NAME); \
+		echo "✓ image loaded"
+
+kind-deploy: ## Apply CRDs and controller manifests to the kind cluster
+	@if ! kind get clusters 2>/dev/null | grep -qx $(KIND_CLUSTER_NAME); then \
+		echo "ERROR: kind cluster '$(KIND_CLUSTER_NAME)' does not exist. Run: make kind-create"; \
+		exit 1; \
+	fi
+	@echo "Applying CRDs to kind cluster '$(KIND_CLUSTER_NAME)'..."
+	@kubectl --context kind-$(KIND_CLUSTER_NAME) apply -f deploy/crds/
+	@echo "Applying namespace first (avoids race with namespace-scoped resources)..."
+	@kubectl --context kind-$(KIND_CLUSTER_NAME) apply -f deploy/deployment/namespace.yaml
+	@for i in 1 2 3 4 5 6 7 8 9 10; do \
+		if kubectl --context kind-$(KIND_CLUSTER_NAME) get namespace 5spot-system >/dev/null 2>&1; then \
+			break; \
+		fi; \
+		echo "  waiting for namespace 5spot-system ($$i/10)..."; \
+		sleep 1; \
+	done
+	@echo "Applying controller manifests (rbac, configmap, deployment, service, ...)..."
+	@kubectl --context kind-$(KIND_CLUSTER_NAME) apply -R -f deploy/deployment/
+	@echo "Overriding controller image to $(KIND_IMAGE) (locally built)..."
+	@kubectl --context kind-$(KIND_CLUSTER_NAME) -n 5spot-system set image deployment/5spot-controller controller=$(KIND_IMAGE)
+	@echo "Waiting for the controller Deployment to become available..."
+	@kubectl --context kind-$(KIND_CLUSTER_NAME) -n 5spot-system rollout status deployment/5spot-controller --timeout=180s
+	@echo "✓ controller deployed"
+
+kind-example: ## Apply the basic ScheduledMachine example to the kind cluster
+	@if ! kind get clusters 2>/dev/null | grep -qx $(KIND_CLUSTER_NAME); then \
+		echo "ERROR: kind cluster '$(KIND_CLUSTER_NAME)' does not exist. Run: make kind-create"; \
+		exit 1; \
+	fi
+	@kubectl --context kind-$(KIND_CLUSTER_NAME) apply -f examples/scheduledmachine-basic.yaml
+	@echo "✓ example ScheduledMachine applied"
+	@echo "Inspect with:"
+	@echo "  kubectl --context kind-$(KIND_CLUSTER_NAME) get scheduledmachines -A"
+	@echo "  kubectl --context kind-$(KIND_CLUSTER_NAME) describe scheduledmachine business-hours-worker"
+
+kind-status: ## Show kind cluster, controller, and ScheduledMachine status
+	@echo "=== kind clusters ==="
+	@kind get clusters 2>/dev/null || echo "(none)"
+	@echo ""
+	@echo "=== controller pods (namespace 5spot-system) ==="
+	@kubectl --context kind-$(KIND_CLUSTER_NAME) -n 5spot-system get pods 2>/dev/null || echo "(cluster unreachable)"
+	@echo ""
+	@echo "=== ScheduledMachines (all namespaces) ==="
+	@kubectl --context kind-$(KIND_CLUSTER_NAME) get scheduledmachines -A 2>/dev/null || echo "(cluster unreachable)"
+
+kind-setup: kind-create kind-load kind-deploy ## One-shot: create cluster, build+load image, deploy CRDs & controller
+	@echo ""
+	@echo "✓ kind setup complete"
+	@echo ""
+	@echo "Next steps:"
+	@echo "  make kind-example   # apply the example ScheduledMachine"
+	@echo "  make kind-status    # see cluster & controller state"
+	@echo "  make kind-delete    # tear down"

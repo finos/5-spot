@@ -52,6 +52,9 @@ spec:
   gracefulShutdownTimeout: 5m
   nodeDrainTimeout: 5m
   killSwitch: false
+  killIfCommands:
+    - java
+    - idea
 ```
 
 ### Spec Fields
@@ -126,6 +129,18 @@ Format: `<number><unit>` where unit is `s` (seconds), `m` (minutes), or `h` (hou
 
 (optional, boolean, default: `false`) When true, immediately removes the machine
 from the cluster and takes it out of rotation, bypassing the grace period.
+
+#### killIfCommands
+
+(optional, array of strings) Process patterns that trigger an emergency node reclaim.
+When non-empty, the 5-Spot controller installs the `5spot-reclaim-agent` DaemonSet
+on every Node backing this `ScheduledMachine`. The agent watches `/proc` for any
+process whose basename or argv matches one of these patterns and, on first match,
+annotates the Node to request immediate (non-graceful) removal from the cluster.
+
+When absent or empty, no agent is installed and behaviour is time-based scheduling only.
+Patterns are evaluated against both `/proc/<pid>/comm` (exact basename) and
+`/proc/<pid>/cmdline` (substring).
 
 ### Status Fields
 

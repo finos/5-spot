@@ -9,6 +9,303 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-04-21 12:00] - Suppress Trivy KSV-0023 / KSV-0121 / KSV-0012 / KSV-0020 / KSV-0021 / KSV-0105 on reclaim-agent DaemonSet
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.trivyignore`: New `AVD-KSV-0023` entry. The DaemonSet mounts host `/proc` read-only at `/host/proc` so the agent can read `/proc/<pid>/{comm,cmdline}` for every host process — this is the detection contract. There is no Kubernetes-native substitute (Downward API, projected volumes, and CSI drivers do not expose kernel `/proc`). Scope is already minimal: single path (`/proc`), `readOnly: true`, `type: Directory`, and the agent never writes back. Durable: Phase 2 rung-2 (netlink proc connector) still needs host `/proc` for the initial match fan-out.
+- `.trivyignore`: New `AVD-KSV-0121` entry. HIGH-severity variant of KSV-0023 that names the disallowed host paths explicitly (`/proc` in our case). Same architectural justification — the detection contract is built around reading host `/proc`, which is exactly what the rule flags.
+- `.trivyignore`: New `AVD-KSV-0012` entry. Container-level variant of the existing KSV-0118 root-user finding. Running as UID 0 is required so the agent can read `/proc/<pid>/{comm,cmdline}` under hardened `hidepid=2` /proc mounts. A non-root build would need `CAP_SYS_PTRACE` added back, which is strictly broader than running as root with every other capability dropped, `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`, and seccomp `RuntimeDefault`. Scope is bounded by the opt-in `5spot.finos.org/reclaim-agent: enabled` nodeSelector.
+- `.trivyignore`: New `AVD-KSV-0021` entry. Follows directly from KSV-0012 — UID 0 implies GID 0, so `runAsGroup > 10000` cannot be satisfied without abandoning the root requirement already justified. The rule's purpose (avoid a shared high-GID supplementary group leaking filesystem access across workloads) is not a risk here: the container mounts only host `/proc` read-only, has `readOnlyRootFilesystem: true`, and drops all capabilities.
+- `.trivyignore`: New `AVD-KSV-0105` entry. Identical root cause to KSV-0012 / KSV-0118 — different rule wording, same finding (UID 0 is required for `hidepid=2` /proc reads; the non-root alternative needs `CAP_SYS_PTRACE`, which is strictly broader than root + all-caps-dropped + read-only rootfs + no-privilege-escalation + seccomp `RuntimeDefault`).
+- `.trivyignore`: New `AVD-KSV-0020` entry. "High-UID" strictness variant of KSV-0105 (rule wants UID > 10000, not just > 0). Moot at UID 0: the collision with `root` is deliberate, not accidental. Same architectural justification as the rest of this block.
+
+### Why
+Six Trivy findings all flow from the same architectural root cause: the reclaim-agent must read host process state, and the only mechanism Kubernetes offers is a hostPath `/proc` mount + UID 0. Scanner can't express "root is required, everything else is hardened" as a single rule, so each sub-finding needs its own suppression with the shared rationale. Same pattern as the pre-existing KSV-0010 (`hostPID: true`) and KSV-0118 (pod-level default context) suppressions.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (security-policy document — `.trivyignore` is input to the CI scanner, not a runtime artifact)
+
+---
+
+## [2026-04-21 11:30] - Reclaim-agent: watch per-node ConfigMap via kube API (Phase 2.5 residual)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/constants.rs`: New `RECLAIM_CONFIG_DATA_KEY = "reclaim.toml"` — the literal was previously scattered across `helpers.rs` and the binary; centralising it removes the silent-drift risk if one side is renamed.
+- `src/reclaim_agent.rs`: New pure helper `configmap_to_config(&ConfigMap) -> Result<Option<Config>, ConfigError>`. Three disciplined outcomes — `Ok(Some)` → arm scanner, `Ok(None)` → idle (CM exists but data key missing), `Err` → malformed payload, caller keeps last-good config. Also re-exports `RECLAIM_CONFIG_DATA_KEY` under the module path so tests and the bin can address it without reaching through `crate::constants::…`.
+- `src/reclaim_agent_tests.rs`: 4 new tests covering the three outcomes above plus the `data: None` edge case. Brings reclaim-agent module test count to 33 (library total: **271 tests green**, up from 267).
+- `src/bin/reclaim_agent.rs`: Rewrite. The agent no longer loads config from a file at startup — it runs a `kube::runtime::watcher` scoped by field selector `metadata.name=reclaim-agent-<NODE_NAME>` in `RECLAIM_AGENT_NAMESPACE` and bridges every `Event::Apply` / `Event::InitApply` / `Event::Delete` into a `tokio::sync::watch<Option<Config>>` channel. The scanner loop reads the current value each tick: `None` blocks on `rx.changed()` (with a 30s idle safety wakeup); `Some` scans `/proc` every `poll_interval_ms`. Hot-reload is automatic — a controller or operator edit to the ConfigMap propagates in at most one scanner tick. On a malformed CM edit the watcher logs and holds the previous config rather than disarming. `--config` flag removed; `--proc-root`, `--node-name`, `--oneshot` preserved.
+- `src/reconcilers/helpers.rs`: `build_reclaim_agent_configmap` now writes under `RECLAIM_CONFIG_DATA_KEY` instead of the bare literal. Behaviour unchanged; the output CM is byte-identical.
+- `deploy/node-agent/daemonset.yaml`: Removed the `config` ConfigMap volume and its `/etc/5spot` mount; removed the `--config=/etc/5spot/reclaim.toml` arg. The DaemonSet pod template no longer references any ConfigMap, which sidesteps the K8s limitation (`configMap.name` cannot be downward-API-templated per replica) that blocked the per-node mount previously.
+- `deploy/node-agent/rbac.yaml`: New namespaced `Role` + `RoleBinding` (`5spot-reclaim-agent-configmaps` in `5spot-system`) granting the agent SA `get,list,watch` on ConfigMaps in that one namespace. Cluster-wide grant deliberately avoided — the agent only ever needs to see its own node's CM. Existing `ClusterRole` (nodes: get/patch) is unchanged.
+
+### Why
+The previous shape shared a single cluster-wide `reclaim-agent-config` ConfigMap across all nodes because the DaemonSet pod template cannot reference a per-replica ConfigMap name. That defeated the per-node specificity the controller was already projecting in the 24:15 increment: the operator could have `node-A` armed to kill `java` and `node-B` armed to kill `idea`, but both agents would see the same config. Moving the CM consumption into the agent (watch API instead of file mount) unblocks per-node arming end-to-end. User-confirmed direction over the alternative (DaemonSet-per-ScheduledMachine) to preserve the kata-deploy-style opt-in pattern and keep N agents at 1 DaemonSet regardless of fleet size.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (new RoleBinding + DaemonSet spec change; kubelet rolls the agent pods on apply)
+- [ ] Config change only
+- [ ] Documentation only
+
+**Operator notes:**
+- The legacy shared `reclaim-agent-config` ConfigMap (if present from a prior install) is no longer mounted and can be deleted by hand; nothing in this tree references it any more.
+- Agent arming is now entirely driven by per-node `reclaim-agent-<NODE_NAME>` ConfigMaps — either projected automatically by the controller from `spec.killIfCommands`, or created by hand for manual drills. Deleting the ConfigMap puts the agent back to idle on the next scanner tick.
+
+---
+
+## [2026-04-21 10:15] - Explicit pod-level securityContext on reclaim-agent DaemonSet (Trivy KSV-0118)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `deploy/node-agent/daemonset.yaml`: Added a pod-level `spec.securityContext` block on the DaemonSet pod template. Fields: `runAsNonRoot: false`, `runAsUser: 0`, `runAsGroup: 0`, `seccompProfile.type: RuntimeDefault`. Preceded by a comment explaining why each field is the value it is — in particular that `runAsNonRoot: false` is architecturally required because reading `/proc/<pid>/{comm,cmdline}` for every host pid under hardened `hidepid=2` mounts needs UID 0, and that the non-root alternative (adding back `CAP_SYS_PTRACE`) is a broader privilege than "drop ALL caps + run as root". The per-container `securityContext` on the `agent` container is unchanged (still drops ALL caps, read-only root FS, no privilege escalation, RuntimeDefault seccomp).
+
+### Why
+Trivy KSV-0118 ("Default security context configured") fires when a pod does not declare a pod-level `spec.securityContext`, regardless of how locked-down the per-container context is. The DaemonSet had a thorough container-level block but nothing at pod scope, so Trivy reported the pod as "using the default security context, which allows root privileges." An explicit pod-level block satisfies the rule by making the operator's intent auditable at pod scope, without weakening any privilege — it enumerates the same choices the container already made. Keeps parity with the Phase 2.5 architectural constraints documented in the emergency-reclaim roadmap.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (DaemonSet spec change — kubelet will restart the agent pods on rollout)
+- [ ] Config change only
+- [ ] Documentation only
+
+**Follow-up watch:** if a future Trivy version flags the `runAsNonRoot: false` value itself (some versions tighten this under a different rule ID), the fallback is a `.trivyignore` entry with the same rationale already captured in this comment.
+
+---
+
+## [2026-04-21 10:00] - Suppress Trivy KSV-0010 for reclaim-agent DaemonSet (hostPID is required)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.trivyignore`: Added a new `DaemonSet — deploy/node-agent/daemonset.yaml` section with a single entry `AVD-KSV-0010` ("Access to host PID namespace"). The block comment explains the architectural rationale: the reclaim-agent watches host processes by scanning `/proc` for argv matches and signals host PIDs to execute graceful stops — both capabilities depend on the agent sharing the host's PID namespace, and pod-scoped `/proc` would make the feature inoperable. The suppression is intentionally narrow (one rule, one workload, one block comment) and follows the same pattern already established for `AVD-KSV-0046` / `AVD-KSV-0048` / `AVD-KSV-0041` on the RBAC `ClusterRole` and `AVD-KSV-0125` on the controller Deployment.
+
+### Why
+The IaC security scan job in `.github/workflows/build.yaml` runs `aquasecurity/trivy-action` in `config` mode against the whole repo and uploads SARIF to GitHub Code Scanning. Without an entry in `.trivyignore`, the `hostPID: true` on the reclaim-agent DaemonSet (required by design — see Phase 2.5 in the emergency-reclaim roadmap) would surface as a recurring HIGH finding in every PR and push. The workflow already references `./.trivyignore` (build.yaml:717), so the file is the right lever.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+---
+
+## [2026-04-20 24:15] - Phase 2.5 remainder: controller-side label stamp + per-node ConfigMap projection
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/helpers.rs`: Added four pure helpers — `render_reclaim_toml(&[String]) -> String` (emits a commented TOML body that round-trips through `reclaim_agent::parse_config`), `per_node_configmap_name(&str) -> String` (`reclaim-agent-<node>` from `RECLAIM_AGENT_CONFIGMAP_PREFIX`), `build_reclaim_agent_configmap(node, commands) -> ConfigMap` (carries `app.kubernetes.io/component=reclaim-agent` for `kubectl get -l` discovery; `data["reclaim.toml"]` is the projected body), and `build_reclaim_agent_label_patch(enable: bool) -> serde_json::Value` (merge-patch that sets the label to `enabled` or to JSON `null` for delete). Async orchestrator `reconcile_reclaim_agent_provision(&Client, node, &[String])` drives the full projection: label PATCH first (load-bearing — the DaemonSet's `nodeSelector` depends on it), then ConfigMap apply on non-empty commands or delete on empty (404 treated as benign for idempotent tear-down). Server-side apply uses field manager `5spot-controller-reclaim-agent` distinct from the main reconciler so audit logs can attribute writes.
+- `src/reconcilers/scheduled_machine.rs`: New `provision_reclaim_agent_best_effort` helper runs from `handle_active_phase` right after `patch_machine_refs_status` — this is where we first hold a real `nodeRef` for the current Machine. Projection is deliberately best-effort with respect to the reconcile loop: a failed label PATCH or ConfigMap apply degrades the emergency-reclaim path but must not block day-to-day scheduling. An empty `spec.killIfCommands` still invokes the orchestrator, which hits the tear-down arm (label=null, delete CM) so clearing the spec cleans up past projections idempotently.
+- `src/reconcilers/helpers_tests.rs`: 11 new unit tests — 3 for `render_reclaim_toml` (round-trip via `parse_config`, empty-commands round-trip still parses, quote-in-command is escaped), 2 for `per_node_configmap_name` (uses prefix constant, preserves node name verbatim without re-sanitisation), 3 for `build_reclaim_agent_configmap` (namespace + name contract, `reclaim.toml` data key required by DaemonSet volume mount, operator-discovery labels present), and 3 for `build_reclaim_agent_label_patch` (enable writes the `enabled` constant, disable writes JSON null rather than empty string, strategic-merge safety — only `metadata.labels.<one key>` is touched).
+
+### Why
+Phase 2.5 MVP landed on 2026-04-20 with the CRD field (`spec.killIfCommands`) and an in-pod DaemonSet, but projection was deferred — operators had to hand-label nodes and share a single cluster-wide `reclaim-agent-config` ConfigMap, which both defeats the opt-in intent and loses per-node pattern specificity. The increment here wires the controller to do that projection automatically: a `ScheduledMachine` with `killIfCommands = ["java"]` now gets the opt-in label + a named `ConfigMap` carrying that list appearing on its backing Node without operator action, and clearing the list cleanly tears both down. Matches the 2026-04-20 ShipDocs "As-implemented" contract in the roadmap's Phase 2.5 follow-up block.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (controller acquires PATCH on Nodes + CRUD on ConfigMaps in `5spot-system` — RBAC update required; tracked separately from this entry)
+- [ ] Config change only
+- [ ] Documentation only
+
+**Note on the DaemonSet YAML switch:** `deploy/node-agent/daemonset.yaml` still references the single shared `reclaim-agent-config` ConfigMap. Switching the mount to the per-node `reclaim-agent-<node-name>` shape is blocked by a Kubernetes limitation (volume-level `configMap.name` cannot be templated by downward API); a future agent-side rewrite to fetch its own ConfigMap at startup will unblock that switch. The per-node ConfigMaps projected by this change are present in-cluster today — the DaemonSet will consume them once the agent side lands.
+
+---
+
+## [2026-04-20 23:45] - Phase 4 tests: pin check_emergency_reclaim early-return contract
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/scheduled_machine_tests.rs`: Added 4 regression tests covering the Phase-3 dispatch guard's early-return paths. Three cover `check_emergency_reclaim` returning `Ok(None)` without any apiserver call when (a) `status` is absent, (b) `status.node_ref` is `None`, or (c) `node_ref.name` is empty. The fourth pins `handle_emergency_remove_phase`'s fast-fail `InvalidConfig` guard for non-namespaced resources. Harness trick: the existing `le_mock_client()` has no response handle attached, so any outbound API request hangs forever — each test wraps the call in a 100ms `tokio::time::timeout` so a hang fails cleanly with a clear message rather than blocking CI.
+
+### Why
+Phase-3 dispatch shipped at 23:15 without unit-test coverage of the guard itself. The guard's contract — "do not touch the apiserver when there is no node to reclaim" — is load-bearing for two reasons: (1) a Node.get("") call 400s and would surface as a CAPI error rather than the benign None the caller expects, and (2) every pending `ScheduledMachine` (before CAPI populates `status.nodeRef`) would otherwise hit the apiserver on every reconcile. These tests pin that contract so a future refactor cannot regress the guard into an unconditional fetch.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (test-only change; no production code touched)
+
+---
+
+## [2026-04-20 23:30] - kind: tag locally built image as `local-dev`; override Deployment image via `kubectl set image`
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Makefile`: `KIND_IMAGE` default changed from `ghcr.io/finos/5-spot:v0.1.0` (which matched the pinned tag in `deploy/deployment/deployment.yaml`) to `ghcr.io/finos/5-spot:local-dev`. The tag unambiguously signals a developer build and decouples the local image from the Deployment manifest's release pin. `kind-deploy` now runs `kubectl -n 5spot-system set image deployment/5spot-controller controller=$(KIND_IMAGE)` immediately after `apply -R -f deploy/deployment/` to redirect the Deployment at the locally loaded image.
+
+### Why
+User preference: the locally built image should be labeled as a developer build, not impersonate the pinned release tag. The post-apply `kubectl set image` patch keeps `deploy/deployment/deployment.yaml` untouched (and therefore safe to check in / reflect production) while still letting `kind-setup` run end-to-end against the local build.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (build tooling only)
+- [ ] Documentation only
+
+---
+
+## [2026-04-20 23:15] - Phase 3 dispatch: wire handle_emergency_remove into reconcile loop
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/constants.rs`: Added `PHASE_EMERGENCY_REMOVE = "EmergencyRemove"`, `REASON_EMERGENCY_RECLAIM_DISABLED_SCHEDULE`, and `EMERGENCY_DRAIN_TIMEOUT_SECS = 60` (deliberately shorter than the 300s graceful drain — the agent's process-match has already decided the node must leave).
+- `src/reconcilers/helpers.rs`: New pure builders — `build_emergency_reclaim_event`, `build_emergency_disable_schedule_event`, `emergency_reclaim_message` — plus the orchestrating `handle_emergency_remove` handler that executes the seven-step ordering contract (event → phase EmergencyRemove → drain → delete Machine → PATCH enabled=false → clear annotations → phase Disabled). Load-bearing step (5) propagates errors so the loop-breaker can retry; steps 1, 3, 6 are best-effort. Removed `#[allow(dead_code)]` from `ReclaimRequest`, `node_reclaim_request`, `build_clear_reclaim_patch`, `build_disable_schedule_patch` — all now have callers.
+- `src/reconcilers/scheduled_machine.rs`: New `check_emergency_reclaim` guard runs after `kill_switch` but before schedule evaluation; fetches the Node, calls `node_reclaim_request`, and drives the full handler when annotated. New `handle_emergency_remove_phase` match arm catches a crash between annotation-clear (step 6) and phase-flip (step 7), finishing the transition to Disabled idempotently. Updated state-diagram doc comment with the EmergencyRemove → Disabled edge.
+- `src/crd_tests.rs`: 3 new tests pinning the phase name, the disable-schedule event reason, and the drain-timeout bound (via `const` block).
+- `src/reconcilers/helpers_tests.rs`: 10 new unit tests covering the three pure builders — warning severity, reason-constant use, note formatting with and without the optional reason/timestamp, and message-floor behaviour.
+- Pre-existing clippy cleanups: backtick-wrapped `DaemonSet`/`ConfigMap` in rustdoc across `src/constants.rs`, `src/crd.rs`, `src/bin/reclaim_agent.rs`; collapsed duplicate `MatchSource` match arm to `|`; converted `match` to `let-else` in `scan_proc`; swapped a `Default::default()` for explicit `BTreeMap::default()` in reclaim_agent_tests.
+
+### Why
+The Phase-3 primitives landed in the previous session (helpers shipped behind `#[allow(dead_code)]`) — they had no caller. This change wires them into the reconcile loop so the annotation actually triggers the reclaim. Without this step, the node-side agent could paint the reclaim annotation but the controller would ignore it and keep following the schedule, re-adding the node at the next window. The seven-step ordering contract (disable-schedule *before* annotation-clear) ensures a crash at any point leaves state that the next reconcile can replay idempotently from the top.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (controller must ship the new dispatch path; agent manifests unchanged)
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
+## [2026-04-20 21:20] - kind-load: bypass `cross`, native cargo cross-compile + plain `docker build`; kind-deploy: apply namespace first
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Makefile`: `kind-load` is now self-contained and no longer calls into the `docker-build-*` → `prepare-binaries-linux-*` → `build-linux-*` chain. New recipe: host-arch → triple/linker/docker-arch mapping; checks the cross-linker is on PATH (prints `brew tap messense/macos-cross-toolchains && brew install <triple>` hint if missing); ensures the rustup target is installed via `rustup target add`; runs `cargo build --release --target <triple>` (leveraging the `linker = "<triple>-gcc"` entry already in `.cargo/config.toml`); stages the binary at `binaries/<docker-arch>/5spot`; builds the image with plain `docker build --build-arg TARGETARCH=<docker-arch> -t $(KIND_IMAGE) .` (no buildx → no `~/.docker/buildx/buildkitd.toml` dependency, no `cross` Docker image pull); loads into kind.
+- `Makefile`: `kind-deploy` now applies `deploy/deployment/namespace.yaml` first, polls for namespace existence (up to 10s), then runs `kubectl apply -R -f deploy/deployment/`. Prevents the `NotFound: namespaces "5spot-system" not found` race where the ConfigMap/Deployment admission requests arrive before the kube-apiserver's namespace controller has fully registered the namespace even though the Namespace object was already created in the same `apply -R` batch.
+
+### Why
+1. **cross bypass**: `cross 0.2.5` on Apple Silicon fails for both `aarch64-unknown-linux-gnu` and `x86_64-unknown-linux-gnu` targets with `toolchain 'stable-x86_64-unknown-linux-gnu' may not be able to run on this system` — rustup rejects installing a non-native-host toolchain even though the requested *target* is correct. The `build-linux-arm64` recipe tries `cross` first and only falls back to the Homebrew `messense/macos-cross-toolchains` path if `cross` is absent. Rather than editing that existing target (which CI relies on), `kind-load` now does its own simpler build that uses the Homebrew toolchain directly.
+2. **namespace race**: `kubectl apply -R` does sort by install-order (namespaces before namespaced resources) but kind's admission stack can briefly NotFound a freshly-created namespace for namespace-scoped resources submitted in the same batch. An explicit namespace-first apply plus short readiness poll eliminates the race.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (build tooling only; `kind-load` now requires the Homebrew cross toolchain on macOS — prints an install hint if missing)
+- [ ] Documentation only
+
+---
+
+## [2026-04-20 20:55] - kind-load: build image for host arch, not hardcoded amd64
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Makefile`: `kind-load` no longer depends on `docker-build` (which forces `linux/amd64`). The recipe now inspects `uname -m`, dispatches to `docker-build-amd64` on `x86_64` and `docker-build-arm64` on `arm64`/`aarch64`, and retags the matching per-arch local image (`$(IMAGE_NAME):$(IMAGE_TAG)-$$ARCH`) as `$(KIND_IMAGE)` before `kind load`.
+
+### Why
+On Apple Silicon, `cross build --target x86_64-unknown-linux-gnu` invoked by `docker-build` → `build-linux-amd64` tries to install the `stable-x86_64-unknown-linux-gnu` host toolchain via rustup, which rejects it on an arm64 host (`toolchain may not be able to run on this system`). Even if the build succeeded via `--force-non-host`, kind nodes on Apple Silicon run arm64, so an amd64 image would fail at pod start with exec-format errors. Building for the host arch matches kind's node arch and sidesteps the cross-toolchain install entirely.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (build tooling only)
+- [ ] Documentation only
+
+---
+
+## [2026-04-20 20:30] - Makefile targets for local kind-cluster testing
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Makefile`: New `kind-*` target group — `kind-install` (downloads kind v0.24.0 with SHA-256 checksum verification, platform-detected), `kind-create` / `kind-delete` (idempotent lifecycle for a cluster named `$(KIND_CLUSTER_NAME)`, default `5spot-dev`, using `$(KIND_NODE_IMAGE)`, default `kindest/node:v1.31.0`), `kind-load` (docker-build + retag local image as `$(KIND_IMAGE)` → `ghcr.io/finos/5-spot:v0.1.0` to match the in-cluster `Deployment.spec.containers.image`, then `kind load docker-image`), `kind-deploy` (applies `deploy/crds/` + `deploy/deployment/` and waits on `rollout status deployment/5spot-controller -n 5spot-system` up to 180s), `kind-example` (applies `examples/scheduledmachine-basic.yaml`), `kind-status` (summary of cluster / controller pods / ScheduledMachines), `kind-setup` (meta target chaining `kind-create` → `kind-load` → `kind-deploy`). Added 5 new variables (`KIND_VERSION`, `KIND_CLUSTER_NAME`, `KIND_NODE_IMAGE`, `KIND_IMAGE`) and registered the 8 new targets in `.PHONY`.
+- `docs/src/development/setup.md`: Local-Kubernetes/kind section now documents the new `make kind-*` targets (one-shot + individual steps + override examples) and keeps the raw `kind create cluster` invocation as a fallback for bespoke cluster topologies.
+
+### Why
+Developers testing `ScheduledMachine` locally currently have to hand-assemble the `kind create` → `docker build` → image-tag-align → `kind load` → `kubectl apply -f deploy/crds/` → `kubectl apply -R -f deploy/deployment/` sequence, and each step has a non-obvious gotcha (the deployment hardcodes `ghcr.io/finos/5-spot:v0.1.0`, `imagePullPolicy: IfNotPresent` only resolves if the loaded image matches, the controller namespace is `5spot-system`). The new targets encode that sequence so `make kind-setup` is the one command for a working test environment.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (build tooling only; no source, CRD, or deploy-manifest changes)
+- [x] Documentation only (updated `docs/src/development/setup.md`)
+
+---
+
+## [2026-04-20 22:30] - Emergency reclaim — disable-schedule patch + lifecycle docs
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/helpers.rs`: New `build_disable_schedule_patch()` helper — returns a merge-patch body that flips `spec.schedule.enabled=false` on the owning `ScheduledMachine`. Marked `#[allow(dead_code)]` pending Phase-3 reconciler dispatch (same pattern as the sibling `build_clear_reclaim_patch`). Rustdoc documents the ordering contract: disable-schedule PATCH must run *before* the annotation-clear PATCH so that a crash between the two steps retries idempotently from the top.
+- `src/reconcilers/helpers_tests.rs`: 3 new tests — `enabled=false` is emitted as the JSON literal `false` (not null, which would delete the key under merge-patch semantics); strategic-merge safety asserting only `spec.schedule.enabled` is addressed and no siblings are touched; belt-and-braces guard that the function never emits `enabled=true` (re-enable is a human action, never a controller decision).
+- `docs/src/concepts/emergency-reclaim.md` (new): Dedicated lifecycle page for the process-match kill switch. Five mermaid diagrams — trigger chain flowchart, lifecycle state diagram showing `EmergencyRemove` integrated into the existing phase machine, sequence diagram for the end-to-end eject flow, opt-in installation flow, re-enable flow showing what happens when the user re-enables with the matched process still running. Covers why the exit is `Disabled` (not `Pending`), the two-kill-switch family (`killSwitch` vs `killIfCommands`), matching semantics (comm exact vs cmdline substring, case-sensitive), observability (two distinct Events, the `EmergencyReclaimDisabledSchedule` condition, transient Node annotations, agent logs), and explicit out-of-scope items.
+- `docs/src/concepts/machine-lifecycle.md`: Added `EmergencyRemove` to the state diagram (transitions in from `Pending` / `Active` / `ShuttingDown`; exits to `Disabled`) and to the phase descriptions. New "Emergency Reclaim Flow" subsection alongside the existing "Kill Switch Flow" so readers can compare the two mechanisms side by side.
+- `docs/src/concepts/scheduled-machine.md`: Added `killIfCommands` to the Other Fields table; updated the phase enumeration in Status Fields; added an emergency-reclaim cross-link under Related.
+- `docs/src/operations/troubleshooting.md`: New "Emergency Reclaim (Kill Switch)" section — four scenarios (stuck in `EmergencyRemove`; eject loop on every schedule window; agent never fires on a known-matching process; `EmergencyReclaim` event fires but schedule is not disabled) each with concrete `kubectl` / `jq` diagnostics and resolution steps.
+- `docs/mkdocs.yml`: Registered `Emergency Reclaim (Kill Switch): concepts/emergency-reclaim.md` under the Concepts nav section. Verified with `mkdocs build` — page renders with all five mermaid blocks.
+- `docs/roadmaps/5spot-emergency-reclaim-by-process-match.md` (note: lives in `~/dev/roadmaps`, not in git per user convention): Phase 3 section now mandates the `spec.schedule.enabled=false` flip + the `EmergencyReclaimDisabledSchedule` condition/Event; new Open Question 6 captures the "explicit re-enable vs. auto-resume on process exit" trade-off with MVP rationale; Phase 4 tests include the flip assertion and a re-enable-loop-protection test; user-facing re-enable flow documented verbatim so Phase 3 code + operator docs stay in sync.
+
+### Why
+Follow-through on the roadmap review question: when emergency reclaim ejects a node, does it set `spec.schedule.enabled=false`? The correct answer is yes — otherwise the next schedule window silently re-adds the node, the agent sees the still-running matched process, and the eject→re-add→re-eject loop repeats every schedule boundary forever. The `build_disable_schedule_patch` helper gives the Phase-3 reconciler-dispatch work the primitive it needs to break that loop. Documentation was the second half of this commit because the kill-switch semantics (two mechanisms, different triggers, different exits, different reset paths) are not obvious from the code alone — a lifecycle feature this consequential needs a dedicated concepts page with diagrams, a troubleshooting section for the field, and cross-links from every page that mentions either kill switch.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout (the new helper is `#[allow(dead_code)]` until Phase 3 wires it into the reconciler — no runtime behaviour change in this commit)
+- [ ] Config change only
+- [x] Documentation only (the one code change — `build_disable_schedule_patch` — is dormant until Phase 3 calls it)
+
+### Follow-up (not in this commit)
+- Phase 3 dispatch wiring: call `build_disable_schedule_patch` after drain + Machine delete, before `build_clear_reclaim_patch`; emit the `EmergencyReclaimDisabledSchedule` Event and condition documented on the new concepts page; move the `#[allow(dead_code)]` off the helper once it has a caller.
+- Integration test (in `tests/`): kind cluster + stub k0smotron, annotate Node, assert `spec.schedule.enabled` flips to `false`, assert the condition / Event appear, assert re-enabling while the trigger is still present re-fires the eject and re-flips `enabled=false`.
+
+---
+
+## [2026-04-20 19:45] - Emergency reclaim by process match (Phases 1–2.5 MVP)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/crd.rs`: New optional `kill_if_commands: Option<Vec<String>>` field on `ScheduledMachineSpec`. Opt-in semantics mirror kata-deploy — `None` / absent preserves existing behavior; `Some(vec![...])` opts the node in to the reclaim-agent DaemonSet. `Some(vec![])` is legal but inert (detector never matches) and reserved for future controller-side validation warnings.
+- `src/crd_tests.rs`: 4 positive/negative tests for the new field + 5 tests for the reclaim annotation/label constants, plus `kill_if_commands: None` added to the existing spec-serialization test.
+- `src/constants.rs`: 9 new constants — reclaim trigger / reason / timestamp annotation keys, literal `"true"` trigger value, the opt-in node label key + value, the agent namespace, the per-node ConfigMap prefix, and the `EmergencyReclaim` condition reason.
+- `src/reclaim_agent.rs` (new): Library surface for the node-side agent — `Config` (TOML), `parse_config` / `load_config`, `scan_proc` (reads `/proc/<pid>/comm` exact + `/proc/<pid>/cmdline` substring), `Match` / `MatchSource`, `build_patch_body` (strategic-merge that only touches `metadata.annotations`), `already_requested` (strict literal-`"true"` check). Empty match lists return `None` by design; `poll_interval_ms = 0` is rejected at load time.
+- `src/reclaim_agent_tests.rs` (new): 21 tests — config happy/error paths, synthetic `/proc` trees via `tempfile::TempDir`, case-sensitivity, mid-scan process-exit race tolerance, missing-`/proc`-root error, idempotence across `"true"` / `"false"` / `"0"` / empty values.
+- `src/bin/reclaim_agent.rs` (new): `5spot-reclaim-agent` binary. Clap CLI with `--config`, `--proc-root`, `--node-name` (downward API, required), `--oneshot`. Reads NODE via downward API, builds in-cluster kube client, runs idempotence pre-check, then loops `scan_proc` at the configured interval and PATCHes the Node on first match. Field manager name is distinct (`5spot-reclaim-agent`) so audit logs can attribute writes.
+- `src/reconcilers/helpers.rs`: `ReclaimRequest` struct + `node_reclaim_request(node)` detector (returns `None` unless the trigger annotation is literally `"true"`) + `build_clear_reclaim_patch()` (merge-patch that sets all three annotations to `null` — Kubernetes merge-patch semantics for key deletion).
+- `src/reconcilers/helpers_tests.rs`: 7 tests covering the detector across all annotation shapes + clear-patch structure; added `kill_if_commands: None` to the existing test spec literal.
+- `src/reconcilers/scheduled_machine_tests.rs`: Added `kill_if_commands: None` to `create_test_spec`.
+- `src/lib.rs`: Exposed the new `reclaim_agent` module.
+- `src/bin/crddoc.rs`: Added `killIfCommands` example snippet + full field description block (crddoc is static `println!`-driven, not schema-derived).
+- `docs/reference/api.md`: Regenerated via `crddoc`; now documents `killIfCommands` (lines 55–57, 133–143).
+- `deploy/crds/scheduledmachine.yaml`: Regenerated via `crdgen`; schema now exposes `killIfCommands` at line 92.
+- `Cargo.toml`: Added `toml = "0.8"` dependency + a new `[[bin]]` block for `5spot-reclaim-agent` targeting `src/bin/reclaim_agent.rs`.
+- `deploy/node-agent/daemonset.yaml` (new): Opt-in DaemonSet gated by `nodeSelector: { 5spot.finos.org/reclaim-agent: enabled }`. Runs as root (reads every pid) with `hostPID: true`, host `/proc` mounted read-only at `/host/proc`, `system-node-critical` priority, tolerates every taint, `terminationGracePeriodSeconds: 5`. Config comes from a ConfigMap-projected volume at `/etc/5spot/reclaim.toml`. Image is pinned to `v0.1.0` (no `:latest`).
+- `deploy/node-agent/rbac.yaml` (new): Dedicated ServiceAccount + ClusterRole + ClusterRoleBinding. Scope is narrow by design — only `get` + `patch` on `nodes`, no `list` / `watch`, no access to Machine / Pod / ScheduledMachine. Separation of identity from the main controller (distinct SA) lets audit logs unambiguously attribute a PATCH to the node-side agent vs. the controller.
+- `deploy/node-agent/reclaim.toml.example` (new): Reference config — the real config is projected per-node by the controller.
+- `deploy/node-agent/kustomization.yaml` (new): `kubectl apply -k deploy/node-agent/` bundle.
+
+### Why
+Follow-through on the `docs/roadmaps/5spot-emergency-reclaim-by-process-match.md` roadmap: certain workloads on shared fleet nodes (interactive JVMs left overnight, game clients, IDE processes) can indefinitely delay graceful drain windows, blocking scheduled remove operations and stranding capacity. The emergency-reclaim path gives operators an opt-in, process-match trigger that bypasses `gracefulShutdownTimeout` / `nodeDrainTimeout` and moves the machine into a non-graceful remove phase immediately on first match. The MVP implements rung 1 of the two-rung detection ladder (`/proc` poll) with the same Node-annotation contract that rung 2 (netlink proc connector, future work) will reuse. The opt-in is doubly gated — a node must (a) be labeled `5spot.finos.org/reclaim-agent=enabled` by the controller (which only stamps when the parent `ScheduledMachine` has a non-empty `killIfCommands`) AND (b) have its per-node ConfigMap populated — so the feature has zero effect on clusters that do not configure it.
+
+### Impact
+- [ ] Breaking change (new field is opt-in; absent / `None` preserves all existing behavior)
+- [x] Requires cluster rollout (`kubectl apply -f deploy/crds/scheduledmachine.yaml` to pick up `killIfCommands` in the CRD schema; `kubectl apply -k deploy/node-agent/` only if operators want the reclaim agent available — otherwise it remains inert)
+- [ ] Config change only
+- [ ] Documentation only
+
+### Follow-up (not in this commit)
+- Controller dispatch: wire `node_reclaim_request()` + `build_clear_reclaim_patch()` into the reconciler, add `Phase::EmergencyRemove`, emit a Kubernetes Event with `REASON_EMERGENCY_RECLAIM`, call `kubectl drain --grace-period=0 --force --disable-eviction`, delete the CAPI `Machine` immediately, clear the annotation last.
+- Controller-side projection of the per-node `reclaim-agent-<node-name>` ConfigMap + label stamp from `spec.killIfCommands` — currently the manifests assume a single shared `reclaim-agent-config`; the controller work will switch this to per-node as the roadmap specifies.
+- Rung 2 (netlink proc connector) — requires `CAP_NET_ADMIN`; out of MVP scope.
+- OCI image build + release wiring for the `5spot-reclaim-agent` binary (tarball + SBOM + VEX path already exists for the controller; extend it).
+
+---
+
 ## [2026-04-20 00:15] - Grant `update` on `scheduledmachines/finalizers` to unblock Machine creation
 
 **Author:** Erick Bourgeois

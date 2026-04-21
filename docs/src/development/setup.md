@@ -170,11 +170,42 @@ Settings (`.vscode/settings.json`):
 
 ### kind
 
+The repo ships `make kind-*` targets that wrap the `kind` CLI for quickly
+spinning up a test cluster with the controller and CRDs installed.
+
 ```bash
-# Create cluster
+# One-shot: install kind (if missing), create cluster, build+load image,
+# apply CRDs, apply controller Deployment/RBAC/Service/…
+make kind-setup
+
+# Apply the example ScheduledMachine
+make kind-example
+
+# Inspect
+make kind-status
+
+# Tear down
+make kind-delete
+```
+
+Individual steps (run in order if you prefer explicit control):
+
+```bash
+make kind-install   # download kind binary with checksum verification
+make kind-create    # create cluster named $(KIND_CLUSTER_NAME), default 5spot-dev
+make kind-load      # docker-build the controller and load image into the cluster
+make kind-deploy    # apply deploy/crds/ + deploy/deployment/
+```
+
+Override defaults via environment variables — e.g.
+`KIND_CLUSTER_NAME=my-cluster KIND_NODE_IMAGE=kindest/node:v1.30.4 make kind-create`.
+
+Raw `kind` usage is still available if you need a bespoke cluster topology:
+
+```bash
 kind create cluster --name 5spot-dev
 
-# Install CAPI
+# Install CAPI (not managed by the Makefile targets above)
 clusterctl init
 
 # Apply CRDs

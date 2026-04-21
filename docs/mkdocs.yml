@@ -212,6 +212,7 @@ nav:
       - ScheduledMachine: concepts/scheduled-machine.md
       - Machine Lifecycle: concepts/machine-lifecycle.md
       - Schedule Configuration: concepts/schedules.md
+      - Emergency Reclaim (Kill Switch): concepts/emergency-reclaim.md
 
   - Operations:
       - Configuration: operations/configuration.md

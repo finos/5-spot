@@ -1,0 +1,16 @@
+# 5-Spot Reclaim Agent — Kustomization
+#
+# Apply with:
+#   kubectl apply -k deploy/node-agent/
+#
+# The DaemonSet is opt-in via the node label
+# `5spot.finos.org/reclaim-agent=enabled`. Applying this kustomization on
+# a fleet with no labeled nodes is a no-op — the pods won't schedule
+# anywhere until the controller stamps the label on a node whose parent
+# ScheduledMachine has a non-empty `killIfCommands`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: 5spot-system
+resources:
+  - rbac.yaml
+  - daemonset.yaml

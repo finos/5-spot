@@ -1775,6 +1775,7 @@ mod tests {
                 graceful_shutdown_timeout: "5m".to_string(),
                 node_drain_timeout: "5m".to_string(),
                 kill_switch: false,
+                kill_if_commands: None,
             },
             status: None,
         };
@@ -1875,5 +1876,562 @@ mod tests {
         let node = node_named("worker-1");
         let sms = [sm_with_node_ref("sm-a", "default", Some(""))];
         assert!(node_to_scheduled_machines(&node, sms.iter()).is_empty());
+    }
+
+    // ========================================================================
+    // node_reclaim_request — parse agent-written annotations (roadmap Phase 3)
+    //   The controller reads these from the Node on every reconcile; when
+    //   present they trigger transition into the Emergency Remove path.
+    // ========================================================================
+
+    fn node_with_annotations(
+        name: &str,
+        annotations: &[(&str, &str)],
+    ) -> k8s_openapi::api::core::v1::Node {
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+        let map: std::collections::BTreeMap<String, String> = annotations
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        k8s_openapi::api::core::v1::Node {
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                annotations: Some(map),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_node_reclaim_request_none_when_no_annotations() {
+        let node = node_named("worker-1");
+        assert!(
+            node_reclaim_request(&node).is_none(),
+            "bare node must not look like a reclaim request"
+        );
+    }
+
+    #[test]
+    fn test_node_reclaim_request_none_when_requested_is_absent() {
+        // Reason + timestamp present but the trigger annotation missing:
+        // must NOT fire. Guards against stale annotation residue.
+        let node = node_with_annotations(
+            "worker-1",
+            &[
+                (
+                    crate::constants::RECLAIM_REASON_ANNOTATION,
+                    "process-match: java",
+                ),
+                (
+                    crate::constants::RECLAIM_REQUESTED_AT_ANNOTATION,
+                    "2026-04-19T21:30:00Z",
+                ),
+            ],
+        );
+        assert!(node_reclaim_request(&node).is_none());
+    }
+
+    #[test]
+    fn test_node_reclaim_request_none_when_requested_value_is_not_true() {
+        // Any value other than the literal "true" is treated as not-requested.
+        let node = node_with_annotations(
+            "worker-1",
+            &[(crate::constants::RECLAIM_REQUESTED_ANNOTATION, "false")],
+        );
+        assert!(node_reclaim_request(&node).is_none());
+    }
+
+    #[test]
+    fn test_node_reclaim_request_parses_all_three_fields() {
+        let node = node_with_annotations(
+            "worker-1",
+            &[
+                (crate::constants::RECLAIM_REQUESTED_ANNOTATION, "true"),
+                (
+                    crate::constants::RECLAIM_REASON_ANNOTATION,
+                    "process-match: java",
+                ),
+                (
+                    crate::constants::RECLAIM_REQUESTED_AT_ANNOTATION,
+                    "2026-04-19T21:30:00Z",
+                ),
+            ],
+        );
+        let req = node_reclaim_request(&node).expect("should parse");
+        assert_eq!(req.reason.as_deref(), Some("process-match: java"));
+        assert_eq!(req.requested_at.as_deref(), Some("2026-04-19T21:30:00Z"));
+    }
+
+    #[test]
+    fn test_node_reclaim_request_tolerates_missing_reason_and_timestamp() {
+        // Agent should always write all three, but the controller must not
+        // refuse to reclaim if the reason/timestamp were somehow dropped —
+        // the trigger is the boolean. Missing metadata becomes None fields.
+        let node = node_with_annotations(
+            "worker-1",
+            &[(crate::constants::RECLAIM_REQUESTED_ANNOTATION, "true")],
+        );
+        let req = node_reclaim_request(&node).expect("trigger alone is enough");
+        assert!(req.reason.is_none());
+        assert!(req.requested_at.is_none());
+    }
+
+    // ========================================================================
+    // build_clear_reclaim_patch — wipe all three annotations in one PATCH
+    //   Run as the last step of Phase::EmergencyRemove so that a rejoined
+    //   Node does not immediately re-fire on the stale annotation.
+    // ========================================================================
+
+    #[test]
+    fn test_build_clear_reclaim_patch_sets_three_annotations_to_null() {
+        let patch = build_clear_reclaim_patch();
+        let annotations = patch
+            .pointer("/metadata/annotations")
+            .expect("patch must write /metadata/annotations")
+            .as_object()
+            .expect("must be object");
+        for key in [
+            crate::constants::RECLAIM_REQUESTED_ANNOTATION,
+            crate::constants::RECLAIM_REASON_ANNOTATION,
+            crate::constants::RECLAIM_REQUESTED_AT_ANNOTATION,
+        ] {
+            let v = annotations
+                .get(key)
+                .unwrap_or_else(|| panic!("clear patch must address {key}"));
+            assert!(
+                v.is_null(),
+                "merge-patch convention: null deletes the key, got {v:?} for {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_build_clear_reclaim_patch_does_not_touch_other_metadata() {
+        // Same strategic-merge safety contract as the agent-side patch:
+        // only metadata.annotations is addressed.
+        let patch = build_clear_reclaim_patch();
+        let obj = patch.as_object().expect("is object");
+        assert_eq!(obj.len(), 1, "top level must be only {{metadata}}");
+        let meta = obj
+            .get("metadata")
+            .and_then(|v| v.as_object())
+            .expect("metadata object");
+        assert_eq!(meta.len(), 1, "metadata must contain only annotations");
+    }
+
+    // ========================================================================
+    // build_disable_schedule_patch — flip spec.schedule.enabled=false
+    //   Part of Phase::EmergencyRemove. Rationale: without this flip, the
+    //   next schedule window re-adds the node, the agent sees the user's
+    //   still-running JVM, and the eject→re-add→re-eject loop repeats every
+    //   schedule boundary. Setting enabled=false makes the user's explicit
+    //   re-enable the signal to return the node to service.
+    //   See docs/roadmaps/5spot-emergency-reclaim-by-process-match.md (Q6).
+    // ========================================================================
+
+    #[test]
+    fn test_build_disable_schedule_patch_sets_enabled_false() {
+        let patch = build_disable_schedule_patch();
+        let enabled = patch
+            .pointer("/spec/schedule/enabled")
+            .expect("patch must write /spec/schedule/enabled");
+        assert_eq!(
+            enabled,
+            &serde_json::Value::Bool(false),
+            "enabled must be the JSON literal false (merge-patch replaces, does not delete)"
+        );
+    }
+
+    #[test]
+    fn test_build_disable_schedule_patch_only_touches_schedule_enabled() {
+        // Strategic-merge safety contract: we must not accidentally blow
+        // away siblings of `enabled` under spec.schedule (daysOfWeek,
+        // hoursOfDay, timezone) nor siblings of `schedule` under spec
+        // (killSwitch, killIfCommands, bootstrapSpec, ...). Merge-patch
+        // semantics mean any key we include at a given depth replaces
+        // only that key — so the exact structure of the patch body is
+        // the load-bearing invariant.
+        let patch = build_disable_schedule_patch();
+        let top = patch.as_object().expect("top must be object");
+        assert_eq!(top.len(), 1, "top level must be only {{spec}}");
+
+        let spec = top
+            .get("spec")
+            .and_then(|v| v.as_object())
+            .expect("spec object");
+        assert_eq!(spec.len(), 1, "spec must contain only {{schedule}}");
+
+        let schedule = spec
+            .get("schedule")
+            .and_then(|v| v.as_object())
+            .expect("schedule object");
+        assert_eq!(
+            schedule.len(),
+            1,
+            "schedule must contain only {{enabled}} — other fields \
+             (daysOfWeek, hoursOfDay, timezone) must be untouched"
+        );
+        assert!(
+            schedule.contains_key("enabled"),
+            "schedule must contain the enabled key"
+        );
+    }
+
+    #[test]
+    fn test_build_disable_schedule_patch_never_writes_true() {
+        // Belt-and-braces: the function is pure and hardcoded, so this
+        // test mostly guards against a future refactor accidentally
+        // parameterising the value. Re-enable must be an explicit human
+        // action, never a controller decision.
+        let patch = build_disable_schedule_patch();
+        let enabled = patch
+            .pointer("/spec/schedule/enabled")
+            .expect("must have /spec/schedule/enabled");
+        assert_eq!(
+            enabled.as_bool(),
+            Some(false),
+            "build_disable_schedule_patch must never emit enabled=true; \
+             re-enable is a user-driven action"
+        );
+    }
+
+    // ========================================================================
+    // build_emergency_reclaim_event / build_emergency_disable_schedule_event /
+    // emergency_reclaim_message — event + message builders for Phase 3 dispatch
+    // ========================================================================
+
+    #[test]
+    fn test_build_emergency_reclaim_event_is_warning() {
+        use kube::runtime::events::EventType;
+        let req = ReclaimRequest {
+            reason: Some("process-match: java".to_string()),
+            requested_at: Some("2026-04-20T22:00:00Z".to_string()),
+        };
+        let ev = build_emergency_reclaim_event(&req);
+        assert!(
+            matches!(ev.type_, EventType::Warning),
+            "emergency reclaim must emit a Warning event so it paints red in \
+             kubectl describe and wakes oncall dashboards"
+        );
+    }
+
+    #[test]
+    fn test_build_emergency_reclaim_event_reason_is_camelcase_constant() {
+        use crate::constants::REASON_EMERGENCY_RECLAIM;
+        let req = ReclaimRequest {
+            reason: None,
+            requested_at: None,
+        };
+        let ev = build_emergency_reclaim_event(&req);
+        assert_eq!(
+            ev.reason, REASON_EMERGENCY_RECLAIM,
+            "Event.reason must be the REASON_EMERGENCY_RECLAIM constant so \
+             operators can filter `kubectl get events` on it"
+        );
+    }
+
+    #[test]
+    fn test_build_emergency_reclaim_event_note_includes_reason() {
+        let req = ReclaimRequest {
+            reason: Some("process-match: java".to_string()),
+            requested_at: Some("2026-04-20T22:00:00Z".to_string()),
+        };
+        let ev = build_emergency_reclaim_event(&req);
+        let note = ev.note.as_deref().unwrap_or_default();
+        assert!(
+            note.contains("process-match: java"),
+            "Event.note must surface the agent-supplied reason verbatim so \
+             the operator can correlate without reading node logs — got: {note}"
+        );
+    }
+
+    #[test]
+    fn test_build_emergency_reclaim_event_note_handles_missing_reason() {
+        // Reason annotation is best-effort on the agent side; a trigger
+        // with no reason must not produce an empty event body.
+        let req = ReclaimRequest {
+            reason: None,
+            requested_at: None,
+        };
+        let ev = build_emergency_reclaim_event(&req);
+        let note = ev.note.as_deref().unwrap_or_default();
+        assert!(
+            !note.trim().is_empty(),
+            "Event.note must never be empty — a missing reason should fall \
+             back to a descriptive default, not a blank string"
+        );
+    }
+
+    #[test]
+    fn test_build_emergency_disable_schedule_event_is_warning() {
+        use kube::runtime::events::EventType;
+        let ev = build_emergency_disable_schedule_event();
+        assert!(
+            matches!(ev.type_, EventType::Warning),
+            "disabling the schedule as part of emergency reclaim must be a \
+             Warning: the user did not ask for it, the controller did, and \
+             they must notice before the next schedule window"
+        );
+    }
+
+    #[test]
+    fn test_build_emergency_disable_schedule_event_reason_constant() {
+        use crate::constants::REASON_EMERGENCY_RECLAIM_DISABLED_SCHEDULE;
+        let ev = build_emergency_disable_schedule_event();
+        assert_eq!(
+            ev.reason, REASON_EMERGENCY_RECLAIM_DISABLED_SCHEDULE,
+            "must use the dedicated reason constant so `kubectl get events \
+             --field-selector reason=EmergencyReclaimDisabledSchedule` works"
+        );
+    }
+
+    #[test]
+    fn test_build_emergency_disable_schedule_event_note_mentions_reenable() {
+        // The operator must know that re-enabling is a user action —
+        // otherwise they'll wait for the controller to auto-resume.
+        let ev = build_emergency_disable_schedule_event();
+        let note = ev.note.as_deref().unwrap_or_default().to_lowercase();
+        assert!(
+            note.contains("enabled") || note.contains("schedule"),
+            "note must reference the disabled schedule so an operator \
+             reading `kubectl describe` understands why the node isn't \
+             coming back — got: {note}"
+        );
+    }
+
+    #[test]
+    fn test_emergency_reclaim_message_includes_node_name() {
+        let req = ReclaimRequest {
+            reason: Some("process-match: java".to_string()),
+            requested_at: Some("2026-04-20T22:00:00Z".to_string()),
+        };
+        let msg = emergency_reclaim_message("node-worker-03", &req);
+        assert!(
+            msg.contains("node-worker-03"),
+            "message must include the node name so the status condition on \
+             the SM is self-contained (no cross-resource lookup) — got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_emergency_reclaim_message_includes_reason_when_present() {
+        let req = ReclaimRequest {
+            reason: Some("process-match: java".to_string()),
+            requested_at: None,
+        };
+        let msg = emergency_reclaim_message("node-x", &req);
+        assert!(
+            msg.contains("process-match: java"),
+            "reason must be embedded verbatim when present — got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_emergency_reclaim_message_without_reason_still_meaningful() {
+        let req = ReclaimRequest {
+            reason: None,
+            requested_at: None,
+        };
+        let msg = emergency_reclaim_message("node-x", &req);
+        assert!(
+            !msg.trim().is_empty() && msg.contains("node-x"),
+            "missing reason must not blank the message; node name is the \
+             minimum floor — got: {msg}"
+        );
+    }
+
+    // ========================================================================
+    // Phase 2.5 remainder — reclaim-agent provisioning helpers
+    //
+    // The controller stamps a label + projects a per-node ConfigMap onto
+    // every Node backing a ScheduledMachine whose `spec.killIfCommands` is
+    // non-empty. Tests below pin the pure builders (no I/O) that back the
+    // async orchestrator.
+    // ========================================================================
+
+    #[test]
+    fn test_render_reclaim_toml_parses_back_via_agent_config() {
+        // End-to-end contract: whatever we render, the agent must parse.
+        // This is the load-bearing invariant — a rendered ConfigMap that
+        // the agent rejects at startup would leave a node in the opt-in
+        // label-stamped state but without a working detector.
+        let rendered = render_reclaim_toml(&["java".to_string(), "idea".to_string()]);
+        let parsed = crate::reclaim_agent::parse_config(&rendered)
+            .expect("rendered TOML must parse via reclaim_agent::parse_config");
+        assert_eq!(
+            parsed.match_commands,
+            vec!["java".to_string(), "idea".to_string()],
+            "match_commands must round-trip verbatim"
+        );
+        assert!(
+            parsed.match_argv_substrings.is_empty(),
+            "CRD surface is commands-only; argv list must render empty"
+        );
+        assert_eq!(
+            parsed.poll_interval_ms,
+            crate::reclaim_agent::DEFAULT_POLL_INTERVAL_MS,
+            "poll interval must default to the agent constant so a spec \
+             change cannot accidentally tune the poll loop"
+        );
+    }
+
+    #[test]
+    fn test_render_reclaim_toml_empty_commands_still_parses() {
+        // An empty-list render should not produce malformed TOML — the
+        // controller's orchestrator is responsible for not calling render
+        // with an empty list (it deletes the ConfigMap instead) but the
+        // renderer must never produce a document the agent rejects.
+        let rendered = render_reclaim_toml(&[]);
+        let parsed = crate::reclaim_agent::parse_config(&rendered)
+            .expect("empty-commands render must still be valid TOML");
+        assert!(parsed.match_commands.is_empty());
+    }
+
+    #[test]
+    fn test_render_reclaim_toml_escapes_quote_in_command() {
+        // Defensive: a `killIfCommands` entry containing `"` must not
+        // break the TOML. Real-world pattern list shouldn't include
+        // quotes, but the renderer must still produce parseable output
+        // so a typo in the spec doesn't brick the agent.
+        let rendered = render_reclaim_toml(&["weird\"name".to_string()]);
+        let parsed = crate::reclaim_agent::parse_config(&rendered)
+            .expect("quote in command must be escaped, not break the TOML");
+        assert_eq!(parsed.match_commands, vec!["weird\"name".to_string()]);
+    }
+
+    #[test]
+    fn test_per_node_configmap_name_uses_prefix_constant() {
+        use crate::constants::RECLAIM_AGENT_CONFIGMAP_PREFIX;
+        let got = per_node_configmap_name("worker-03");
+        assert_eq!(got, format!("{RECLAIM_AGENT_CONFIGMAP_PREFIX}worker-03"));
+    }
+
+    #[test]
+    fn test_per_node_configmap_name_preserves_node_name_verbatim() {
+        // Node names are DNS-1123 by the time they reach us (kubelet
+        // enforces it). We do not re-sanitise — lowering or hashing the
+        // node name would make the projected ConfigMap unguessable from
+        // the node's identity, and the DaemonSet's future per-node mount
+        // contract depends on name == prefix+node-name.
+        let got = per_node_configmap_name("dev-workstation-ebourgeo-01.lab");
+        assert!(
+            got.ends_with("dev-workstation-ebourgeo-01.lab"),
+            "node name must survive verbatim — got: {got}"
+        );
+    }
+
+    #[test]
+    fn test_build_reclaim_agent_configmap_name_and_namespace() {
+        use crate::constants::RECLAIM_AGENT_NAMESPACE;
+        let cm = build_reclaim_agent_configmap("node-a", &["java".to_string()]);
+        assert_eq!(
+            cm.metadata.namespace.as_deref(),
+            Some(RECLAIM_AGENT_NAMESPACE),
+            "ConfigMap must land in the agent's dedicated namespace"
+        );
+        assert_eq!(
+            cm.metadata.name.as_deref(),
+            Some(per_node_configmap_name("node-a").as_str()),
+            "ConfigMap name must match per_node_configmap_name(node) so the \
+             agent's volume mount can address it"
+        );
+    }
+
+    #[test]
+    fn test_build_reclaim_agent_configmap_data_key_is_reclaim_toml() {
+        // The agent's kube watcher reads the TOML body from this exact
+        // data key — this is the contract between controller (projects
+        // the key via `RECLAIM_CONFIG_DATA_KEY`) and agent (pulls the
+        // same key out of the observed ConfigMap in `configmap_to_config`).
+        // Renaming here without updating both sides breaks arming silently.
+        let cm = build_reclaim_agent_configmap("node-a", &["idea".to_string()]);
+        let data = cm.data.expect("ConfigMap must have a data map");
+        assert!(
+            data.contains_key("reclaim.toml"),
+            "data map must include the reclaim.toml key the agent watches"
+        );
+        // And the value must round-trip through parse_config.
+        let toml_text = data.get("reclaim.toml").unwrap();
+        let parsed =
+            crate::reclaim_agent::parse_config(toml_text).expect("projected TOML must parse");
+        assert_eq!(parsed.match_commands, vec!["idea".to_string()]);
+    }
+
+    #[test]
+    fn test_build_reclaim_agent_configmap_carries_owner_labels() {
+        // A stamped ConfigMap without identifying labels is invisible to
+        // `kubectl get -l app.kubernetes.io/component=reclaim-agent` —
+        // which is the operator's only way to list "all projections the
+        // 5-spot controller has made". The component label is the
+        // load-bearing one; the rest are nice-to-haves.
+        let cm = build_reclaim_agent_configmap("node-a", &["java".to_string()]);
+        let labels = cm.metadata.labels.expect("ConfigMap must carry labels");
+        assert_eq!(
+            labels
+                .get("app.kubernetes.io/component")
+                .map(String::as_str),
+            Some("reclaim-agent"),
+            "component label is the filter key used by operator tooling"
+        );
+    }
+
+    #[test]
+    fn test_build_reclaim_agent_label_patch_enable_writes_enabled_value() {
+        use crate::constants::{RECLAIM_AGENT_LABEL, RECLAIM_AGENT_LABEL_ENABLED};
+        let patch = build_reclaim_agent_label_patch(true);
+        let labels = patch
+            .pointer("/metadata/labels")
+            .and_then(|v| v.as_object())
+            .expect("patch must write metadata.labels object");
+        assert_eq!(
+            labels.get(RECLAIM_AGENT_LABEL).and_then(|v| v.as_str()),
+            Some(RECLAIM_AGENT_LABEL_ENABLED),
+            "enable patch must set the reclaim-agent label to the 'enabled' \
+             constant so the DaemonSet nodeSelector matches"
+        );
+    }
+
+    #[test]
+    fn test_build_reclaim_agent_label_patch_disable_writes_null() {
+        use crate::constants::RECLAIM_AGENT_LABEL;
+        // Merge-patch semantics: null deletes the key. Using null (rather
+        // than an empty string) is what lets `kubectl get node -l
+        // 5spot.finos.org/reclaim-agent` return zero nodes after tear-down.
+        let patch = build_reclaim_agent_label_patch(false);
+        let labels = patch
+            .pointer("/metadata/labels")
+            .and_then(|v| v.as_object())
+            .expect("patch must write metadata.labels object");
+        assert!(
+            labels.get(RECLAIM_AGENT_LABEL).is_some_and(|v| v.is_null()),
+            "disable patch must set the reclaim-agent label to JSON null \
+             so merge-patch deletes it (empty string would leave it set \
+             and keep the DaemonSet pod scheduled)"
+        );
+    }
+
+    #[test]
+    fn test_build_reclaim_agent_label_patch_only_touches_reclaim_label() {
+        use crate::constants::RECLAIM_AGENT_LABEL;
+        // Strategic-merge safety: the patch must not clobber siblings
+        // under metadata.labels (kata-runtime, topology labels, etc.) or
+        // fields outside metadata. Without this assert a refactor could
+        // accidentally blow away cluster-critical node labels.
+        let patch = build_reclaim_agent_label_patch(true);
+        let top = patch.as_object().expect("top must be object");
+        assert_eq!(top.len(), 1, "top level must be only {{metadata}}");
+        let meta = top
+            .get("metadata")
+            .and_then(|v| v.as_object())
+            .expect("metadata object");
+        assert_eq!(meta.len(), 1, "metadata must contain only {{labels}}");
+        let labels = meta.get("labels").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(
+            labels.len(),
+            1,
+            "labels must contain exactly one key ({RECLAIM_AGENT_LABEL}) — \
+             other labels on the Node must survive untouched"
+        );
     }
 }

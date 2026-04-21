@@ -76,6 +76,22 @@ pub struct ScheduledMachineSpec {
     /// When true, immediately removes the machine from cluster
     #[serde(default)]
     pub kill_switch: bool,
+
+    /// Optional list of process patterns that trigger an emergency node
+    /// reclaim. When non-empty, the 5-Spot controller installs the
+    /// `5spot-reclaim-agent` `DaemonSet` on every Node backing this
+    /// `ScheduledMachine`; the agent watches `/proc` for any process whose
+    /// basename or argv matches one of these patterns and, on first match,
+    /// annotates the Node to request immediate (non-graceful) removal from
+    /// the cluster. When absent or empty, no agent is installed and
+    /// behaviour is time-based scheduling only.
+    ///
+    /// Patterns are evaluated against both `/proc/<pid>/comm` (exact
+    /// basename) and `/proc/<pid>/cmdline` (substring). See the
+    /// `5spot-emergency-reclaim-by-process-match.md` roadmap for full
+    /// semantics.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub kill_if_commands: Option<Vec<String>>,
 }
 
 fn default_priority() -> u8 {

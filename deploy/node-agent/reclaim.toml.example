@@ -1,0 +1,35 @@
+# 5-Spot Reclaim Agent — Example Configuration
+#
+# In production the controller projects this body into a per-node ConfigMap
+# named `reclaim-agent-<NODE_NAME>` in the `5spot-system` namespace, under
+# the `reclaim.toml` data key, rendered from each ScheduledMachine's
+# `spec.killIfCommands`. The agent watches that ConfigMap via the kube API
+# and hot-reloads on every change — it does NOT read this file from disk.
+# This example exists for schema reference and for manual smoke testing
+# against a local `parse_config` invocation.
+#
+# Matching is case-sensitive. An agent with both lists empty is inert
+# (returns None every scan, never annotates) — a present-but-empty
+# ConfigMap is still a valid "armed but inert" state.
+
+# Exact match against `/proc/<pid>/comm` (the basename reported by the
+# kernel, max 15 chars, no arguments). Prefer this list for well-known
+# binary names.
+match_commands = [
+    "java",
+    "idea",
+    "steam",
+]
+
+# Substring match against `/proc/<pid>/cmdline` (NUL-separated argv joined
+# with spaces for matching). Use for wrappers (e.g. `python -m foo`) where
+# `comm` is just "python" but the command to kill is specifically the `foo`
+# invocation.
+match_argv_substrings = [
+    # "-m minecraft_server",
+]
+
+# Scan interval in milliseconds. Default is 250ms — see
+# DEFAULT_POLL_INTERVAL_MS in src/reclaim_agent.rs. Zero is rejected at
+# config-load time.
+poll_interval_ms = 250

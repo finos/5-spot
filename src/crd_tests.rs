@@ -196,6 +196,89 @@ mod tests {
         assert_eq!(PHASE_DISABLED, "Disabled");
         assert_eq!(PHASE_TERMINATED, "Terminated");
         assert_eq!(PHASE_ERROR, "Error");
+        assert_eq!(PHASE_EMERGENCY_REMOVE, "EmergencyRemove");
+    }
+
+    #[test]
+    fn test_reason_emergency_reclaim_disabled_schedule_is_camelcase() {
+        use crate::constants::REASON_EMERGENCY_RECLAIM_DISABLED_SCHEDULE;
+        assert_eq!(
+            REASON_EMERGENCY_RECLAIM_DISABLED_SCHEDULE,
+            "EmergencyReclaimDisabledSchedule"
+        );
+    }
+
+    #[test]
+    fn test_emergency_drain_timeout_bounded() {
+        use crate::constants::{EMERGENCY_DRAIN_TIMEOUT_SECS, MAX_DURATION_SECS};
+        // const block so the assertion is resolved at compile time —
+        // guards against a future refactor that sets the timeout to 0
+        // or overflows past the 24h cap.
+        const _: () = assert!(
+            EMERGENCY_DRAIN_TIMEOUT_SECS > 0 && EMERGENCY_DRAIN_TIMEOUT_SECS <= MAX_DURATION_SECS,
+            "EMERGENCY_DRAIN_TIMEOUT_SECS must be within (0, MAX_DURATION_SECS]"
+        );
+    }
+
+    // ========================================================================
+    // Emergency reclaim annotation / label constants (roadmap Phase 1 / 2.5)
+    // ========================================================================
+
+    #[test]
+    fn test_reclaim_annotation_constants_under_5spot_namespace() {
+        use crate::constants::*;
+        assert_eq!(
+            RECLAIM_REQUESTED_ANNOTATION,
+            "5spot.finos.org/reclaim-requested"
+        );
+        assert_eq!(RECLAIM_REASON_ANNOTATION, "5spot.finos.org/reclaim-reason");
+        assert_eq!(
+            RECLAIM_REQUESTED_AT_ANNOTATION,
+            "5spot.finos.org/reclaim-requested-at"
+        );
+        assert_eq!(RECLAIM_REQUESTED_VALUE, "true");
+    }
+
+    #[test]
+    fn test_reclaim_agent_label_constants() {
+        use crate::constants::*;
+        assert_eq!(RECLAIM_AGENT_LABEL, "5spot.finos.org/reclaim-agent");
+        assert_eq!(RECLAIM_AGENT_LABEL_ENABLED, "enabled");
+    }
+
+    #[test]
+    fn test_reclaim_agent_configmap_and_namespace() {
+        use crate::constants::*;
+        assert_eq!(RECLAIM_AGENT_NAMESPACE, "5spot-system");
+        assert_eq!(RECLAIM_AGENT_CONFIGMAP_PREFIX, "reclaim-agent-");
+    }
+
+    #[test]
+    fn test_reason_emergency_reclaim_is_camelcase() {
+        use crate::constants::REASON_EMERGENCY_RECLAIM;
+        assert_eq!(REASON_EMERGENCY_RECLAIM, "EmergencyReclaim");
+    }
+
+    #[test]
+    fn test_reclaim_annotations_covered_by_reserved_prefixes() {
+        // Reserved prefixes on user-supplied labels/annotations must include
+        // 5spot.finos.org/ so operators can't inject these keys via the
+        // ScheduledMachine.spec.machineTemplate surface.
+        use crate::constants::{
+            RECLAIM_AGENT_LABEL, RECLAIM_REASON_ANNOTATION, RECLAIM_REQUESTED_ANNOTATION,
+            RECLAIM_REQUESTED_AT_ANNOTATION, RESERVED_LABEL_PREFIXES,
+        };
+        for key in [
+            RECLAIM_REQUESTED_ANNOTATION,
+            RECLAIM_REASON_ANNOTATION,
+            RECLAIM_REQUESTED_AT_ANNOTATION,
+            RECLAIM_AGENT_LABEL,
+        ] {
+            assert!(
+                RESERVED_LABEL_PREFIXES.iter().any(|p| key.starts_with(p)),
+                "{key} must be covered by a RESERVED_LABEL_PREFIXES entry"
+            );
+        }
     }
 
     // ========================================================================
@@ -229,6 +312,7 @@ mod tests {
             graceful_shutdown_timeout: "5m".to_string(),
             node_drain_timeout: "5m".to_string(),
             kill_switch: false,
+            kill_if_commands: None,
         };
 
         // Test that it serializes without errors
@@ -411,6 +495,129 @@ mod tests {
         assert!(
             msg.contains("apiVersion") || msg.contains("kind"),
             "error must name a missing field so operators know what changed, got: {msg}"
+        );
+    }
+
+    // ========================================================================
+    // killIfCommands — emergency reclaim opt-in (roadmap Phase 2.5, TDD RED)
+    // ========================================================================
+
+    fn base_spec() -> ScheduledMachineSpec {
+        use serde_json::json;
+        ScheduledMachineSpec {
+            schedule: ScheduleSpec {
+                days_of_week: vec!["mon-fri".to_string()],
+                hours_of_day: vec!["9-17".to_string()],
+                timezone: "UTC".to_string(),
+                enabled: true,
+            },
+            cluster_name: "test-cluster".to_string(),
+            bootstrap_spec: EmbeddedResource(json!({
+                "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
+                "kind": "K0sWorkerConfig",
+                "spec": {}
+            })),
+            infrastructure_spec: EmbeddedResource(json!({
+                "apiVersion": "infrastructure.cluster.x-k8s.io/v1beta1",
+                "kind": "RemoteMachine",
+                "spec": {"address": "192.168.1.100", "port": 22}
+            })),
+            machine_template: None,
+            priority: 50,
+            graceful_shutdown_timeout: "5m".to_string(),
+            node_drain_timeout: "5m".to_string(),
+            kill_switch: false,
+            kill_if_commands: None,
+        }
+    }
+
+    #[test]
+    fn test_kill_if_commands_absent_deserializes_as_none() {
+        let json = serde_json::json!({
+            "schedule": {
+                "daysOfWeek": ["mon-fri"],
+                "hoursOfDay": ["9-17"],
+                "timezone": "UTC",
+                "enabled": true
+            },
+            "clusterName": "c",
+            "bootstrapSpec": {
+                "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
+                "kind": "K0sWorkerConfig",
+                "spec": {}
+            },
+            "infrastructureSpec": {
+                "apiVersion": "infrastructure.cluster.x-k8s.io/v1beta1",
+                "kind": "RemoteMachine",
+                "spec": {"address": "10.0.0.1", "port": 22}
+            }
+        });
+        let spec: ScheduledMachineSpec =
+            serde_json::from_value(json).expect("spec without killIfCommands must deserialize");
+        assert!(
+            spec.kill_if_commands.is_none(),
+            "absent killIfCommands must be None so no agent is installed"
+        );
+    }
+
+    #[test]
+    fn test_kill_if_commands_omitted_from_serialized_output_when_none() {
+        let spec = base_spec();
+        let json = serde_json::to_value(&spec).expect("serialize spec");
+        assert!(
+            json.get("killIfCommands").is_none(),
+            "killIfCommands must be omitted when None (skip_serializing_if)"
+        );
+    }
+
+    #[test]
+    fn test_kill_if_commands_non_empty_round_trips() {
+        let mut spec = base_spec();
+        spec.kill_if_commands = Some(vec![
+            "java".to_string(),
+            "idea".to_string(),
+            "steam".to_string(),
+        ]);
+        let json = serde_json::to_value(&spec).expect("serialize");
+        assert_eq!(
+            json["killIfCommands"],
+            serde_json::json!(["java", "idea", "steam"]),
+            "non-empty list must serialize as camelCase killIfCommands"
+        );
+        let round: ScheduledMachineSpec = serde_json::from_value(json).expect("round-trip");
+        assert_eq!(
+            round.kill_if_commands.as_deref(),
+            Some(["java".to_string(), "idea".to_string(), "steam".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn test_kill_if_commands_empty_list_deserializes_as_some_empty() {
+        // Empty list is a valid but meaningless configuration. Preserve the
+        // distinction between "absent" (no opt-in) and "present but empty" so
+        // the controller can surface a condition warning on empty lists rather
+        // than silently treating them as opt-out.
+        let json = serde_json::json!({
+            "schedule": {"daysOfWeek": [], "hoursOfDay": [], "timezone": "UTC", "enabled": true},
+            "clusterName": "c",
+            "bootstrapSpec": {
+                "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
+                "kind": "K0sWorkerConfig",
+                "spec": {}
+            },
+            "infrastructureSpec": {
+                "apiVersion": "infrastructure.cluster.x-k8s.io/v1beta1",
+                "kind": "RemoteMachine",
+                "spec": {"address": "10.0.0.1", "port": 22}
+            },
+            "killIfCommands": []
+        });
+        let spec: ScheduledMachineSpec =
+            serde_json::from_value(json).expect("empty killIfCommands must deserialize");
+        assert_eq!(
+            spec.kill_if_commands.as_deref(),
+            Some([].as_slice()),
+            "empty list must round-trip as Some(vec![]), not None"
         );
     }
 

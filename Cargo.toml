@@ -46,6 +46,11 @@ tower = "0.5"
 regex = "1"
 lazy_static = "1.5"
 warp = "0.3"
+toml = "0.8"
+
+[[bin]]
+name = "5spot-reclaim-agent"
+path = "src/bin/reclaim_agent.rs"
 
 [dev-dependencies]
 tokio-test = "0.4"

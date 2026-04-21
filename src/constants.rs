@@ -57,6 +57,98 @@ pub const KIND_SECRET: &str = "Secret";
 pub const FINALIZER_SCHEDULED_MACHINE: &str = "5spot.finos.org/scheduledmachine";
 
 // ============================================================================
+// Emergency Reclaim — Node annotations and labels
+// ============================================================================
+//
+// Contract between the node-side `5spot-reclaim-agent` (rung 1: /proc poll;
+// rung 2: netlink proc connector) and the 5-Spot controller. The agent
+// writes these annotations on its own `Node` object via a PATCH scoped to
+// the kubelet's node-scoped token — no broad RBAC is required.
+//
+// When the controller observes [`RECLAIM_REQUESTED_ANNOTATION`] set to
+// `"true"` on a Node that maps to a `ScheduledMachine`, it enters
+// `Phase::EmergencyRemove`, skipping the graceful-drain timeouts.
+
+/// Annotation key on a `Node` requesting emergency removal. Value must be
+/// the literal string `"true"` to trigger the reclaim path — any other
+/// value (including presence with a different value) is ignored so that
+/// partial writes cannot accidentally reclaim a node.
+pub const RECLAIM_REQUESTED_ANNOTATION: &str = "5spot.finos.org/reclaim-requested";
+
+/// Annotation key on a `Node` carrying the human-readable reason the
+/// agent fired. Format: `"<source>: <detail>"` (e.g.
+/// `"process-match: java"`). Surfaced on the `ScheduledMachine`
+/// `EmergencyReclaim` event so operators can correlate without reading
+/// node-level logs.
+pub const RECLAIM_REASON_ANNOTATION: &str = "5spot.finos.org/reclaim-reason";
+
+/// Annotation key on a `Node` recording the RFC-3339 UTC timestamp at
+/// which the reclaim was requested. Used for audit and for detecting
+/// stale annotations left behind by a node that rejoined the cluster
+/// before the controller observed the request.
+pub const RECLAIM_REQUESTED_AT_ANNOTATION: &str = "5spot.finos.org/reclaim-requested-at";
+
+/// Value written to [`RECLAIM_REQUESTED_ANNOTATION`]. Any other value is
+/// treated as "not requested" by the controller; this avoids foot-guns
+/// like `"false"`, `"1"`, or empty strings accidentally triggering
+/// nuclear removal.
+pub const RECLAIM_REQUESTED_VALUE: &str = "true";
+
+/// Node label key used by the reclaim-agent `DaemonSet`'s `nodeSelector`.
+/// The controller stamps this onto every Node backing a
+/// `ScheduledMachine` whose `spec.killIfCommands` is non-empty;
+/// clearing the list removes the label and tears the agent off the node.
+/// Mirrors the `katacontainers.io/kata-runtime` opt-in pattern used by
+/// `kata-deploy`.
+pub const RECLAIM_AGENT_LABEL: &str = "5spot.finos.org/reclaim-agent";
+
+/// Value for [`RECLAIM_AGENT_LABEL`] indicating the agent is enabled
+/// for this node.
+pub const RECLAIM_AGENT_LABEL_ENABLED: &str = "enabled";
+
+/// Namespace on the **child** cluster where the 5-Spot controller
+/// projects per-node `ConfigMap`s for the reclaim agent and where the
+/// `DaemonSet` itself runs. Mirrors the controller's management-cluster
+/// [`DEFAULT_LEASE_NAMESPACE`] for symmetry.
+pub const RECLAIM_AGENT_NAMESPACE: &str = "5spot-system";
+
+/// Prefix for the per-node `ConfigMap` projected from
+/// `spec.killIfCommands`. Full name is
+/// `reclaim-agent-<sanitised-node-name>`.
+pub const RECLAIM_AGENT_CONFIGMAP_PREFIX: &str = "reclaim-agent-";
+
+/// Key inside the per-node `ConfigMap.data` that carries the agent's TOML
+/// body. The controller writes under this key in `build_reclaim_agent_configmap`
+/// and the agent reads from this key when it observes a `ConfigMap` event.
+/// Both sides MUST agree on the literal — centralising it here is the only
+/// thing that keeps the projection/consumption contract from silently
+/// drifting if one side is renamed in isolation.
+pub const RECLAIM_CONFIG_DATA_KEY: &str = "reclaim.toml";
+
+/// Kubernetes Event reason emitted on the `ScheduledMachine` when the
+/// emergency reclaim path fires. Operators see this in
+/// `kubectl describe scheduledmachine`.
+pub const REASON_EMERGENCY_RECLAIM: &str = "EmergencyReclaim";
+
+/// Kubernetes Event reason emitted on the `ScheduledMachine` **after** the
+/// controller has flipped `spec.schedule.enabled = false` as part of the
+/// emergency reclaim. Split from [`REASON_EMERGENCY_RECLAIM`] so operators
+/// can tell from `kubectl describe` that the schedule was the explicit
+/// cause of the node's continued absence (vs. the ejection itself).
+pub const REASON_EMERGENCY_RECLAIM_DISABLED_SCHEDULE: &str = "EmergencyReclaimDisabledSchedule";
+
+/// Drain timeout for the emergency reclaim path, in seconds.
+///
+/// Deliberately shorter than [`DEFAULT_NODE_DRAIN_TIMEOUT_SECS`]: by the
+/// time the node-side agent has annotated the Node, the user-space
+/// process match is the authoritative signal that the workload cannot
+/// remain on this node — we do not want to stall for the full five-minute
+/// drain window while a misbehaving process keeps running. Pods that
+/// cannot evict within this bound are left to be forcibly terminated
+/// when the Machine is deleted.
+pub const EMERGENCY_DRAIN_TIMEOUT_SECS: u64 = 60;
+
+// ============================================================================
 // Timing Constants (in seconds)
 // ============================================================================
 
@@ -244,6 +336,24 @@ pub const PHASE_TERMINATED: &str = "Terminated";
 
 /// Machine phase: Error (error occurred)
 pub const PHASE_ERROR: &str = "Error";
+
+/// Machine phase: `EmergencyRemove` (node-driven non-graceful reclaim).
+///
+/// Entered when the controller observes
+/// [`RECLAIM_REQUESTED_ANNOTATION`] = `"true"` on the Node backing a
+/// `ScheduledMachine`. Differs from [`PHASE_TERMINATED`] (operator-driven,
+/// terminal) in three ways:
+/// 1. Trigger is node-local (`5spot-reclaim-agent` process match) rather
+///    than an operator flipping `spec.killSwitch`.
+/// 2. Exit is non-terminal: the handler transitions to [`PHASE_DISABLED`]
+///    after clearing the annotations and flipping
+///    `spec.schedule.enabled = false` to break the
+///    eject→re-add→re-eject loop.
+/// 3. Drain uses a short emergency timeout
+///    ([`EMERGENCY_DRAIN_TIMEOUT_SECS`]) rather than
+///    `spec.nodeDrainTimeout`, since the user-space process match is the
+///    authoritative signal that the node must leave the cluster now.
+pub const PHASE_EMERGENCY_REMOVE: &str = "EmergencyRemove";
 
 // ============================================================================
 // CAPI API Constants

@@ -1601,6 +1601,630 @@ pub fn error_policy(
     Action::requeue(Duration::from_secs(backoff))
 }
 
+// ============================================================================
+// Emergency reclaim — node annotation detection + cleanup
+// ============================================================================
+//
+// The node-side `5spot-reclaim-agent` writes three annotations on its own
+// `Node` to signal the controller (contract defined in `constants.rs`:
+// `RECLAIM_REQUESTED_ANNOTATION` and siblings). These helpers cover the
+// two primitives the controller needs:
+//
+// 1. [`node_reclaim_request`] — parse a Node into a typed
+//    [`ReclaimRequest`] when the trigger annotation is set to the literal
+//    `"true"`. Any other state (missing, empty, wrong value) yields
+//    `None`, mirroring the strict check in the agent and guarding
+//    against partial-write foot-guns.
+//
+// 2. [`build_clear_reclaim_patch`] — the merge-patch body run as the
+//    last step of `Phase::EmergencyRemove` to wipe all three
+//    annotations, so a node that rejoins the cluster later does not
+//    immediately re-fire the trigger on stale metadata.
+
+/// Typed view of the reclaim annotations observed on a `Node`. `reason`
+/// and `requested_at` are `Option` so a missing value does not veto the
+/// trigger — the boolean [`RECLAIM_REQUESTED_ANNOTATION`] is the
+/// contract; reason/timestamp are audit metadata.
+///
+/// [`RECLAIM_REQUESTED_ANNOTATION`]: crate::constants::RECLAIM_REQUESTED_ANNOTATION
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReclaimRequest {
+    /// Value of [`crate::constants::RECLAIM_REASON_ANNOTATION`], if set.
+    pub reason: Option<String>,
+    /// Value of [`crate::constants::RECLAIM_REQUESTED_AT_ANNOTATION`], if set.
+    pub requested_at: Option<String>,
+}
+
+/// Parse a Node's annotations into a [`ReclaimRequest`]. Returns `None`
+/// unless the trigger annotation is present and set to the literal
+/// [`crate::constants::RECLAIM_REQUESTED_VALUE`] — any other value
+/// (including absent, empty, or `"false"`) is explicitly treated as
+/// not-requested to avoid partial-write foot-guns.
+#[must_use]
+pub fn node_reclaim_request(node: &k8s_openapi::api::core::v1::Node) -> Option<ReclaimRequest> {
+    let annotations = node.metadata.annotations.as_ref()?;
+    let triggered = annotations
+        .get(crate::constants::RECLAIM_REQUESTED_ANNOTATION)
+        .map(String::as_str)
+        == Some(crate::constants::RECLAIM_REQUESTED_VALUE);
+    if !triggered {
+        return None;
+    }
+    Some(ReclaimRequest {
+        reason: annotations
+            .get(crate::constants::RECLAIM_REASON_ANNOTATION)
+            .cloned(),
+        requested_at: annotations
+            .get(crate::constants::RECLAIM_REQUESTED_AT_ANNOTATION)
+            .cloned(),
+    })
+}
+
+/// Build the merge-patch body that clears all three reclaim annotations
+/// from a Node. Run as the final step of the emergency-reclaim path so
+/// that a node re-joining the cluster later does not immediately
+/// re-fire on stale annotations. Merge-patch semantics: a `null` value
+/// deletes the key.
+#[must_use]
+pub fn build_clear_reclaim_patch() -> serde_json::Value {
+    json!({
+        "metadata": {
+            "annotations": {
+                crate::constants::RECLAIM_REQUESTED_ANNOTATION: serde_json::Value::Null,
+                crate::constants::RECLAIM_REASON_ANNOTATION: serde_json::Value::Null,
+                crate::constants::RECLAIM_REQUESTED_AT_ANNOTATION: serde_json::Value::Null,
+            }
+        }
+    })
+}
+
+/// Build the merge-patch body that disables the owning `ScheduledMachine`'s
+/// schedule by setting `spec.schedule.enabled = false`. Run as part of the
+/// emergency-reclaim handler **before** the annotation-clear step, so that
+/// if the controller crashes after disabling the schedule but before
+/// clearing the annotations, the next reconcile still sees the annotations
+/// and retries the handler from the top (idempotent).
+///
+/// Rationale: without this flip, the next schedule window silently re-adds
+/// the node to the cluster, the agent sees the user's still-running JVM,
+/// and the eject→re-add→re-eject loop repeats every schedule boundary
+/// forever. Setting `enabled=false` makes the user's explicit re-enable
+/// the signal to return the node to service — see
+/// `docs/roadmaps/5spot-emergency-reclaim-by-process-match.md` Phase 3 and
+/// Open Question 6.
+///
+/// Merge-patch shape is deliberately narrow: only `spec.schedule.enabled`
+/// is addressed. Siblings under `spec.schedule` (`daysOfWeek`,
+/// `hoursOfDay`, `timezone`) and siblings under `spec` (`killSwitch`,
+/// `killIfCommands`, `bootstrapSpec`, `infrastructureSpec`, ...) are
+/// untouched.
+#[must_use]
+pub fn build_disable_schedule_patch() -> serde_json::Value {
+    json!({
+        "spec": {
+            "schedule": {
+                "enabled": false,
+            }
+        }
+    })
+}
+
+// ============================================================================
+// Emergency reclaim — event + condition-message builders (Phase 3 dispatch)
+// ============================================================================
+
+/// Build the `Warning`-type Kubernetes Event published on the
+/// `ScheduledMachine` at the start of the emergency reclaim path.
+///
+/// Mirrors the audit shape of [`build_phase_transition_event`] but uses a
+/// dedicated `action` string so event filters can target it explicitly:
+/// `kubectl get events --field-selector reason=EmergencyReclaim`.
+///
+/// The note embeds the agent-supplied `reason` verbatim (e.g.
+/// `"process-match: java"`) so an operator reading `kubectl describe`
+/// sees the root cause without cross-referencing the node object.
+#[must_use]
+pub fn build_emergency_reclaim_event(request: &ReclaimRequest) -> KubeEvent {
+    let reason_str = request
+        .reason
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("reclaim trigger on Node");
+    let note = match request.requested_at.as_deref() {
+        Some(ts) if !ts.trim().is_empty() => {
+            format!("Emergency reclaim requested ({ts}): {reason_str}")
+        }
+        _ => format!("Emergency reclaim requested: {reason_str}"),
+    };
+    KubeEvent {
+        type_: EventType::Warning,
+        reason: crate::constants::REASON_EMERGENCY_RECLAIM.to_string(),
+        note: Some(note),
+        action: "EmergencyReclaim".to_string(),
+        secondary: None,
+    }
+}
+
+/// Build the `Warning`-type Kubernetes Event published on the
+/// `ScheduledMachine` immediately after the controller has flipped
+/// `spec.schedule.enabled = false` as part of emergency reclaim.
+///
+/// Emitted separately from [`build_emergency_reclaim_event`] so the
+/// `kubectl describe` timeline shows both the trigger and the
+/// schedule-disable as distinct entries — operators need to notice that
+/// the node will NOT return at the next schedule window without their
+/// action.
+#[must_use]
+pub fn build_emergency_disable_schedule_event() -> KubeEvent {
+    KubeEvent {
+        type_: EventType::Warning,
+        reason: crate::constants::REASON_EMERGENCY_RECLAIM_DISABLED_SCHEDULE.to_string(),
+        note: Some(
+            "spec.schedule.enabled flipped to false to break the \
+             eject→re-add→re-eject loop. Re-enable is a user action."
+                .to_string(),
+        ),
+        action: "EmergencyReclaimDisableSchedule".to_string(),
+        secondary: None,
+    }
+}
+
+/// Format the human-readable message for the status condition recorded
+/// when the `ScheduledMachine` enters `Phase::EmergencyRemove`.
+///
+/// Always includes the node name (the minimum floor); embeds the
+/// agent-supplied reason and timestamp when present. Pure for unit-test
+/// coverage — no I/O, no clock reads.
+#[must_use]
+pub fn emergency_reclaim_message(node_name: &str, request: &ReclaimRequest) -> String {
+    let reason_part = request
+        .reason
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(|r| format!(": {r}"))
+        .unwrap_or_default();
+    let time_part = request
+        .requested_at
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(|t| format!(" at {t}"))
+        .unwrap_or_default();
+    format!("Emergency reclaim on node {node_name}{time_part}{reason_part}")
+}
+
+// ============================================================================
+// Emergency reclaim — dispatch handler (Phase 3)
+// ============================================================================
+
+/// Execute the full node-driven emergency reclaim on a `ScheduledMachine`.
+///
+/// Invoked from [`scheduled_machine::reconcile_inner`](super::scheduled_machine)
+/// once the controller has observed
+/// [`RECLAIM_REQUESTED_ANNOTATION`](crate::constants::RECLAIM_REQUESTED_ANNOTATION)
+/// on the Node backing this resource.
+///
+/// # Ordering contract
+/// Executes the seven steps documented in the Phase-3 roadmap in order:
+/// 1. Emit the `EmergencyReclaim` Warning event on the `ScheduledMachine`.
+/// 2. Transition phase to [`PHASE_EMERGENCY_REMOVE`].
+/// 3. Drain the Node with the short
+///    [`EMERGENCY_DRAIN_TIMEOUT_SECS`] — failures are **logged**, not
+///    fatal, so a misbehaving PDB cannot stall the reclaim.
+/// 4. Delete the CAPI `Machine` (removes node from cluster).
+/// 5. PATCH `spec.schedule.enabled = false` via
+///    [`build_disable_schedule_patch`]; emit
+///    `EmergencyReclaimDisabledSchedule` event.
+/// 6. Clear the three reclaim annotations on the Node via
+///    [`build_clear_reclaim_patch`] — best-effort; failure here only means
+///    the next reconcile replays from step 1 idempotently.
+/// 7. Transition phase to [`PHASE_DISABLED`].
+///
+/// # Idempotence
+/// Each step is safe to re-run. If the controller crashes after step 4
+/// but before step 5, the next reconcile still observes the annotation
+/// and replays — the `schedule.enabled=false` PATCH is idempotent (no
+/// diff if already false). We deliberately disable the schedule *before*
+/// clearing annotations so that a crash between steps 5 and 6 leaves
+/// the annotation in place and the next reconcile retries from the top.
+///
+/// # Errors
+/// - [`ReconcilerError::InvalidConfig`] — resource has no namespace
+/// - [`ReconcilerError::KubeError`] — status PATCH or spec PATCH failed
+///   (those errors **do** abort the flow so the caller back-offs and
+///   retries, because the `enabled=false` flip is the loop-breaker and
+///   cannot be silently skipped)
+/// - [`ReconcilerError::CapiError`] — CAPI Machine deletion failed
+pub async fn handle_emergency_remove(
+    resource: Arc<ScheduledMachine>,
+    ctx: Arc<Context>,
+    node_name: &str,
+    request: &ReclaimRequest,
+) -> Result<Action, ReconcilerError> {
+    use crate::constants::{
+        EMERGENCY_DRAIN_TIMEOUT_SECS, PHASE_DISABLED, PHASE_EMERGENCY_REMOVE,
+        REASON_EMERGENCY_RECLAIM, REASON_SCHEDULE_DISABLED,
+    };
+
+    let namespace = resource.namespace().ok_or_else(|| {
+        ReconcilerError::InvalidConfig("ScheduledMachine must be namespaced".to_string())
+    })?;
+    let name = resource.name_any();
+    let from_phase = resource.status.as_ref().and_then(|s| s.phase.as_deref());
+
+    info!(
+        resource = %name,
+        namespace = %namespace,
+        node = %node_name,
+        reason = request.reason.as_deref().unwrap_or("(none)"),
+        "Emergency reclaim path engaged"
+    );
+
+    let sm_object_ref = ObjectReference {
+        api_version: Some(crate::constants::API_VERSION_FULL.to_string()),
+        kind: Some(crate::constants::KIND_SCHEDULED_MACHINE.to_string()),
+        name: Some(name.clone()),
+        namespace: Some(namespace.clone()),
+        ..Default::default()
+    };
+
+    // Step 1: emit EmergencyReclaim Warning event on the SM.
+    publish_best_effort(
+        &ctx,
+        &sm_object_ref,
+        build_emergency_reclaim_event(request),
+        "EmergencyReclaim",
+    )
+    .await;
+
+    // Step 2: transition phase to EmergencyRemove.
+    let condition_message = emergency_reclaim_message(node_name, request);
+    update_phase(
+        &ctx,
+        &namespace,
+        &name,
+        from_phase,
+        PHASE_EMERGENCY_REMOVE,
+        Some(REASON_EMERGENCY_RECLAIM),
+        Some(&condition_message),
+        false,
+    )
+    .await?;
+
+    // Step 3: drain with short emergency timeout. Best-effort — we do
+    // NOT block Machine deletion on a failed drain, because the agent
+    // has already decided the node must leave.
+    if let Err(e) = drain_node_with_timeout(
+        &ctx.client,
+        node_name,
+        Duration::from_secs(EMERGENCY_DRAIN_TIMEOUT_SECS),
+    )
+    .await
+    {
+        warn!(
+            resource = %name,
+            node = %node_name,
+            error = %e,
+            "Emergency drain failed or timed out — proceeding with Machine deletion"
+        );
+    }
+
+    // Step 4: delete the CAPI Machine. This one we DO propagate — if we
+    // cannot delete the Machine, the node remains in the cluster and
+    // the loop-breaker (step 5) would be premature.
+    remove_machine_from_cluster(&resource, &ctx.client, &namespace).await?;
+
+    // Step 5: disable the schedule — the load-bearing step that breaks
+    // the eject→re-add→re-eject loop.
+    patch_disable_schedule(&ctx.client, &namespace, &name).await?;
+    publish_best_effort(
+        &ctx,
+        &sm_object_ref,
+        build_emergency_disable_schedule_event(),
+        "EmergencyReclaimDisabledSchedule",
+    )
+    .await;
+
+    // Step 6: clear reclaim annotations. Best-effort — failure only
+    // triggers an idempotent replay on the next reconcile.
+    clear_reclaim_annotations_best_effort(&ctx.client, node_name).await;
+
+    // Step 7: finalise state machine transition to Disabled.
+    update_phase(
+        &ctx,
+        &namespace,
+        &name,
+        Some(PHASE_EMERGENCY_REMOVE),
+        PHASE_DISABLED,
+        Some(REASON_SCHEDULE_DISABLED),
+        Some("Schedule disabled by emergency reclaim; re-enable is a user action"),
+        false,
+    )
+    .await?;
+
+    Ok(Action::requeue(Duration::from_secs(TIMER_REQUEUE_SECS)))
+}
+
+/// Publish a Kubernetes Event, logging at `warn` on failure. Used for
+/// best-effort audit events where a missing event must not abort the
+/// reconcile.
+async fn publish_best_effort(
+    ctx: &Context,
+    object_ref: &ObjectReference,
+    event: KubeEvent,
+    tag: &str,
+) {
+    if let Err(e) = ctx.recorder.publish(&event, object_ref).await {
+        warn!(error = %e, tag = %tag, "Failed to record Kubernetes Event (audit trail incomplete)");
+    }
+}
+
+/// Merge-patch `spec.schedule.enabled = false` onto the named
+/// `ScheduledMachine`. Propagates any error so the caller back-offs —
+/// this is the loop-breaker and cannot silently no-op.
+async fn patch_disable_schedule(
+    client: &Client,
+    namespace: &str,
+    name: &str,
+) -> Result<(), ReconcilerError> {
+    let sms: Api<ScheduledMachine> = Api::namespaced(client.clone(), namespace);
+    let disable_patch = build_disable_schedule_patch();
+    sms.patch(name, &PatchParams::default(), &Patch::Merge(&disable_patch))
+        .await
+        .map_err(|e| {
+            error!(
+                resource = %name,
+                namespace = %namespace,
+                error = %e,
+                "Failed to PATCH spec.schedule.enabled=false — reclaim loop not broken; retrying"
+            );
+            ReconcilerError::KubeError(e)
+        })?;
+    Ok(())
+}
+
+/// Best-effort clear of the three reclaim annotations on the node.
+/// Failures are logged but swallowed — the next reconcile replays
+/// idempotently if the annotations are still present.
+async fn clear_reclaim_annotations_best_effort(client: &Client, node_name: &str) {
+    let nodes: Api<k8s_openapi::api::core::v1::Node> = Api::all(client.clone());
+    let clear_patch = build_clear_reclaim_patch();
+    if let Err(e) = nodes
+        .patch(
+            node_name,
+            &PatchParams::default(),
+            &Patch::Merge(&clear_patch),
+        )
+        .await
+    {
+        warn!(
+            node = %node_name,
+            error = %e,
+            "Failed to clear reclaim annotations on Node — next reconcile will replay idempotently"
+        );
+    }
+}
+
+// ============================================================================
+// Emergency reclaim — controller-side agent provisioning (Phase 2.5 remainder)
+// ============================================================================
+//
+// When a `ScheduledMachine`'s `spec.killIfCommands` is non-empty, the
+// controller must mirror the user's declared intent into two cluster
+// objects on the child cluster:
+//
+// 1. A label `RECLAIM_AGENT_LABEL=RECLAIM_AGENT_LABEL_ENABLED` on each
+//    backing Node so the opt-in DaemonSet's `nodeSelector` matches and
+//    the agent pod lands.
+// 2. A per-node `ConfigMap` named `reclaim-agent-<node-name>` in
+//    `RECLAIM_AGENT_NAMESPACE` carrying a single `reclaim.toml` key
+//    whose body is the rendered TOML shape the agent parses at startup.
+//
+// Clearing `killIfCommands` back to empty strips the label (which
+// evicts the DaemonSet pod) and deletes the ConfigMap. The pure
+// builders below are unit-tested; the async orchestrator underneath
+// wires them to the kube API.
+
+/// Render the `spec.killIfCommands` list into the TOML shape consumed
+/// by `reclaim_agent::parse_config`. The output is guaranteed to be
+/// valid input for that parser — that round-trip is pinned by unit
+/// tests so a rename or format-drift here surfaces immediately.
+///
+/// The argv-substring list is intentionally not exposed on the CRD
+/// (see roadmap Phase 2.5) so this renderer always emits an empty
+/// `match_argv_substrings`. The poll interval is fixed to the agent's
+/// default so a spec change cannot tune the loop.
+#[must_use]
+pub fn render_reclaim_toml(commands: &[String]) -> String {
+    use toml::Value;
+    let cmds: Vec<Value> = commands.iter().map(|c| Value::String(c.clone())).collect();
+    let mut table = toml::map::Map::new();
+    table.insert("match_commands".to_string(), Value::Array(cmds));
+    table.insert(
+        "match_argv_substrings".to_string(),
+        Value::Array(Vec::new()),
+    );
+    table.insert(
+        "poll_interval_ms".to_string(),
+        Value::Integer(crate::reclaim_agent::DEFAULT_POLL_INTERVAL_MS as i64),
+    );
+    let body = toml::to_string(&Value::Table(table))
+        .expect("fixed-shape TOML value must always serialize");
+    format!(
+        "# Auto-generated by 5-spot controller from spec.killIfCommands\n\
+         # DO NOT EDIT — changes will be overwritten on next reconcile.\n\
+         {body}"
+    )
+}
+
+/// Return the `ConfigMap` name for the reclaim agent on a given node:
+/// `reclaim-agent-<node-name>`. Node names are DNS-1123 by kubelet
+/// contract so no sanitisation is applied — the projected name must be
+/// guessable from the node identity for debugging and for a future
+/// agent-side runtime ConfigMap fetch.
+#[must_use]
+pub fn per_node_configmap_name(node_name: &str) -> String {
+    format!(
+        "{prefix}{node_name}",
+        prefix = crate::constants::RECLAIM_AGENT_CONFIGMAP_PREFIX,
+    )
+}
+
+/// Build the per-node reclaim-agent `ConfigMap` containing a single
+/// `reclaim.toml` data key rendered from the commands list. Operator
+/// discovery labels are stamped so
+/// `kubectl get cm -n 5spot-system -l app.kubernetes.io/component=reclaim-agent`
+/// lists every projection at a glance.
+#[must_use]
+pub fn build_reclaim_agent_configmap(
+    node_name: &str,
+    commands: &[String],
+) -> k8s_openapi::api::core::v1::ConfigMap {
+    use k8s_openapi::api::core::v1::ConfigMap;
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+    let mut labels = BTreeMap::new();
+    labels.insert("app.kubernetes.io/name".to_string(), "5spot".to_string());
+    labels.insert(
+        "app.kubernetes.io/component".to_string(),
+        "reclaim-agent".to_string(),
+    );
+    let mut data = BTreeMap::new();
+    data.insert(
+        crate::constants::RECLAIM_CONFIG_DATA_KEY.to_string(),
+        render_reclaim_toml(commands),
+    );
+    ConfigMap {
+        metadata: ObjectMeta {
+            name: Some(per_node_configmap_name(node_name)),
+            namespace: Some(crate::constants::RECLAIM_AGENT_NAMESPACE.to_string()),
+            labels: Some(labels),
+            ..Default::default()
+        },
+        data: Some(data),
+        ..Default::default()
+    }
+}
+
+/// Build the merge-patch body that sets (when `enable == true`) or
+/// clears (when `enable == false`) the reclaim-agent opt-in label on a
+/// `Node`. Clearing uses JSON `null` so merge-patch deletes the key —
+/// an empty string would leave the label set to `""` and the DaemonSet
+/// nodeSelector would still not match, but the label would linger as
+/// noise on `kubectl describe node`.
+#[must_use]
+pub fn build_reclaim_agent_label_patch(enable: bool) -> serde_json::Value {
+    let value = if enable {
+        serde_json::Value::String(crate::constants::RECLAIM_AGENT_LABEL_ENABLED.to_string())
+    } else {
+        serde_json::Value::Null
+    };
+    json!({
+        "metadata": {
+            "labels": {
+                crate::constants::RECLAIM_AGENT_LABEL: value,
+            }
+        }
+    })
+}
+
+/// Drive the reclaim-agent provisioning for a single Node based on the
+/// `killIfCommands` list:
+///
+/// - Non-empty → stamp the opt-in label on the Node and apply the
+///   per-node `ConfigMap` (idempotent server-side apply).
+/// - Empty → clear the opt-in label and delete the per-node `ConfigMap`
+///   (idempotent — 404 is benign).
+///
+/// Best-effort with respect to the reconcile loop: individual failures
+/// are logged and returned as [`ReconcilerError::KubeError`] only on a
+/// genuine API failure; 404 on the tear-down path is treated as
+/// success so a re-run after a partial prior tear-down completes
+/// cleanly.
+///
+/// # Errors
+/// Returns [`ReconcilerError::KubeError`] when a Node PATCH or
+/// ConfigMap apply/delete fails with a non-404 error.
+pub async fn reconcile_reclaim_agent_provision(
+    client: &Client,
+    node_name: &str,
+    commands: &[String],
+) -> Result<(), ReconcilerError> {
+    use k8s_openapi::api::core::v1::{ConfigMap, Node};
+    const FIELD_MANAGER: &str = "5spot-controller-reclaim-agent";
+
+    let label_patch = build_reclaim_agent_label_patch(!commands.is_empty());
+    let nodes: Api<Node> = Api::all(client.clone());
+    nodes
+        .patch(
+            node_name,
+            &PatchParams::default(),
+            &Patch::Merge(&label_patch),
+        )
+        .await
+        .map_err(|e| {
+            error!(
+                node = %node_name,
+                enable = !commands.is_empty(),
+                error = %e,
+                "Failed to patch reclaim-agent label on Node"
+            );
+            ReconcilerError::KubeError(e)
+        })?;
+
+    let cms: Api<ConfigMap> =
+        Api::namespaced(client.clone(), crate::constants::RECLAIM_AGENT_NAMESPACE);
+    let cm_name = per_node_configmap_name(node_name);
+
+    if commands.is_empty() {
+        match cms.delete(&cm_name, &Default::default()).await {
+            Ok(_) => {
+                debug!(
+                    node = %node_name,
+                    configmap = %cm_name,
+                    "Deleted per-node reclaim-agent ConfigMap"
+                );
+            }
+            Err(kube::Error::Api(e)) if e.code == 404 => {
+                debug!(
+                    node = %node_name,
+                    configmap = %cm_name,
+                    "ConfigMap already absent — tear-down idempotent"
+                );
+            }
+            Err(e) => {
+                error!(
+                    node = %node_name,
+                    configmap = %cm_name,
+                    error = %e,
+                    "Failed to delete per-node reclaim-agent ConfigMap"
+                );
+                return Err(ReconcilerError::KubeError(e));
+            }
+        }
+        return Ok(());
+    }
+
+    let cm = build_reclaim_agent_configmap(node_name, commands);
+    let apply_params = PatchParams::apply(FIELD_MANAGER).force();
+    cms.patch(&cm_name, &apply_params, &Patch::Apply(&cm))
+        .await
+        .map_err(|e| {
+            error!(
+                node = %node_name,
+                configmap = %cm_name,
+                error = %e,
+                "Failed to apply per-node reclaim-agent ConfigMap"
+            );
+            ReconcilerError::KubeError(e)
+        })?;
+    debug!(
+        node = %node_name,
+        configmap = %cm_name,
+        commands = ?commands,
+        "Applied per-node reclaim-agent ConfigMap"
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 #[path = "helpers_tests.rs"]
 mod helpers_tests;

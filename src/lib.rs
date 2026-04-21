@@ -17,6 +17,7 @@ pub mod crd;
 pub mod health;
 pub mod labels;
 pub mod metrics;
+pub mod reclaim_agent;
 pub mod reconcilers;
 
 // Re-export main types

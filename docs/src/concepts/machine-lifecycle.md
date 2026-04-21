@@ -7,32 +7,38 @@ ScheduledMachines go through defined phases during their lifecycle.
 ```mermaid
 stateDiagram-v2
     [*] --> Pending: Resource Created
-    
+
     Pending --> Active: Schedule active & resources created
     Pending --> Inactive: Outside schedule window
     Pending --> Disabled: schedule.enabled = false
-    
+    Pending --> EmergencyRemove: killIfCommands match on node
+
     Active --> ShuttingDown: Schedule ends
     Active --> Terminated: killSwitch = true
+    Active --> EmergencyRemove: killIfCommands match on node
     Active --> Error: Provisioning error
-    
+
     ShuttingDown --> Inactive: Grace period complete
+    ShuttingDown --> EmergencyRemove: killIfCommands match on node
     ShuttingDown --> Error: Shutdown error
-    
+
     Inactive --> Active: Schedule window starts
     Inactive --> Disabled: schedule.enabled = false
-    
+
     Disabled --> Pending: schedule.enabled = true
-    
+
     Terminated --> Pending: killSwitch = false
-    
+
+    EmergencyRemove --> Disabled: Eject complete<br/>(enabled auto-flipped to false)
+
     Error --> Pending: Recovery / Retry
-    
+
     note right of Pending: Initial state - evaluating schedule
     note right of Active: Machine is running in cluster
     note right of ShuttingDown: Node drain & cleanup in progress
-    note right of Disabled: Paused by user
-    note right of Terminated: Emergency removal complete
+    note right of Disabled: Paused by user (or by emergency reclaim)
+    note right of Terminated: Operator-driven kill switch
+    note right of EmergencyRemove: Node-driven kill switch<br/>(process match on node)
 ```
 
 ## Phase Descriptions
@@ -82,12 +88,23 @@ Schedule is **disabled** by user (`schedule.enabled: false`).
 
 ### Terminated
 
-Machine was **immediately removed** via kill switch (`killSwitch: true`).
+Machine was **immediately removed** via the operator kill switch (`killSwitch: true`).
 
 - Bypassed normal grace period
 - Resources forcefully deleted
 - Used for emergency situations
 - Deactivate by setting `killSwitch: false`
+
+### EmergencyRemove
+
+Machine was **immediately removed** via the node-side process-match kill switch — the
+user on the node started a process matching `spec.killIfCommands`.
+
+- Bypassed `gracefulShutdownTimeout` and `nodeDrainTimeout`
+- `kubectl drain --grace-period=0 --force --disable-eviction` ran
+- CAPI Machine deleted immediately
+- Controller auto-flips `spec.schedule.enabled = false` so the node does **not** rejoin at the next schedule window — see [Emergency Reclaim](./emergency-reclaim.md) for the full lifecycle rationale
+- Exits to `Disabled`; user returns the node to service by setting `schedule.enabled: true`
 
 ### Error
 
@@ -109,12 +126,29 @@ An **error occurred** during processing.
 09:00 AM next day: Inactive → Active (new schedule window)
 ```
 
-### Kill Switch Flow
+### Kill Switch Flow (operator-driven)
 
 ```
 Any Phase → Terminated (immediate, bypassing grace period)
 Terminated → Pending (when killSwitch set back to false)
 ```
+
+### Emergency Reclaim Flow (node-driven, process match)
+
+```
+Pending / Active / ShuttingDown → EmergencyRemove
+  (agent on node saw a process matching spec.killIfCommands,
+   annotated the Node, controller picked up the annotation)
+
+EmergencyRemove → Disabled
+  (non-graceful drain + Machine delete complete,
+   controller auto-flipped spec.schedule.enabled = false)
+
+Disabled → Pending (when the user sets schedule.enabled = true)
+```
+
+See [Emergency Reclaim](./emergency-reclaim.md) for a dedicated walk-through, sequence
+diagram, and the rationale for why the exit is `Disabled` rather than `Pending`.
 
 ### Schedule Disabled Flow
 

@@ -86,6 +86,9 @@ fn main() {
     println!("  gracefulShutdownTimeout: 5m");
     println!("  nodeDrainTimeout: 5m");
     println!("  killSwitch: false");
+    println!("  killIfCommands:");
+    println!("    - java");
+    println!("    - idea");
     println!("```");
     println!();
     println!("### Spec Fields");
@@ -172,6 +175,22 @@ fn main() {
     println!();
     println!("(optional, boolean, default: `false`) When true, immediately removes the machine");
     println!("from the cluster and takes it out of rotation, bypassing the grace period.");
+    println!();
+    println!("#### killIfCommands");
+    println!();
+    println!(
+        "(optional, array of strings) Process patterns that trigger an emergency node reclaim."
+    );
+    println!("When non-empty, the 5-Spot controller installs the `5spot-reclaim-agent` DaemonSet");
+    println!("on every Node backing this `ScheduledMachine`. The agent watches `/proc` for any");
+    println!("process whose basename or argv matches one of these patterns and, on first match,");
+    println!("annotates the Node to request immediate (non-graceful) removal from the cluster.");
+    println!();
+    println!(
+        "When absent or empty, no agent is installed and behaviour is time-based scheduling only."
+    );
+    println!("Patterns are evaluated against both `/proc/<pid>/comm` (exact basename) and");
+    println!("`/proc/<pid>/cmdline` (substring).");
     println!();
     println!("### Status Fields");
     println!();

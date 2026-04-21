@@ -1,0 +1,154 @@
+# 5-Spot Reclaim Agent DaemonSet
+#
+# Opt-in node-side emergency reclaim trigger. Lands only on nodes that carry
+# the label `5spot.finos.org/reclaim-agent=enabled` (mirrors the kata-deploy
+# opt-in pattern). The 5-Spot controller stamps this label on worker nodes
+# whose parent ScheduledMachine has a non-empty `spec.killIfCommands`.
+#
+# The agent:
+# - Watches `/proc` on its own host (hostPID + privileged reads).
+# - On first match against the command list projected in its per-node
+#   ConfigMap, PATCHes the Node object with reclaim annotations so the
+#   controller can enter Phase::EmergencyRemove.
+# - Exits 0 after a successful annotation write; kubelet restarts the pod,
+#   which re-runs and idempotently exits 0 again (annotation already set).
+#
+# Deployment shape is intentionally an in-pod agent rather than kata's
+# "install to systemd via nsenter" pattern: the agent is lighter than kata,
+# doesn't need to survive kubelet crashes, and pod restarts are an
+# acceptable failure domain for an emergency trigger.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: 5spot-reclaim-agent
+  namespace: 5spot-system
+  labels:
+    app: 5spot-reclaim-agent
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: reclaim-agent
+spec:
+  selector:
+    matchLabels:
+      app: 5spot-reclaim-agent
+  # Allow slow rollouts on large fleets; reclaim is edge-case so there is
+  # no value in a fast burst.
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 10%
+  template:
+    metadata:
+      labels:
+        app: 5spot-reclaim-agent
+        app.kubernetes.io/name: 5spot
+        app.kubernetes.io/component: reclaim-agent
+    spec:
+      serviceAccountName: 5spot-reclaim-agent
+      # Opt-in: only land on nodes explicitly labeled by the controller.
+      # Unlabeled nodes never run the agent — zero footprint on fleets that
+      # do not use killIfCommands.
+      nodeSelector:
+        5spot.finos.org/reclaim-agent: enabled
+      # Tolerate every taint so the agent reaches even cordoned / NotReady
+      # nodes (it's an emergency component).
+      tolerations:
+        - operator: Exists
+      # Required: the agent reads every pid in `/proc`, which on a pod's
+      # private pid namespace would only see itself + pause. hostPID exposes
+      # the node's pid namespace.
+      hostPID: true
+      # Emergency component — scheduler must never evict it under pressure.
+      priorityClassName: system-node-critical
+      # Terminate fast. The agent holds no state; on delete we just want it
+      # gone so the next rollout can replace it.
+      terminationGracePeriodSeconds: 5
+      # Pod-level security context. An explicit block is required to satisfy
+      # Trivy KSV-0118 ("default security context configured"). Per-container
+      # hardening (readOnlyRootFilesystem, drop ALL caps, no privilege
+      # escalation) is repeated below on the single container; the pod-level
+      # block enumerates the scope we *cannot* change because of the agent's
+      # architectural job:
+      #   - runAsNonRoot: false — reading /proc/<pid>/{comm,cmdline} for every
+      #     process on the host requires UID 0 under hardened hidepid=2 /proc
+      #     mounts. A non-root variant would need CAP_SYS_PTRACE added back,
+      #     which is a broader privilege than running as root with every
+      #     other capability dropped.
+      #   - seccompProfile.type: RuntimeDefault — adopt the cluster's default
+      #     syscall filter rather than running unconfined.
+      securityContext:
+        # nosemgrep: yaml.kubernetes.security.run-as-non-root-unsafe-value.run-as-non-root-unsafe-value
+        # Suppression rationale is in the multi-line block above and mirrors
+        # the .trivyignore entries for KSV-0012 / KSV-0118 / KSV-0105.
+        runAsNonRoot: false
+        runAsUser: 0
+        runAsGroup: 0
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: agent
+          # Pin to a released version tag — NEVER use :latest in production
+          # manifests (Trivy KSV-0013). Update the tag via the CI/CD release
+          # workflow. The agent binary is the `5spot-reclaim-agent` bin
+          # target in this crate; the image is built from the same release
+          # as the controller.
+          image: ghcr.io/finos/5-spot-reclaim-agent:v0.1.0
+          imagePullPolicy: IfNotPresent
+          # The agent no longer reads its config from a mounted file.
+          # Instead it watches the per-node ConfigMap
+          # `reclaim-agent-<NODE_NAME>` in the 5spot-system namespace and
+          # reloads live on every change. The only runtime knob it needs
+          # is the proc root; NODE_NAME (below) is the ConfigMap-name key.
+          args:
+            - --proc-root=/host/proc
+          env:
+            - name: RUST_LOG
+              value: "info"
+            - name: RUST_LOG_FORMAT
+              value: "json"
+            # NODE_NAME is consumed by the CLI (`--node-name` default). The
+            # agent PATCHes this Node object on match.
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          securityContext:
+            # Reading every `/proc/<pid>/comm` + `cmdline` requires root;
+            # CAP_SYS_PTRACE is not strictly required for rung 1 but is
+            # kept dropped. CAP_NET_ADMIN will be re-added for rung 2
+            # (netlink proc connector) as a separate change.
+            runAsUser: 0
+            runAsGroup: 0
+            # nosemgrep: yaml.kubernetes.security.run-as-non-root-unsafe-value.run-as-non-root-unsafe-value
+            # See pod-level securityContext comment block and `.trivyignore`
+            # (KSV-0012 / KSV-0118 / KSV-0105) for rationale.
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            limits:
+              cpu: 50m
+              memory: 64Mi
+            requests:
+              cpu: 10m
+              memory: 16Mi
+          volumeMounts:
+            - name: host-proc
+              mountPath: /host/proc
+              readOnly: true
+      volumes:
+        # Host /proc — the detection surface. Mounted read-only; the agent
+        # never writes to /proc, only reads comm + cmdline.
+        - name: host-proc
+          hostPath:
+            path: /proc
+            type: Directory
+        # No ConfigMap volume. The agent uses the kube API directly to watch
+        # its per-node ConfigMap (reclaim-agent-<NODE_NAME>) and reloads
+        # live on every change — see src/bin/reclaim_agent.rs. This sidesteps
+        # the Kubernetes limitation that `configMap.name` in a volume spec
+        # cannot be templated by the downward API per replica.

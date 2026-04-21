@@ -12,9 +12,11 @@
 //!   │                                                       ▲
 //!   └──► Disabled ─────────────────────────────────────────┘
 //!
-//! Any state ──► Terminated  (kill switch)
-//! Any state ──► Error       (unrecoverable failure)
-//! Error     ──► Pending     (automatic recovery attempt)
+//! Any state ──► Terminated       (kill switch)
+//! Any state ──► EmergencyRemove  (node-side reclaim annotation)
+//! EmergencyRemove ──► Disabled   (after drain + delete + enabled=false flip)
+//! Any state ──► Error            (unrecoverable failure)
+//! Error     ──► Pending          (automatic recovery attempt)
 //! ```
 //!
 //! ## Entry points
@@ -43,10 +45,10 @@ use kube::{
 use tracing::{debug, error, info, warn, Instrument};
 
 use crate::constants::{
-    ERROR_REQUEUE_SECS, PHASE_ACTIVE, PHASE_DISABLED, PHASE_ERROR, PHASE_INACTIVE, PHASE_PENDING,
-    PHASE_SHUTTING_DOWN, PHASE_TERMINATED, REASON_GRACE_PERIOD, REASON_MACHINE_CREATED,
-    REASON_MACHINE_DELETED, REASON_SCHEDULE_ACTIVE, REASON_SCHEDULE_DISABLED,
-    REASON_SCHEDULE_INACTIVE, TIMER_REQUEUE_SECS,
+    ERROR_REQUEUE_SECS, PHASE_ACTIVE, PHASE_DISABLED, PHASE_EMERGENCY_REMOVE, PHASE_ERROR,
+    PHASE_INACTIVE, PHASE_PENDING, PHASE_SHUTTING_DOWN, PHASE_TERMINATED, REASON_GRACE_PERIOD,
+    REASON_MACHINE_CREATED, REASON_MACHINE_DELETED, REASON_SCHEDULE_ACTIVE,
+    REASON_SCHEDULE_DISABLED, REASON_SCHEDULE_INACTIVE, TIMER_REQUEUE_SECS,
 };
 use crate::crd::ScheduledMachine;
 use crate::metrics::{
@@ -400,6 +402,13 @@ async fn reconcile_inner(
         return handle_kill_switch(resource, ctx).await;
     }
 
+    // Check node-driven emergency reclaim. Runs AFTER kill_switch (which is
+    // terminal) but BEFORE schedule evaluation, so that a still-enabled
+    // schedule cannot race the annotation observation and re-add the node.
+    if let Some(action) = check_emergency_reclaim(&resource, &ctx).await? {
+        return Ok(action);
+    }
+
     // Evaluate schedule
     let should_be_active = evaluate_schedule(&resource.spec.schedule, None)?;
 
@@ -423,10 +432,113 @@ async fn reconcile_inner(
         PHASE_INACTIVE => handle_inactive_phase(resource, ctx, should_be_active).await,
         PHASE_DISABLED => handle_disabled_phase(resource, ctx, should_be_active).await,
         PHASE_TERMINATED => handle_terminated_phase(resource, ctx).await,
+        PHASE_EMERGENCY_REMOVE => handle_emergency_remove_phase(resource, ctx).await,
         PHASE_ERROR => handle_error_phase(resource, ctx),
         // PHASE_PENDING and unknown phases handled by default
         _ => handle_pending_phase(resource, ctx, should_be_active).await,
     }
+}
+
+/// Check whether the Node backing this `ScheduledMachine` carries a
+/// reclaim-request annotation and — if so — drive the full emergency
+/// remove flow.
+///
+/// Returns:
+/// - `Ok(None)` when there's no node yet (pending first provision), the
+///   node has been deleted, or the annotation is absent: reconcile continues
+///   normally.
+/// - `Ok(Some(action))` when the emergency path fired: the caller MUST
+///   return this action immediately without continuing to the schedule
+///   evaluation or phase dispatch.
+/// - `Err(_)` when the Node API call fails in a non-404 way, or the
+///   handler itself surfaces a fatal error (status/spec PATCH failure).
+async fn check_emergency_reclaim(
+    resource: &Arc<ScheduledMachine>,
+    ctx: &Arc<Context>,
+) -> Result<Option<Action>, ReconcilerError> {
+    use k8s_openapi::api::core::v1::Node;
+    use kube::api::Api;
+
+    // Guard: no nodeRef yet means no node to reclaim.
+    let Some(node_ref) = resource.status.as_ref().and_then(|s| s.node_ref.as_ref()) else {
+        return Ok(None);
+    };
+    let node_name = &node_ref.name;
+    if node_name.is_empty() {
+        return Ok(None);
+    }
+
+    // Fetch the Node. 404 is benign — means the node was already removed,
+    // nothing to reclaim. Other errors propagate so the reconciler retries.
+    let nodes: Api<Node> = Api::all(ctx.client.clone());
+    let node = match nodes.get(node_name).await {
+        Ok(n) => n,
+        Err(kube::Error::Api(e)) if e.code == 404 => {
+            debug!(
+                node = %node_name,
+                "Referenced Node not found — skipping reclaim check"
+            );
+            return Ok(None);
+        }
+        Err(e) => return Err(ReconcilerError::KubeError(e)),
+    };
+
+    let Some(request) = super::helpers::node_reclaim_request(&node) else {
+        return Ok(None);
+    };
+
+    info!(
+        resource = %resource.name_any(),
+        node = %node_name,
+        reason = request.reason.as_deref().unwrap_or("(none)"),
+        "Reclaim annotation observed — engaging emergency remove"
+    );
+    let action = super::helpers::handle_emergency_remove(
+        Arc::clone(resource),
+        Arc::clone(ctx),
+        node_name,
+        &request,
+    )
+    .await?;
+    Ok(Some(action))
+}
+
+/// Handle the `EmergencyRemove` phase — idempotent catch for a controller
+/// that crashed between step 6 (annotation clear) and step 7 (phase flip
+/// to Disabled) of the emergency-reclaim ordering contract.
+///
+/// If the reclaim annotation is still present the earlier
+/// [`check_emergency_reclaim`] guard has already re-driven the full flow
+/// before reaching this match arm — so by the time we get here, the
+/// annotation is cleared and all that's left is to finish the transition.
+async fn handle_emergency_remove_phase(
+    resource: Arc<ScheduledMachine>,
+    ctx: Arc<Context>,
+) -> Result<Action, ReconcilerError> {
+    let namespace = resource.namespace().ok_or_else(|| {
+        ReconcilerError::InvalidConfig("ScheduledMachine must be namespaced".to_string())
+    })?;
+    let name = resource.name_any();
+
+    warn!(
+        resource = %name,
+        namespace = %namespace,
+        "Resource stuck in EmergencyRemove after annotation clear — completing transition to Disabled"
+    );
+
+    update_phase(
+        &ctx,
+        &namespace,
+        &name,
+        Some(PHASE_EMERGENCY_REMOVE),
+        PHASE_DISABLED,
+        Some(REASON_SCHEDULE_DISABLED),
+        Some("Schedule disabled by emergency reclaim; re-enable is a user action"),
+        false,
+    )
+    .await?;
+
+    Ok(Action::requeue(Duration::from_secs(TIMER_REQUEUE_SECS)))
 }
 
 // ============================================================================
@@ -597,6 +709,7 @@ async fn handle_active_phase(
                     "Failed to patch providerID/nodeRef status (non-fatal)"
                 );
             }
+            provision_reclaim_agent_best_effort(&resource, &ctx, &node_ref).await;
         }
         Ok(None) => {
             debug!(resource = %name, "CAPI Machine not found yet — skipping status enrichment");
@@ -613,6 +726,38 @@ async fn handle_active_phase(
 
     debug!(resource = %name, namespace = %namespace, "Machine active and in schedule");
     Ok(Action::requeue(Duration::from_secs(TIMER_REQUEUE_SECS)))
+}
+
+/// Best-effort projection of the reclaim-agent label + per-node
+/// `ConfigMap` based on the current `spec.killIfCommands` list.
+///
+/// Runs from the `Active` phase once a `nodeRef` is known so the
+/// projection follows the Node the machine is actually bound to. A
+/// failure here must not block the reconcile — a missing or stale
+/// projection degrades the emergency-reclaim path but does not break
+/// day-to-day scheduling. Non-fatal errors are logged.
+async fn provision_reclaim_agent_best_effort(
+    resource: &Arc<ScheduledMachine>,
+    ctx: &Arc<Context>,
+    node_ref: &Option<crate::crd::NodeRef>,
+) {
+    let Some(node_name) = node_ref.as_ref().map(|n| n.name.as_str()) else {
+        return;
+    };
+    if node_name.is_empty() {
+        return;
+    }
+    let commands = resource.spec.kill_if_commands.as_deref().unwrap_or(&[]);
+    if let Err(e) =
+        super::helpers::reconcile_reclaim_agent_provision(&ctx.client, node_name, commands).await
+    {
+        warn!(
+            resource = %resource.name_any(),
+            node = %node_name,
+            error = %e,
+            "Failed to project reclaim-agent label/ConfigMap (non-fatal)"
+        );
+    }
 }
 
 /// Handle the `ShuttingDown` phase — graceful shutdown with node drain.

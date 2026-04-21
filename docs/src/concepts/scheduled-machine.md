@@ -117,7 +117,8 @@ Optional configuration applied to the created CAPI Machine.
 | `priority` | `int` | No | `50` | Priority (0-255). Higher = more important. |
 | `gracefulShutdownTimeout` | `string` | No | `5m` | Time for graceful machine shutdown. |
 | `nodeDrainTimeout` | `string` | No | `5m` | Timeout for draining the node before deletion. |
-| `killSwitch` | `bool` | No | `false` | Immediately remove machine if true. |
+| `killSwitch` | `bool` | No | `false` | Operator-driven kill switch. Immediately remove machine if `true`; reset to `false` to return to scheduled service. |
+| `killIfCommands` | `[]string` | No | `null` | Node-side process-match kill switch. When non-empty, the reclaim agent DaemonSet is installed on the backing node and watches `/proc` for any process whose `comm` or `cmdline` matches an entry. First match triggers `EmergencyRemove` + auto-disables the schedule. See [Emergency Reclaim](./emergency-reclaim.md). |
 
 ## Status Fields
 
@@ -125,7 +126,7 @@ The status subresource contains the current state:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `phase` | `string` | Current lifecycle phase (Pending, Active, ShuttingDown, Inactive, Disabled, Terminated, Error) |
+| `phase` | `string` | Current lifecycle phase (Pending, Active, ShuttingDown, Inactive, Disabled, Terminated, EmergencyRemove, Error) |
 | `message` | `string` | Human-readable status message |
 | `inSchedule` | `bool` | Whether currently within scheduled window |
 | `conditions` | `[]Condition` | Detailed status conditions |
@@ -172,3 +173,4 @@ The controller:
 - [API Reference](../reference/api.md) - Complete API documentation
 - [Machine Lifecycle](./machine-lifecycle.md) - Phase transitions
 - [Schedules](./schedules.md) - Schedule configuration details
+- [Emergency Reclaim](./emergency-reclaim.md) - `killIfCommands` and the process-match kill switch

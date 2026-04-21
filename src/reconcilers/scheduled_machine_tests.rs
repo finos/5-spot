@@ -37,6 +37,7 @@ mod tests {
             graceful_shutdown_timeout: "5m".to_string(),
             node_drain_timeout: "5m".to_string(),
             kill_switch: false,
+            kill_if_commands: None,
         }
     }
 
@@ -1009,6 +1010,131 @@ mod tests {
         assert!(
             result.is_ok(),
             "non-leader must return Ok without error, got: {result:?}"
+        );
+    }
+
+    // ========================================================================
+    // check_emergency_reclaim — Phase-4 dispatch-guard early-return tests
+    //
+    // The dispatch guard fetches the Node only when status.nodeRef is
+    // populated and names a non-empty Node. These tests pin the early-return
+    // contract so a future refactor cannot regress the guard into an
+    // unconditional Node.get() (which would both be wasteful and fail when
+    // the machine has not yet been provisioned).
+    //
+    // Harness trick: the test client has no handle, so any API request
+    // hangs forever. We wrap each call in a 100ms timeout — a completed
+    // Ok(None) in under 100ms proves the early-return path was taken
+    // without touching the apiserver.
+    // ========================================================================
+
+    const EARLY_RETURN_TIMEOUT_MS: u64 = 100;
+
+    fn make_sm_with_status(status: crate::crd::ScheduledMachineStatus) -> ScheduledMachine {
+        let mut sm = make_sm_with_uid("deadbeef-0000-0000-0000-000000000042");
+        sm.status = Some(status);
+        sm
+    }
+
+    async fn run_check_with_timeout(
+        sm: ScheduledMachine,
+    ) -> Result<Option<kube::runtime::controller::Action>, super::super::ReconcilerError> {
+        let ctx = Context::new(le_mock_client(), 0, 1);
+        tokio::time::timeout(
+            std::time::Duration::from_millis(EARLY_RETURN_TIMEOUT_MS),
+            super::super::check_emergency_reclaim(&Arc::new(sm), &Arc::new(ctx)),
+        )
+        .await
+        .expect("check_emergency_reclaim hit the apiserver — early-return contract broken")
+    }
+
+    // ---- Positive: no status at all ----
+
+    #[tokio::test]
+    async fn test_check_emergency_reclaim_returns_none_when_status_absent() {
+        // A freshly-created ScheduledMachine has no status; the guard must
+        // short-circuit before any Node.get() is attempted.
+        let mut sm = make_sm_with_uid("deadbeef-0000-0000-0000-000000000001");
+        sm.status = None;
+
+        let result = run_check_with_timeout(sm).await;
+
+        assert!(
+            matches!(result, Ok(None)),
+            "expected Ok(None), got {result:?}"
+        );
+    }
+
+    // ---- Negative: status exists but nodeRef absent ----
+
+    #[tokio::test]
+    async fn test_check_emergency_reclaim_returns_none_when_node_ref_absent() {
+        // CAPI has not yet populated status.nodeRef — nothing to reclaim.
+        let sm = make_sm_with_status(crate::crd::ScheduledMachineStatus {
+            phase: Some("Pending".to_string()),
+            node_ref: None,
+            ..Default::default()
+        });
+
+        let result = run_check_with_timeout(sm).await;
+
+        assert!(
+            matches!(result, Ok(None)),
+            "expected Ok(None), got {result:?}"
+        );
+    }
+
+    // ---- Exception: nodeRef present but name field is empty string ----
+
+    #[tokio::test]
+    async fn test_check_emergency_reclaim_returns_none_when_node_name_empty() {
+        // A malformed or partially-populated NodeRef must not trigger an
+        // Api::get("") call (which the apiserver would 400 on).
+        let sm = make_sm_with_status(crate::crd::ScheduledMachineStatus {
+            phase: Some("Active".to_string()),
+            node_ref: Some(crate::crd::NodeRef {
+                api_version: "v1".to_string(),
+                kind: "Node".to_string(),
+                name: String::new(),
+                uid: None,
+            }),
+            ..Default::default()
+        });
+
+        let result = run_check_with_timeout(sm).await;
+
+        assert!(
+            matches!(result, Ok(None)),
+            "expected Ok(None), got {result:?}"
+        );
+    }
+
+    // ========================================================================
+    // handle_emergency_remove_phase — Phase-4 crash-recovery arm test
+    //
+    // The crash-recovery arm catches the window between step 6 (annotation
+    // cleared) and step 7 (phase flip to Disabled) of the 7-step ordering
+    // contract. The annotation is gone by the time we hit this arm, so
+    // check_emergency_reclaim short-circuits and the match arm is solely
+    // responsible for finishing the transition.
+    //
+    // update_phase PATCHes the status subresource. Without a mock handle
+    // that responds, the PATCH hangs — so the test below pins the guard
+    // that the function does require a namespaced resource (fast-fail
+    // InvalidConfig) rather than silently dropping the signal.
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_handle_emergency_remove_phase_rejects_non_namespaced_resource() {
+        let ctx = Context::new(le_mock_client(), 0, 1);
+        let mut sm = ScheduledMachine::new("test-sm", create_test_spec());
+        sm.metadata.namespace = None;
+
+        let result = super::super::handle_emergency_remove_phase(Arc::new(sm), Arc::new(ctx)).await;
+
+        assert!(
+            matches!(result, Err(super::super::ReconcilerError::InvalidConfig(_))),
+            "non-namespaced resource must fast-fail with InvalidConfig, got {result:?}"
         );
     }
 }

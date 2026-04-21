@@ -64,6 +64,105 @@ AVD-KSV-0125
 AVD-KSV-01010
 
 # ─────────────────────────────────────────────────────────────────────────────
+# DaemonSet — deploy/node-agent/daemonset.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+# KSV-0010 — Access to host PID namespace (hostPID: true).
+# Architecturally required. The reclaim-agent is a host-process watcher: it
+# detects the emergency-reclaim match by scanning /proc for processes whose
+# argv matches a curated kill-list, and it executes the graceful stop by
+# signalling those host PIDs. Both capabilities depend on the agent sharing
+# the host's PID namespace — pod-scoped /proc would only expose the agent's
+# own container and make the entire feature inoperable. The agent runs with
+# a narrow SecurityContext (read-only root fs, no privilege escalation, no
+# extra capabilities beyond what hostPID implies) and is deployed only on
+# nodes that have opted in via the 5spot.finos.org/reclaim-agent label.
+AVD-KSV-0010
+
+# KSV-0121 — DaemonSet shouldn't have volumes set to {"/proc"}.
+# Architecturally required (HIGH-severity variant of KSV-0023 that names
+# the specific disallowed host paths). Same rationale: the agent's
+# detection contract IS reading `/proc/<pid>/{comm,cmdline}` for every
+# host process, and Kubernetes exposes no non-hostPath mechanism for
+# that. The mount is scoped to exactly `/proc`, `readOnly: true`,
+# `type: Directory`, and the agent never writes back. Phase 2 rung-2
+# (netlink proc connector) will replace the read-side but still needs
+# host `/proc` for the initial match fan-out, so this suppression is
+# durable. No other hostPath volumes exist on this DaemonSet.
+AVD-KSV-0121
+
+# KSV-0023 — hostPath volume mounted.
+# Architecturally required. The single hostPath volume is `/proc`, mounted
+# read-only at /host/proc so the agent can read /proc/<pid>/{comm,cmdline}
+# for every host process. The detection contract IS reading host process
+# state — there is no Kubernetes-native substitute (the Downward API,
+# projected volumes, and CSI drivers do not expose kernel /proc). Scope is
+# already minimal: one path (`/proc`), read-only, `type: Directory`, and
+# the agent writes nothing back. No other hostPath volumes exist in the
+# DaemonSet. Future rung-2 work (netlink proc connector) will replace the
+# /proc read-side with event-driven push but still requires host /proc for
+# the initial match fan-out, so this suppression is durable.
+AVD-KSV-0023
+
+# KSV-0020 — Container 'agent' securityContext.runAsUser should be > 10000.
+# Architecturally required (same root cause as KSV-0012 / KSV-0105 /
+# KSV-0118 — this rule is the "high-UID" strictness variant of KSV-0105).
+# UID 0 is required for `/proc/<pid>/{comm,cmdline}` reads under hardened
+# `hidepid=2` mounts. The rule's intent (avoid low-numbered UIDs that may
+# collide with reserved host accounts) is moot at UID 0: the collision
+# with `root` is deliberate, not accidental. Every other hardening lever
+# is already pulled (readOnlyRootFilesystem, capabilities.drop [ALL],
+# no privilege escalation, seccomp RuntimeDefault, opt-in nodeSelector).
+AVD-KSV-0020
+
+# KSV-0105 — Container 'agent' securityContext.runAsUser should be > 0.
+# Architecturally required (same root cause as KSV-0012 / KSV-0118 —
+# different rule wording, identical finding). UID 0 is required to read
+# `/proc/<pid>/{comm,cmdline}` under hardened `hidepid=2` /proc mounts;
+# the only non-root alternative is re-adding `CAP_SYS_PTRACE`, which is
+# strictly broader. Every other hardening lever is already pulled:
+# readOnlyRootFilesystem, capabilities.drop [ALL], no privilege escalation,
+# seccomp RuntimeDefault, opt-in nodeSelector.
+AVD-KSV-0105
+
+# KSV-0021 — Container 'agent' should set securityContext.runAsGroup > 10000.
+# Architecturally required (follows from KSV-0012 / KSV-0118). The agent
+# runs as UID 0 to read host /proc under `hidepid=2`; UID 0 implies GID 0,
+# so runAsGroup > 10000 cannot be satisfied without abandoning the root
+# requirement already justified above. The rule exists to avoid a shared
+# high-GID supplementary group leaking filesystem access between
+# unrelated workloads — not a risk here, since the container mounts only
+# host /proc (read-only) and has `readOnlyRootFilesystem: true` with
+# `capabilities.drop: [ALL]`.
+AVD-KSV-0021
+
+# KSV-0012 — Container 'agent' should set securityContext.runAsNonRoot: true.
+# Architecturally required (same root cause as KSV-0118 — this rule is the
+# container-level variant, 0118 is the pod-level variant). Running as UID 0
+# is required so the agent can read /proc/<pid>/{comm,cmdline} for every
+# host PID under hardened `hidepid=2` /proc mounts. A non-root build would
+# need CAP_SYS_PTRACE added back, which is a strictly broader privilege
+# than running as root with every other capability dropped, the filesystem
+# read-only, `allowPrivilegeEscalation: false`, and seccomp RuntimeDefault.
+# The agent is also scoped to opt-in nodes via the
+# `5spot.finos.org/reclaim-agent: enabled` nodeSelector, so even the
+# root-process surface is bounded by the operator's explicit arming.
+AVD-KSV-0012
+
+# KSV-0118 — DaemonSet uses the default security context (root allowed).
+# False-positive wording — an explicit pod- and container-level
+# SecurityContext IS set (runAsUser: 0, runAsGroup: 0, runAsNonRoot: false,
+# seccompProfile: RuntimeDefault, allowPrivilegeEscalation: false,
+# readOnlyRootFilesystem: true, capabilities.drop: [ALL]). The rule fires
+# because runAsNonRoot is false, not because the context is missing.
+# Running as UID 0 is architecturally required: reading
+# /proc/<pid>/{comm,cmdline} for every host PID needs root under hardened
+# hidepid=2 /proc mounts. A non-root variant would require adding
+# CAP_SYS_PTRACE back, which is a broader privilege than running as root
+# with every other capability dropped and the filesystem read-only.
+AVD-KSV-0118
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Dockerfile — Dockerfile, Dockerfile.chainguard
 # ─────────────────────────────────────────────────────────────────────────────
 

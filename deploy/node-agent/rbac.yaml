@@ -1,0 +1,97 @@
+# 5-Spot Reclaim Agent RBAC
+#
+# Separate identity from the main controller (field manager name
+# `5spot-reclaim-agent` — see src/bin/reclaim_agent.rs) so audit logs
+# unambiguously attribute each PATCH to the node-side agent vs the
+# controller.
+#
+# Scope is deliberately narrow: the agent only needs to PATCH annotations
+# on the Node object it runs on. It does NOT touch Machine, Pod, or
+# ScheduledMachine resources — that is the controller's job once it
+# observes the reclaim annotation.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: 5spot-reclaim-agent
+  namespace: 5spot-system
+  labels:
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: reclaim-agent
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: 5spot-reclaim-agent
+  labels:
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: reclaim-agent
+rules:
+  # Read the Node we are about to annotate — required for the idempotence
+  # check (`already_requested`) that fires before the first PATCH.
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get"]
+  # Write reclaim annotations. `patch` is sufficient; the agent uses a
+  # strategic-merge patch that touches only `metadata.annotations`.
+  # `list` / `watch` on nodes are intentionally NOT granted — the agent
+  # does not enumerate the cluster, it only acts on its own Node (name
+  # via downward API).
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["patch"]
+---
+# Namespaced Role + RoleBinding for the agent's ConfigMap watch. Scoped
+# to `5spot-system` (the only namespace the controller projects into) so
+# the agent can never read ConfigMaps outside that namespace. Cluster-wide
+# `list`/`watch` would grant visibility over the whole child cluster,
+# which is broader than needed — the agent only ever reads its own
+# per-node ConfigMap `reclaim-agent-<NODE_NAME>`.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: 5spot-reclaim-agent-configmaps
+  namespace: 5spot-system
+  labels:
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: reclaim-agent
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    # `watch` already implies `list` at the wire level (the watcher does
+    # an initial list then a watch), so both verbs are required. `get`
+    # kept for symmetry with the initial readiness probe in the agent
+    # startup sequence.
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: 5spot-reclaim-agent
+  labels:
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: reclaim-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: 5spot-reclaim-agent
+subjects:
+  - kind: ServiceAccount
+    name: 5spot-reclaim-agent
+    namespace: 5spot-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: 5spot-reclaim-agent-configmaps
+  namespace: 5spot-system
+  labels:
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: reclaim-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: 5spot-reclaim-agent-configmaps
+subjects:
+  - kind: ServiceAccount
+    name: 5spot-reclaim-agent
+    namespace: 5spot-system
