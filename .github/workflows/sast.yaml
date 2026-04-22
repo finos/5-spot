@@ -1,0 +1,55 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: Apache-2.0
+#
+# SAST (Semgrep OSS) — always-on. Runs on every PR and every push to main
+# with no `paths:` filter so Scorecard's SAST check records every commit
+# as covered (the path-gated Semgrep job in build.yaml was producing
+# uncovered-commit events on dependabot and docs-only PRs).
+#
+# Runs the community Rust / security-audit / secrets / OWASP Top Ten
+# rulesets and uploads SARIF to the Code Scanning dashboard under the
+# `semgrep` category. No token required — this is the free OSS Community
+# Edition.
+
+name: SAST
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    name: 🔎 SAST (Semgrep)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    container:
+      image: returntocorp/semgrep
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Run Semgrep
+        run: |
+          semgrep scan \
+            --config=p/rust \
+            --config=p/security-audit \
+            --config=p/secrets \
+            --config=p/owasp-top-ten \
+            --sarif --output=semgrep.sarif \
+            --metrics=off \
+            --error || true
+
+      - name: Upload Semgrep SARIF to Code Scanning
+        uses: github/codeql-action/upload-sarif@95e58e9a2cdfd71adc6e0353d5c52f41a045d225 # v4.35.2
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep

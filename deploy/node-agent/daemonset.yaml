@@ -75,10 +75,10 @@ spec:
       #     other capability dropped.
       #   - seccompProfile.type: RuntimeDefault — adopt the cluster's default
       #     syscall filter rather than running unconfined.
+      # Suppression rationale is in the multi-line block above and mirrors
+      # the .trivyignore entries for KSV-0012 / KSV-0116 / KSV-0118 / KSV-0105.
       securityContext:
         # nosemgrep: yaml.kubernetes.security.run-as-non-root-unsafe-value.run-as-non-root-unsafe-value
-        # Suppression rationale is in the multi-line block above and mirrors
-        # the .trivyignore entries for KSV-0012 / KSV-0118 / KSV-0105.
         runAsNonRoot: false
         runAsUser: 0
         runAsGroup: 0
@@ -111,16 +111,17 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+          # Reading every `/proc/<pid>/comm` + `cmdline` requires root;
+          # CAP_SYS_PTRACE is not strictly required for rung 1 but is kept
+          # dropped. CAP_NET_ADMIN will be re-added for rung 2 (netlink
+          # proc connector) as a separate change. See the pod-level
+          # securityContext comment block and `.trivyignore` (KSV-0012 /
+          # KSV-0116 / KSV-0118 / KSV-0105) for the runAsNonRoot=false
+          # rationale.
           securityContext:
-            # Reading every `/proc/<pid>/comm` + `cmdline` requires root;
-            # CAP_SYS_PTRACE is not strictly required for rung 1 but is
-            # kept dropped. CAP_NET_ADMIN will be re-added for rung 2
-            # (netlink proc connector) as a separate change.
             runAsUser: 0
             runAsGroup: 0
             # nosemgrep: yaml.kubernetes.security.run-as-non-root-unsafe-value.run-as-non-root-unsafe-value
-            # See pod-level securityContext comment block and `.trivyignore`
-            # (KSV-0012 / KSV-0118 / KSV-0105) for rationale.
             runAsNonRoot: false
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

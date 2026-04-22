@@ -95,6 +95,17 @@ mod tests {
         assert!(parse_duration("s").is_err());
     }
 
+    #[test]
+    fn test_parse_duration_rejects_non_ascii() {
+        // Regression: fuzz discovered that split_at(len - 1) panics when the
+        // trailing byte is mid-UTF-8-code-point (e.g. "٠" = U+0660, bytes
+        // D9 A0). Non-ASCII input must return Err, not panic.
+        let err = parse_duration("٠").unwrap_err();
+        assert!(err.to_string().contains("non-ASCII"));
+        assert!(parse_duration("5٠").is_err());
+        assert!(parse_duration("🕐").is_err());
+    }
+
     // ========================================================================
     // validate_labels — reserved prefix rejection
     // ========================================================================

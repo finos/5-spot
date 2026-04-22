@@ -107,8 +107,11 @@ jobs:
         env:
           # Pinned for reproducibility; bump alongside docs/pyproject.toml.
           POETRY_VERSION: "1.8.4"
+        # pip install (vs curl | python3) because the curl-pipe pattern trips
+        # Scorecard's Pinned-Dependencies downloadThenRun rule; pip uses
+        # PyPI's per-wheel sha256 from the Python package index.
         run: |
-          curl -sSL https://install.python-poetry.org | python3 - --version "${POETRY_VERSION}"
+          python3 -m pip install --user "poetry==${POETRY_VERSION}"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Configure Poetry

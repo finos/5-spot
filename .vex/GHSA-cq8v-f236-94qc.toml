@@ -26,8 +26,8 @@ status = "not_affected"
 justification = "vulnerable_code_not_in_execute_path"
 impact_statement = "Vulnerable rand 0.8.6 is pulled transitively by tungstenite 0.21 for websocket frame masking only. The advisory requires ThreadRng to be invoked from within a custom log::Log implementation during reseed; 5-Spot's tracing-subscriber stack does not call into rand from any logger emit path, so the unsound code is not in the execute path."
 products = [
-    "pkg:oci/5-spot-chainguard",
-    "pkg:oci/5-spot-distroless",
+    "pkg:oci/5-spot",
+    "pkg:oci/5-spot",
 ]
 author = "erick.bourgeois@gmail.com"
 timestamp = "2026-04-19T00:00:00Z"

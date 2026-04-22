@@ -434,6 +434,15 @@ pub fn parse_duration(duration_str: &str) -> Result<Duration, ReconcilerError> {
         ));
     }
 
+    // Reject non-ASCII early. split_at(len - 1) below indexes by bytes; a
+    // multi-byte UTF-8 code point at the tail panics. Legal units are s/m/h
+    // (all ASCII) so any non-ASCII byte is already an invalid input.
+    if !duration_str.is_ascii() {
+        return Err(ReconcilerError::InvalidConfig(format!(
+            "Invalid duration (non-ASCII): {duration_str:?}"
+        )));
+    }
+
     let (value_str, unit) = duration_str.split_at(duration_str.len() - 1);
     let value: u64 = value_str.parse().map_err(|_| {
         ReconcilerError::InvalidConfig(format!("Invalid duration value: {duration_str}"))

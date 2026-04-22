@@ -162,6 +162,17 @@ AVD-KSV-0012
 # with every other capability dropped and the filesystem read-only.
 AVD-KSV-0118
 
+# KSV-0116 — DaemonSet 5spot-reclaim-agent should set
+# spec.securityContext.runAsGroup, supplementalGroups[*] and fsGroup to
+# integer greater than 0.  Architecturally required (same root cause as
+# KSV-0012 / KSV-0021 / KSV-0105 / KSV-0118).  UID 0 is required to read
+# /proc/<pid>/{comm,cmdline} under hidepid=2; UID 0 implies GID 0, so
+# runAsGroup > 0 cannot be satisfied without abandoning the root
+# requirement already justified above.  supplementalGroups / fsGroup are
+# irrelevant — the agent mounts only host /proc read-only and has no
+# writable volumes whose ownership fsGroup would govern.
+AVD-KSV-0116
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Dockerfile — Dockerfile, Dockerfile.chainguard
 # ─────────────────────────────────────────────────────────────────────────────

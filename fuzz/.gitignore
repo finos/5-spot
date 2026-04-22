@@ -1,0 +1,5 @@
+target
+artifacts
+coverage
+# corpus/ is intentionally NOT ignored — we want to track seed / regression
+# inputs (e.g. corpus/parse_duration/arabic_indic_zero_regression).

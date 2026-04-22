@@ -1,0 +1,41 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: Apache-2.0
+#
+# Standalone fuzz harness for 5-Spot's user-facing string parsers.
+# Not part of the main Cargo workspace — requires nightly Rust + cargo-fuzz.
+# Run locally with: cargo +nightly fuzz run <target> -- -max_total_time=60
+
+[package]
+name = "five-spot-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+five_spot = { path = ".." }
+
+[[bin]]
+name = "parse_duration"
+path = "fuzz_targets/parse_duration.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_day_ranges"
+path = "fuzz_targets/parse_day_ranges.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_hour_ranges"
+path = "fuzz_targets/parse_hour_ranges.rs"
+test = false
+doc = false
+bench = false
