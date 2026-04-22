@@ -168,6 +168,68 @@
       "node-type": "service",
       "name": "Kubelet",
       "description": "Node-local kubelet performing HTTP liveness (/healthz) and readiness (/readyz) probes against the controller."
+    },
+    {
+      "unique-id": "service-workload-kubernetes-api",
+      "node-type": "service",
+      "name": "Workload Cluster Kubernetes API Server",
+      "description": "API server of the CAPI-managed workload cluster (e.g. k0smotron-hosted k0s). Distinct trust boundary from the management cluster API: accepts its own tokens, its own RBAC, and owns the Node objects plus the 5spot-system namespace that backs emergency reclaim.",
+      "interfaces": [
+        {
+          "unique-id": "workload-kube-api-https",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "port": 6443,
+            "protocol": "HTTPS"
+          }
+        }
+      ]
+    },
+    {
+      "unique-id": "service-reclaim-agent",
+      "node-type": "service",
+      "name": "5-Spot Reclaim Agent",
+      "description": "Node-side DaemonSet on the workload cluster that watches /proc for processes matching ScheduledMachine.spec.killIfCommands and, on match, writes reclaim annotations onto its own Node object. Runs in-pod with hostPID=true and host /proc mounted read-only; consumes its per-node ConfigMap via a kube API watcher scoped by field selector metadata.name=reclaim-agent-<NODE_NAME> in namespace 5spot-system. Distinct field manager (5spot-reclaim-agent) attributes every write.",
+      "controls": {
+        "least-privilege": {
+          "description": "Agent holds a namespaced Role in 5spot-system granting get,list,watch on ConfigMaps only, plus the kubelet node-scoped token for patching its own Node's annotations. No cluster-wide writes.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["AC-3", "AC-6"],
+                "evidence": "deploy/node-agent/rbac.yaml"
+              }
+            }
+          ]
+        },
+        "container-hardening": {
+          "description": "Explicit pod-level securityContext, read-only root filesystem, host /proc mounted read-only. Architectural-necessity Trivy suppressions (KSV-0010/0012/0020/0021/0023/0105/0118/0121) are documented with rationale in .trivyignore.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/190/final",
+              "config": {
+                "framework": "NIST SP 800-190",
+                "controls": ["CM-6", "SI-7"],
+                "evidence": "deploy/node-agent/daemonset.yaml"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "data-asset-reclaim-request-annotation",
+      "node-type": "data-asset",
+      "name": "Reclaim Request Annotation",
+      "description": "Ephemeral annotation triple on a workload Node written by the reclaim agent and read by the 5-Spot controller: 5spot.finos.org/reclaim-requested=\"true\", /reclaim-reason, /reclaim-requested-at. Cleared by the controller as step 6 of the 7-step emergency-reclaim ordering contract."
+    },
+    {
+      "unique-id": "data-asset-reclaim-agent-configmap",
+      "node-type": "data-asset",
+      "name": "Per-Node Reclaim Agent ConfigMap",
+      "description": "Per-node ConfigMap named reclaim-agent-<node-name> in namespace 5spot-system on the workload cluster. Controller-projected from ScheduledMachine.spec.killIfCommands via server-side apply with field manager 5spot-controller-reclaim-agent; consumed by the agent via a kube runtime watcher scoped by field selector. Empty killIfCommands deletes the ConfigMap; 404-on-delete is benign by contract."
     }
   ],
 
@@ -190,11 +252,15 @@
     },
     {
       "unique-id": "rel-workload-cluster-contains-node",
-      "description": "When a schedule is active, the physical node becomes a worker in the CAPI-managed workload cluster.",
+      "description": "When a schedule is active, the physical node becomes a worker in the CAPI-managed workload cluster. The workload cluster also hosts its own API server and, where ScheduledMachine.spec.killIfCommands is set, the 5-Spot reclaim agent as a DaemonSet.",
       "relationship-type": {
         "deployed-in": {
           "container": "ecosystem-workload-cluster",
-          "nodes": ["network-physical-node"]
+          "nodes": [
+            "network-physical-node",
+            "service-workload-kubernetes-api",
+            "service-reclaim-agent"
+          ]
         }
       }
     },
@@ -331,6 +397,84 @@
           "nodes": ["data-asset-scheduledmachine-cr"]
         }
       }
+    },
+    {
+      "unique-id": "rel-controller-workload-kube-api",
+      "description": "Controller reaches into the workload cluster API to project the per-node reclaim-agent ConfigMap (server-side apply), stamp the 5spot.finos.org/reclaim-agent=enabled label onto backing Nodes, watch Node updates for the reclaim-requested annotation, issue best-effort drains, and clear the reclaim annotations as step 6 of the emergency-reclaim contract.",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "service-five-spot-controller" },
+          "destination": {
+            "node": "service-workload-kubernetes-api",
+            "interfaces": ["workload-kube-api-https"]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "audit-attribution": {
+          "description": "All controller writes to the workload cluster API use the distinct field manager '5spot-controller-reclaim-agent' so audit logs attribute projection writes separately from the main reconciler. Supports non-repudiation in regulated-banking review.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["AU-2", "AU-10"],
+                "evidence": "src/reconcilers/helpers.rs::reconcile_reclaim_agent_provision"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-reclaim-agent-workload-kube-api",
+      "description": "Reclaim agent uses the workload cluster API for two scoped operations: a field-selector-scoped watch on its own per-node ConfigMap in 5spot-system, and a merge-patch on its own Node's annotations via the kubelet node-scoped token on process match.",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "service-reclaim-agent" },
+          "destination": {
+            "node": "service-workload-kubernetes-api",
+            "interfaces": ["workload-kube-api-https"]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "node-scoped-credentials": {
+          "description": "Agent writes to Node objects only via the kubelet node-scoped token (patch nodes/<self>). ConfigMap reads are gated by a namespaced Role/RoleBinding in 5spot-system granting get,list,watch only. No cluster-wide API access.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["AC-6"],
+                "evidence": "deploy/node-agent/rbac.yaml"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-reclaim-configmap-stored-in-workload-api",
+      "description": "The per-node reclaim-agent ConfigMap is persisted in the workload cluster API server's etcd, namespace 5spot-system.",
+      "relationship-type": {
+        "composed-of": {
+          "container": "service-workload-kubernetes-api",
+          "nodes": ["data-asset-reclaim-agent-configmap"]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-reclaim-annotation-on-node",
+      "description": "The reclaim-request annotation triple lives on the physical Node's metadata and is the agent→controller signalling surface for emergency reclaim.",
+      "relationship-type": {
+        "composed-of": {
+          "container": "network-physical-node",
+          "nodes": ["data-asset-reclaim-request-annotation"]
+        }
+      }
     }
   ],
 
@@ -419,6 +563,64 @@
                 "framework": "NIST SP 800-53 Rev. 5",
                 "controls": ["CP-10", "SC-5"],
                 "evidence": "src/reconcilers/scheduled_machine.rs"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "flow-emergency-reclaim",
+      "name": "Emergency Reclaim (process-match eject)",
+      "description": "A matched process on a workload node triggers an ASAP eject that skips graceful drain. The 7-step ordering contract is load-bearing: spec.schedule.enabled=false (step 5) must be written BEFORE the annotation clear (step 6) so a crash between them is replay-safe. Full narrative in docs/src/concepts/emergency-reclaim.md.",
+      "transitions": [
+        {
+          "sequence-number": 1,
+          "relationship-unique-id": "rel-reclaim-agent-workload-kube-api",
+          "description": "Agent detects a process matching spec.killIfCommands via /proc scan and PATCHes the reclaim annotation triple (5spot.finos.org/reclaim-requested=\"true\", /reclaim-reason, /reclaim-requested-at) onto its own Node via the kubelet node-scoped token. Field manager: 5spot-reclaim-agent."
+        },
+        {
+          "sequence-number": 2,
+          "relationship-unique-id": "rel-controller-workload-kube-api",
+          "description": "Controller Node watch fires. check_emergency_reclaim reads the annotation, transitions status.phase = EmergencyRemove, and emits Event Reason: EmergencyReclaim with the annotation's reason string.",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 3,
+          "relationship-unique-id": "rel-controller-workload-kube-api",
+          "description": "Best-effort kubectl drain --grace-period=0 --force --disable-eviction against the workload cluster, bounded by EMERGENCY_DRAIN_TIMEOUT_SECS=60. Failure is log-and-continue — the eject has already been committed to."
+        },
+        {
+          "sequence-number": 4,
+          "relationship-unique-id": "rel-capi-core-reconciles-machine",
+          "description": "Controller deletes the CAPI Machine on the management cluster — no PDB respect, no graceful shutdown. CAPI propagates deletion to providers and the physical node leaves the workload cluster."
+        },
+        {
+          "sequence-number": 5,
+          "relationship-unique-id": "rel-controller-kube-api",
+          "description": "Controller PATCHes ScheduledMachine spec.schedule.enabled=false (the loop-breaker: without this, the next schedule window re-adds the node and the agent re-fires forever) and emits Event Reason: EmergencyReclaimDisabledSchedule. Load-bearing: must run BEFORE step 6."
+        },
+        {
+          "sequence-number": 6,
+          "relationship-unique-id": "rel-controller-workload-kube-api",
+          "description": "Controller PATCHes the Node to null all three reclaim annotations. Best-effort: a crash between steps 5 and 6 is replay-safe because the agent re-annotates on the next poll cycle if the matched process is still running."
+        },
+        {
+          "sequence-number": 7,
+          "relationship-unique-id": "rel-controller-kube-api",
+          "description": "Controller transitions ScheduledMachine status.phase = Disabled. Re-enable is a manual operator action (kubectl patch ... spec.schedule.enabled=true)."
+        }
+      ],
+      "controls": {
+        "ordering-idempotence": {
+          "description": "The load-bearing ordering of steps 5 (disable-schedule PATCH) before 6 (annotation-clear PATCH) guarantees crash-recovery idempotence. A crash after step 6 but before step 7 is caught by the PHASE_EMERGENCY_REMOVE match arm in reconcile(), which finishes the transition to Disabled on the next reconcile.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["SI-7", "AU-2"],
+                "evidence": "src/reconcilers/helpers.rs::handle_emergency_remove, docs/src/concepts/emergency-reclaim.md"
               }
             }
           ]
