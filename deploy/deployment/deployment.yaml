@@ -69,6 +69,28 @@ spec:
               value: "10"
             - name: LEASE_RETRY_PERIOD_SECONDS
               value: "2"
+            # Finalizer-cleanup timeout behaviour.
+            #
+            # When "true" (binary default): on cleanup timeout the
+            # controller force-removes the finalizer so namespace
+            # deletion is unblocked. May leave orphan CAPI Machine /
+            # bootstrap / infra resources — operators must reconcile
+            # via the runbook in
+            # docs/src/operations/troubleshooting.md
+            # ("Orphan resources after finalizer timeout").
+            #
+            # When "false" (set here): the SM stays stuck with its
+            # finalizer until cleanup succeeds. Namespace deletion will
+            # stall on a misconfigured PodDisruptionBudget — only safe
+            # when an external sweep is in place to garbage-collect
+            # stalled SMs.
+            #
+            # The fivespot_finalizer_cleanup_timeouts_total metric and
+            # the FinalizerCleanupTimedOut Warning event fire in BOTH
+            # modes; the only difference is whether the finalizer is
+            # removed on timeout.
+            - name: FORCE_FINALIZER_ON_TIMEOUT
+              value: "false"
           ports:
             - name: metrics
               containerPort: 8080

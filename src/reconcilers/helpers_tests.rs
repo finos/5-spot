@@ -3578,4 +3578,127 @@ mod tests {
         let elapsed = check_grace_period_elapsed(&sm).expect("must not error");
         assert!(elapsed, "missing grace condition must return true");
     }
+
+    // ========================================================================
+    // run_cleanup_with_timeout — finalizer-cleanup timeout / force-remove path
+    //
+    // A misconfigured PodDisruptionBudget can block pod evictions during
+    // node drain, causing finalizer cleanup to hang past
+    // FINALIZER_CLEANUP_TIMEOUT_SECS. Prior code propagated the timeout
+    // error and never removed the finalizer, stalling namespace deletion
+    // indefinitely. The fix extracts the timeout-and-classify pattern into
+    // a pure function so the caller can decide whether to force-remove.
+    // ========================================================================
+
+    use crate::reconcilers::helpers::{run_cleanup_with_timeout, CleanupOutcome};
+
+    #[tokio::test]
+    async fn test_run_cleanup_with_timeout_completed_on_ok() {
+        let outcome = run_cleanup_with_timeout(Duration::from_secs(5), async {
+            Ok::<(), ReconcilerError>(())
+        })
+        .await;
+        assert!(
+            matches!(outcome, CleanupOutcome::Completed),
+            "Ok future must produce Completed, got {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_cleanup_with_timeout_failed_on_inner_error() {
+        let outcome = run_cleanup_with_timeout(Duration::from_secs(5), async {
+            Err::<(), ReconcilerError>(ReconcilerError::CapiError("boom".to_string()))
+        })
+        .await;
+        match outcome {
+            CleanupOutcome::Failed(e) => {
+                assert!(e.to_string().contains("boom"), "must preserve inner err");
+            }
+            other => panic!("Err future must produce Failed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_run_cleanup_with_timeout_timed_out_when_future_hangs() {
+        // tokio's paused-time runtime advances the clock automatically when
+        // every task is blocked on a timer, so this test runs in microseconds.
+        let outcome = run_cleanup_with_timeout(Duration::from_secs(60), async {
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+            Ok::<(), ReconcilerError>(())
+        })
+        .await;
+        assert!(
+            matches!(outcome, CleanupOutcome::TimedOut),
+            "hanging future must produce TimedOut, got {outcome:?}"
+        );
+    }
+
+    // ========================================================================
+    // build_finalizer_timeout_event — Warning event surfaced on the SM after
+    // the controller force-removes the finalizer. The note must steer
+    // operators at the orphan-cleanup runbook.
+    // ========================================================================
+
+    use crate::reconcilers::helpers::build_finalizer_timeout_event;
+
+    #[test]
+    fn test_finalizer_timeout_event_is_warning() {
+        let ev = build_finalizer_timeout_event(600);
+        assert_eq!(ev.type_, EventType::Warning);
+    }
+
+    #[test]
+    fn test_finalizer_timeout_event_reason_and_action() {
+        let ev = build_finalizer_timeout_event(600);
+        assert_eq!(ev.reason, "FinalizerCleanupTimedOut");
+        assert_eq!(ev.action, "FinalizerCleanupTimedOut");
+    }
+
+    #[test]
+    fn test_finalizer_timeout_event_note_contains_timeout_value() {
+        let ev = build_finalizer_timeout_event(600);
+        let note = ev.note.expect("note required for operator-facing event");
+        assert!(
+            note.contains("600"),
+            "note must include the timeout-seconds value, got: {note}"
+        );
+    }
+
+    #[test]
+    fn test_finalizer_timeout_event_note_directs_to_orphan_cleanup() {
+        // The note is the only signal an operator gets in `kubectl describe`
+        // — it MUST mention orphan-resource cleanup so they know what to do.
+        let ev = build_finalizer_timeout_event(600);
+        let note = ev.note.expect("note required");
+        let lc = note.to_lowercase();
+        assert!(
+            lc.contains("orphan") || lc.contains("manual") || lc.contains("verify"),
+            "note must direct operator to orphan-cleanup runbook, got: {note}"
+        );
+    }
+
+    // ========================================================================
+    // Context.force_finalizer_on_timeout — flag plumbing
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_context_default_force_finalizer_on_timeout_is_true() {
+        let (client, _h) = mock_client_pair();
+        let ctx = make_test_context(client);
+        assert!(
+            ctx.force_finalizer_on_timeout,
+            "Context::new must default force_finalizer_on_timeout=true so existing \
+             single-instance deployments unblock namespace deletion by default"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_context_with_force_finalizer_on_timeout_false_overrides_default() {
+        let (client, _h) = mock_client_pair();
+        let ctx = make_test_context(client).with_force_finalizer_on_timeout(false);
+        assert!(
+            !ctx.force_finalizer_on_timeout,
+            "with_force_finalizer_on_timeout(false) must opt into strict-cleanup mode"
+        );
+    }
 }

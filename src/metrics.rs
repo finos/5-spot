@@ -30,8 +30,8 @@
 use std::sync::LazyLock;
 
 use prometheus::{
-    register_counter_vec, register_gauge, register_gauge_vec, register_histogram_vec, CounterVec,
-    Gauge, GaugeVec, HistogramVec, Opts,
+    register_counter, register_counter_vec, register_gauge, register_gauge_vec,
+    register_histogram_vec, Counter, CounterVec, Gauge, GaugeVec, HistogramVec, Opts,
 };
 
 // ============================================================================
@@ -66,6 +66,13 @@ fn fallback_counter_vec(name: &str, help: &str, labels: &[&str]) -> CounterVec {
 /// `register_gauge!` fails.
 fn fallback_gauge(name: &str, help: &str) -> Gauge {
     Gauge::new(name, help)
+        .unwrap_or_else(|e| panic!("{FALLBACK_METRIC_BUG_MSG}: name={name:?} err={e}"))
+}
+
+/// Create an *unregistered* `Counter` (label-less) used as a no-op fallback
+/// when `register_counter!` fails.
+fn fallback_counter(name: &str, help: &str) -> Counter {
+    Counter::new(name, help)
         .unwrap_or_else(|e| panic!("{FALLBACK_METRIC_BUG_MSG}: name={name:?} err={e}"))
 }
 
@@ -280,6 +287,33 @@ pub static POD_EVICTIONS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
     })
 });
 
+/// Finalizer cleanup timeouts during deletion handling.
+///
+/// Incremented every time `handle_deletion` exceeds
+/// [`crate::constants::FINALIZER_CLEANUP_TIMEOUT_SECS`] while removing a
+/// machine from its cluster. A non-zero value typically indicates a
+/// misconfigured Pod Disruption Budget on a workload that the controller
+/// is trying to evict — the controller force-removes the finalizer to
+/// unblock namespace deletion, but this metric tells operators an
+/// orphaned CAPI Machine + bootstrap/infrastructure resources may need
+/// manual cleanup.
+///
+/// Alert when the rate is non-zero. See
+/// `docs/src/operations/troubleshooting.md` for the orphan-cleanup runbook.
+pub static FINALIZER_CLEANUP_TIMEOUTS_TOTAL: LazyLock<Counter> = LazyLock::new(|| {
+    register_counter!(
+        "fivespot_finalizer_cleanup_timeouts_total",
+        "Total number of finalizer cleanup timeouts (force-removed; possible orphan resources)"
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_finalizer_cleanup_timeouts_total: {e}");
+        fallback_counter(
+            "fivespot_finalizer_cleanup_timeouts_total",
+            "Total number of finalizer cleanup timeouts (force-removed; possible orphan resources)",
+        )
+    })
+});
+
 /// Record a successful reconciliation
 pub fn record_reconciliation_success(phase: &str, duration_secs: f64) {
     RECONCILIATIONS_TOTAL
@@ -328,6 +362,15 @@ pub fn record_node_drain(success: bool) {
 pub fn record_pod_eviction(success: bool) {
     let result = if success { "success" } else { "failure" };
     POD_EVICTIONS_TOTAL.with_label_values(&[result]).inc();
+}
+
+/// Record a finalizer-cleanup timeout (force-remove path).
+///
+/// Operators should treat any non-zero rate as a signal that orphan CAPI
+/// Machine / bootstrap / infrastructure resources may exist and need
+/// manual reconciliation.
+pub fn record_finalizer_cleanup_timeout() {
+    FINALIZER_CLEANUP_TIMEOUTS_TOTAL.inc();
 }
 
 /// Initialize controller info metric

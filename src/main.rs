@@ -104,6 +104,15 @@ struct Cli {
     /// Retry period in seconds — documented for ops parity; not a direct `LeaseManager` parameter
     #[clap(long, env = "LEASE_RETRY_PERIOD_SECONDS", default_value_t = DEFAULT_LEASE_RETRY_PERIOD_SECS)]
     _lease_retry_period_secs: u64,
+
+    /// On finalizer-cleanup timeout, force-remove the finalizer so namespace
+    /// deletion is unblocked (default). Set to `false` for strict-cleanup
+    /// mode where the SM stays stuck until cleanup succeeds — operators
+    /// then need an external sweep to garbage-collect stalled SMs. The
+    /// `fivespot_finalizer_cleanup_timeouts_total` metric and the
+    /// `FinalizerCleanupTimedOut` Warning event fire in both modes.
+    #[clap(long, env = "FORCE_FINALIZER_ON_TIMEOUT", default_value_t = true)]
+    force_finalizer_on_timeout: bool,
 }
 
 /// Async entry point.
@@ -167,11 +176,10 @@ async fn main() -> Result<()> {
     health_state.set_k8s_connected(true);
 
     // Create shared context
-    let context = Arc::new(Context::new(
-        client.clone(),
-        cli.instance_id,
-        cli.instance_count,
-    ));
+    let context = Arc::new(
+        Context::new(client.clone(), cli.instance_id, cli.instance_count)
+            .with_force_finalizer_on_timeout(cli.force_finalizer_on_timeout),
+    );
 
     // Leader election (Basel III HA — P2-4)
     //

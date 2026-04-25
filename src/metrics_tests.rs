@@ -47,6 +47,17 @@ fn test_record_pod_eviction() {
 }
 
 #[test]
+fn test_record_finalizer_cleanup_timeout_increments_counter() {
+    let before = FINALIZER_CLEANUP_TIMEOUTS_TOTAL.get();
+    record_finalizer_cleanup_timeout();
+    let after = FINALIZER_CLEANUP_TIMEOUTS_TOTAL.get();
+    assert!(
+        after > before,
+        "FINALIZER_CLEANUP_TIMEOUTS_TOTAL must increment on call: before={before} after={after}"
+    );
+}
+
+#[test]
 fn test_init_controller_info() {
     init_controller_info("0.1.0", 0);
 }

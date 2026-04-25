@@ -218,23 +218,104 @@ pub async fn add_finalizer(
     Ok(Action::requeue(Duration::from_secs(0)))
 }
 
+/// Outcome of a timed cleanup attempt — produced by
+/// [`run_cleanup_with_timeout`] and consumed by [`handle_deletion`] to
+/// classify what happened to a finalizer-cleanup future.
+///
+/// The variants are deliberately *not* an `enum E { Ok, Err(_) }`: the
+/// caller must distinguish "cleanup itself returned an error" (retry)
+/// from "cleanup did not complete in time" (force-remove the finalizer
+/// to unblock namespace deletion). Folding the timeout into a generic
+/// error was the source of the original bug.
+#[derive(Debug)]
+pub enum CleanupOutcome {
+    /// The cleanup future completed within the timeout with `Ok(())`.
+    Completed,
+    /// The cleanup future completed within the timeout with `Err(_)`.
+    /// Caller should propagate the error and retry on the next reconcile.
+    Failed(ReconcilerError),
+    /// The cleanup future did NOT complete within the timeout. Caller
+    /// should force-remove the finalizer to prevent stalling namespace
+    /// deletion and surface a Warning event so operators verify orphans.
+    TimedOut,
+}
+
+/// Wrap a cleanup future in a hard timeout and classify the outcome.
+///
+/// Pulled out as a standalone async function so the three branches can be
+/// unit-tested in microseconds (`tokio::test(start_paused = true)`)
+/// without mocking the kube API.
+pub async fn run_cleanup_with_timeout<F>(timeout_duration: Duration, cleanup: F) -> CleanupOutcome
+where
+    F: std::future::Future<Output = Result<(), ReconcilerError>>,
+{
+    match tokio::time::timeout(timeout_duration, cleanup).await {
+        Ok(Ok(())) => CleanupOutcome::Completed,
+        Ok(Err(e)) => CleanupOutcome::Failed(e),
+        Err(_) => CleanupOutcome::TimedOut,
+    }
+}
+
+/// Build the `Warning` Kubernetes Event surfaced on a `ScheduledMachine`
+/// whose finalizer was force-removed because cleanup exceeded
+/// [`FINALIZER_CLEANUP_TIMEOUT_SECS`].
+///
+/// The note is the only operator-facing signal in `kubectl describe`, so
+/// it MUST direct the operator to the orphan-cleanup runbook — the
+/// controller has accepted that CAPI Machine + bootstrap/infra resources
+/// may now be unowned and require manual verification.
+#[must_use]
+pub fn build_finalizer_timeout_event(timeout_secs: u64) -> KubeEvent {
+    KubeEvent {
+        type_: EventType::Warning,
+        reason: "FinalizerCleanupTimedOut".to_string(),
+        note: Some(format!(
+            "Finalizer cleanup exceeded {timeout_secs}s timeout. The finalizer was \
+             force-removed to unblock namespace deletion. Operators MUST manually verify \
+             that the CAPI Machine and its bootstrap/infrastructure resources have been \
+             cleaned up — orphan resources are possible. See the troubleshooting docs \
+             ('Orphan resources after finalizer timeout') for the runbook."
+        )),
+        action: "FinalizerCleanupTimedOut".to_string(),
+        secondary: None,
+    }
+}
+
 /// Run finalizer cleanup when a `ScheduledMachine` is being deleted.
 ///
 /// If the resource is currently in the `Active` or `ShuttingDown` phase the
 /// corresponding CAPI Machine (and its child resources) are removed from the
-/// cluster first.  The removal is wrapped in a hard
+/// cluster first. The removal is wrapped in a hard
 /// [`FINALIZER_CLEANUP_TIMEOUT_SECS`] timeout so a hung API call cannot
 /// block namespace deletion or cluster upgrades indefinitely.
 ///
-/// Once cleanup succeeds (or is skipped for non-running phases) the
-/// finalizer string is removed from `metadata.finalizers`.  After this patch
-/// Kubernetes considers the resource fully deleted.
+/// On timeout the finalizer is **force-removed** (the reverse of the
+/// original behaviour, which propagated the error and stalled deletion
+/// indefinitely). The trade-off: a misbehaving Pod Disruption Budget on
+/// a tenant workload can no longer block namespace deletion, but the
+/// CAPI Machine and bootstrap/infrastructure resources may be left as
+/// orphans. A `FinalizerCleanupTimedOut` Warning event is published on
+/// the SM and `fivespot_finalizer_cleanup_timeouts_total` is incremented
+/// so operators can detect and reconcile orphans.
+///
+/// On a non-timeout cleanup error (e.g., real CAPI delete failure) the
+/// finalizer is **kept** and the error is propagated so the controller
+/// retries on the next reconcile.
+///
+/// Once cleanup succeeds (or is skipped for non-running phases, or is
+/// force-removed on timeout) the finalizer string is removed from
+/// `metadata.finalizers`. After this patch Kubernetes considers the
+/// resource fully deleted.
 ///
 /// # Errors
 /// - [`ReconcilerError::InvalidConfig`] — resource has no namespace
-/// - [`ReconcilerError::TimeoutError`] — machine removal exceeded the cleanup timeout
 /// - [`ReconcilerError::CapiError`] — CAPI Machine delete call failed
+///   (returned without removing the finalizer; reconciler retries)
 /// - kube API error — finalizer patch call failed
+///
+/// Note: [`ReconcilerError::TimeoutError`] is no longer returned from this
+/// function — timeouts now drive the force-remove path rather than
+/// propagating up.
 pub async fn handle_deletion(
     resource: Arc<ScheduledMachine>,
     ctx: Arc<Context>,
@@ -264,16 +345,72 @@ pub async fn handle_deletion(
                 "Removing machine from cluster before deletion"
             );
 
-            tokio::time::timeout(
+            let outcome = run_cleanup_with_timeout(
                 cleanup_timeout,
                 remove_machine_from_cluster(&resource, &ctx.client, &namespace),
             )
-            .await
-            .map_err(|_| {
-                ReconcilerError::TimeoutError(format!(
-                    "Finalizer cleanup timed out after {FINALIZER_CLEANUP_TIMEOUT_SECS}s for {name}"
-                ))
-            })??;
+            .await;
+
+            match outcome {
+                CleanupOutcome::Completed => {
+                    debug!(
+                        resource = %name,
+                        namespace = %namespace,
+                        "Cleanup completed within timeout"
+                    );
+                }
+                CleanupOutcome::Failed(e) => {
+                    // Real cleanup error (e.g. CAPI delete failed): keep the
+                    // finalizer, propagate the error, and let the reconciler
+                    // retry with exponential back-off.
+                    return Err(e);
+                }
+                CleanupOutcome::TimedOut => {
+                    // Always increment the metric + emit Warning event so
+                    // operators see timeouts regardless of which mode is on.
+                    crate::metrics::record_finalizer_cleanup_timeout();
+                    let object_ref = ObjectReference {
+                        api_version: Some(API_VERSION_FULL.to_string()),
+                        kind: Some(crate::constants::KIND_SCHEDULED_MACHINE.to_string()),
+                        name: Some(name.clone()),
+                        namespace: Some(namespace.clone()),
+                        ..Default::default()
+                    };
+                    let event = build_finalizer_timeout_event(FINALIZER_CLEANUP_TIMEOUT_SECS);
+                    publish_best_effort(&ctx, &object_ref, event, "finalizer-timeout").await;
+
+                    if ctx.force_finalizer_on_timeout {
+                        // Force-remove path (default): log and fall through
+                        // to finalizer removal so namespace deletion can
+                        // proceed.
+                        warn!(
+                            resource = %name,
+                            namespace = %namespace,
+                            timeout_secs = FINALIZER_CLEANUP_TIMEOUT_SECS,
+                            "Finalizer cleanup timed out; force-removing finalizer to unblock \
+                             namespace deletion. Operators MUST verify CAPI Machine + \
+                             bootstrap/infrastructure resources have been cleaned up — \
+                             orphans are possible."
+                        );
+                    } else {
+                        // Strict-cleanup mode: keep the finalizer and
+                        // propagate the timeout so the reconciler retries.
+                        // Operators must have an external sweep to garbage-
+                        // collect stuck SMs in this mode.
+                        error!(
+                            resource = %name,
+                            namespace = %namespace,
+                            timeout_secs = FINALIZER_CLEANUP_TIMEOUT_SECS,
+                            "Finalizer cleanup timed out; strict-cleanup mode enabled, \
+                             keeping finalizer and retrying. SM deletion is BLOCKED until \
+                             cleanup succeeds."
+                        );
+                        return Err(ReconcilerError::TimeoutError(format!(
+                            "Finalizer cleanup timed out after {FINALIZER_CLEANUP_TIMEOUT_SECS}s for {name}"
+                        )));
+                    }
+                }
+            }
         }
     }
 

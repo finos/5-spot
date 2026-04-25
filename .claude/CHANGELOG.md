@@ -9,6 +9,76 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-04-25 18:00] - Phase 2 of security audit: finalizer cleanup force-remove on PDB stall
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/helpers.rs` (`handle_deletion`): refactor the timeout
+  branch from `tokio::time::timeout(...).await.map_err(...)??` (which
+  silently propagated the `TimeoutError` and **prevented** the finalizer
+  from being removed) into an explicit 3-arm match over a new
+  `CleanupOutcome` enum. The default mode now force-removes the
+  finalizer on timeout so namespace deletion is unblocked, surfaces a
+  `FinalizerCleanupTimedOut` Warning event on the SM, and increments
+  `fivespot_finalizer_cleanup_timeouts_total`. A real cleanup error (as
+  opposed to a timeout) still propagates and is retried — the finalizer
+  is kept in place so a transient API failure does not orphan
+  resources.
+- `src/reconcilers/helpers.rs`: new pure helpers `run_cleanup_with_timeout`
+  (returns `CleanupOutcome::{Completed, Failed(err), TimedOut}`) and
+  `build_finalizer_timeout_event`. Both are unit-testable without the
+  kube API; the timeout test runs in microseconds via
+  `#[tokio::test(start_paused = true)]`.
+- `src/reconcilers/scheduled_machine.rs` (`Context`): new
+  `force_finalizer_on_timeout: bool` field defaulting to `true`, plus a
+  `with_force_finalizer_on_timeout(bool)` builder for `main.rs` to
+  override from CLI/env. Strict-cleanup mode (`false`) keeps the
+  finalizer and propagates `TimeoutError` so reconciliation retries —
+  only safe when an external sweep garbage-collects stuck SMs.
+- `src/main.rs`: new `--force-finalizer-on-timeout` flag (env
+  `FORCE_FINALIZER_ON_TIMEOUT`, default `true`) wired through `Context`.
+- `src/metrics.rs`: new `FINALIZER_CLEANUP_TIMEOUTS_TOTAL` counter +
+  `record_finalizer_cleanup_timeout()` helper + label-less
+  `fallback_counter` constructor. Documented as an operator-alert
+  signal for orphan-resource detection.
+- `deploy/deployment/deployment.yaml`: added `FORCE_FINALIZER_ON_TIMEOUT`
+  env var with `value: "false"` (strict-cleanup mode) per operational
+  preference; the binary default remains `true`. Block-comment in the
+  manifest documents the trade-off and references the troubleshooting
+  runbook.
+- `docs/src/operations/troubleshooting.md`: new "Orphan resources after
+  finalizer timeout" section with the runbook (find orphan Machines via
+  ownerRef walk, inspect bootstrap/infra refs, cascading delete via
+  Machine, prevention guidance).
+- `src/reconcilers/helpers_tests.rs` / `src/metrics_tests.rs`: 10 new
+  tests covering `run_cleanup_with_timeout` (Completed/Failed/TimedOut),
+  `build_finalizer_timeout_event` (severity, reason, action,
+  note-content invariants), `Context.force_finalizer_on_timeout`
+  defaulting, and the metric-increments-on-call contract.
+
+### Why
+Finding F-007 from the 2026-04-25 adversarial security audit (filed in
+`~/dev/roadmaps/5spot-security-audit-2026-04-25.md`, Phase 2). A
+namespace-tenant with `create pods` + `create poddisruptionbudgets` —
+common tenant grants — could plant a `minAvailable: 999` PDB on a
+workload they own, schedule a machine on the same node, then delete
+the SM. Drain blocks indefinitely on the impossible eviction; with the
+old code the finalizer was never removed, the SM was stuck with
+`deletionTimestamp`, and namespace deletion stalled. The fix unblocks
+namespace deletion in the default mode while preserving
+strict-cleanup-or-stall semantics for operators with an external sweep.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (new env var; behaviour change for clusters
+      that hit the timeout path — they'll now succeed at deletion
+      where they previously stalled)
+- [ ] Documentation only
+
+---
+
 ## [2026-04-25 06:30] - `gitleaks-install` now wires the local pre-commit hook
 
 **Author:** Erick Bourgeois

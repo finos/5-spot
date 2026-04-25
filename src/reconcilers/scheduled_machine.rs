@@ -97,6 +97,18 @@ pub struct Context {
     /// after the resource recovers.  Uses a `std::sync::Mutex` because
     /// `error_policy` is synchronous.
     pub retry_counts: Arc<Mutex<HashMap<String, u32>>>,
+    /// When `true` (default), `handle_deletion` force-removes the finalizer if
+    /// CAPI cleanup exceeds [`crate::constants::FINALIZER_CLEANUP_TIMEOUT_SECS`],
+    /// surfacing a `FinalizerCleanupTimedOut` Warning event and incrementing
+    /// `fivespot_finalizer_cleanup_timeouts_total`. Trade-off: namespace
+    /// deletion is unblocked but orphan CAPI resources are possible.
+    ///
+    /// Operators who require strict-cleanup-or-stall semantics can set
+    /// `--force-finalizer-on-timeout=false` (env: `FORCE_FINALIZER_ON_TIMEOUT`)
+    /// to revert to the original behaviour of returning `TimeoutError` and
+    /// keeping the finalizer in place. Use only when an external sweep is in
+    /// place to garbage-collect stuck SMs.
+    pub force_finalizer_on_timeout: bool,
 }
 
 impl Context {
@@ -121,7 +133,18 @@ impl Context {
             // Default to true so existing single-instance deployments without
             // leader election continue to work without any configuration change.
             is_leader: Arc::new(AtomicBool::new(true)),
+            // Default-true: prefer unblocking namespace deletion over
+            // strict-cleanup. See field rustdoc for the trade-off.
+            force_finalizer_on_timeout: true,
         }
+    }
+
+    /// Override the [`Self::force_finalizer_on_timeout`] flag after
+    /// construction. Used by `main.rs` to wire the CLI / env var.
+    #[must_use]
+    pub fn with_force_finalizer_on_timeout(mut self, force: bool) -> Self {
+        self.force_finalizer_on_timeout = force;
+        self
     }
 }
 

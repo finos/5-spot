@@ -202,6 +202,74 @@ kubectl logs -n 5spot-system -l app=5spot-controller -f | \
   kubectl annotate scheduledmachine <name> 5spot.finos.org/force-reconcile="$(date -u +%s)" --overwrite
   ```
 
+### Orphan resources after finalizer timeout
+
+**Symptom:**
+- `fivespot_finalizer_cleanup_timeouts_total` increments above zero.
+- A `kubectl describe scheduledmachine <name>` shows a Warning event with reason `FinalizerCleanupTimedOut`.
+- The ScheduledMachine has been deleted (gone from `kubectl get`) but a CAPI Machine, bootstrap resource, or infrastructure resource may still exist in the namespace.
+
+**Root cause.**
+`handle_deletion` wraps CAPI cleanup in a hard timeout
+(`FINALIZER_CLEANUP_TIMEOUT_SECS`, default 600s / 10 minutes) so a hung
+eviction cannot stall namespace deletion. By default
+(`--force-finalizer-on-timeout=true`, env `FORCE_FINALIZER_ON_TIMEOUT=true`)
+the controller force-removes its finalizer when the timeout fires —
+unblocking namespace deletion at the cost of potentially leaving CAPI
+resources without a managing ScheduledMachine. The most common trigger
+is a **misconfigured Pod Disruption Budget** (e.g. `minAvailable: 999`)
+on a workload the controller is trying to evict during node drain.
+
+**Runbook.**
+
+1. Find the orphaned CAPI Machine:
+   ```bash
+   # Machines from this namespace whose owning ScheduledMachine no longer exists.
+   kubectl get machines.cluster.x-k8s.io -n <ns> -o json \
+     | jq -r '.items[] | select(.metadata.ownerReferences[]?.kind == "ScheduledMachine")
+              | .metadata.name'
+   for m in $(kubectl get machines.cluster.x-k8s.io -n <ns> -o name); do
+     owner=$(kubectl get $m -n <ns> -o jsonpath='{.metadata.ownerReferences[?(@.kind=="ScheduledMachine")].name}')
+     if [ -n "$owner" ] && ! kubectl get scheduledmachine "$owner" -n <ns> >/dev/null 2>&1; then
+       echo "ORPHAN: $m (was owned by $owner)"
+     fi
+   done
+   ```
+
+2. Identify the bootstrap and infrastructure resources the orphan Machine references:
+   ```bash
+   kubectl get machine.cluster.x-k8s.io <orphan-name> -n <ns> -o jsonpath='{.spec.bootstrap.configRef}'
+   kubectl get machine.cluster.x-k8s.io <orphan-name> -n <ns> -o jsonpath='{.spec.infrastructureRef}'
+   ```
+
+3. Delete the orphan Machine first; CAPI cascades into the bootstrap / infra refs via ownerReferences:
+   ```bash
+   kubectl delete machine.cluster.x-k8s.io <orphan-name> -n <ns>
+   ```
+   If the Machine itself is stuck terminating (drain still blocked),
+   inspect Pods + PDBs on the underlying Node and remove the offending
+   PDB before retrying.
+
+4. Verify nothing is left behind:
+   ```bash
+   kubectl get machines.cluster.x-k8s.io,k0sworkerconfigs.k0smotron.io,remotemachines.k0smotron.io -n <ns>
+   ```
+
+**Prevention.**
+
+- Alert on `rate(fivespot_finalizer_cleanup_timeouts_total[5m]) > 0`.
+- Validate Pod Disruption Budgets at admission (CEL
+  `ValidatingAdmissionPolicy`) — reject `minAvailable` values that exceed
+  the workload's replica count.
+- For environments where stalled SMs are preferable to potential
+  orphans (e.g. a sweep job is in place), set
+  `--force-finalizer-on-timeout=false` (env
+  `FORCE_FINALIZER_ON_TIMEOUT=false`). The metric and Warning event
+  fire in both modes; the only difference is whether the finalizer is
+  removed on timeout. **Strict mode requires an external sweep** to
+  garbage-collect SMs whose drain is permanently blocked, otherwise
+  namespace deletion stalls indefinitely.
+
 ## Emergency Reclaim (Kill Switch)
 
 See [Emergency Reclaim](../concepts/emergency-reclaim.md) for the full lifecycle.
