@@ -39,28 +39,41 @@ use prometheus::{
 //
 // If metric registration fails (e.g., duplicate name in tests), we log a
 // warning and fall back to an *unregistered* metric so the process continues.
-// The fallback constructors use hardcoded valid names and cannot panic.
+// The fallback constructors use hardcoded metric names that the Prometheus
+// crate must accept (ASCII alphanumerics + underscores, non-empty, not
+// starting with a digit). They have never failed in practice — but the
+// contract is enforced by `prometheus`, not us, so we guard with `expect()`
+// carrying a pointed diagnostic rather than `unreachable!()` which compiles
+// to a panic with a misleading message. Either way a failure here is a
+// programming bug (likely a rename that introduced an invalid character),
+// not a runtime configuration issue.
 // ============================================================================
+
+/// Error message used by every fallback constructor — identifies the failing
+/// metric so a crash log points straight at the offending hardcoded name.
+const FALLBACK_METRIC_BUG_MSG: &str = "BUG: hardcoded metric name failed Prometheus validation; \
+     this is a programming error, not a runtime issue — \
+     see src/metrics.rs for the offending static";
 
 /// Create an *unregistered* `CounterVec` used as a no-op fallback when
 /// `register_counter_vec!` fails (e.g. duplicate name in test processes).
 fn fallback_counter_vec(name: &str, help: &str, labels: &[&str]) -> CounterVec {
     CounterVec::new(Opts::new(name, help), labels)
-        .unwrap_or_else(|_| unreachable!("hardcoded metric name '{name}' is always valid"))
+        .unwrap_or_else(|e| panic!("{FALLBACK_METRIC_BUG_MSG}: name={name:?} err={e}"))
 }
 
 /// Create an *unregistered* `Gauge` used as a no-op fallback when
 /// `register_gauge!` fails.
 fn fallback_gauge(name: &str, help: &str) -> Gauge {
     Gauge::new(name, help)
-        .unwrap_or_else(|_| unreachable!("hardcoded metric name '{name}' is always valid"))
+        .unwrap_or_else(|e| panic!("{FALLBACK_METRIC_BUG_MSG}: name={name:?} err={e}"))
 }
 
 /// Create an *unregistered* `GaugeVec` used as a no-op fallback when
 /// `register_gauge_vec!` fails.
 fn fallback_gauge_vec(name: &str, help: &str, labels: &[&str]) -> GaugeVec {
     GaugeVec::new(Opts::new(name, help), labels)
-        .unwrap_or_else(|_| unreachable!("hardcoded metric name '{name}' is always valid"))
+        .unwrap_or_else(|e| panic!("{FALLBACK_METRIC_BUG_MSG}: name={name:?} err={e}"))
 }
 
 /// Create an *unregistered* `HistogramVec` used as a no-op fallback when
@@ -75,7 +88,7 @@ fn fallback_histogram_vec(
         prometheus::HistogramOpts::new(name, help).buckets(buckets),
         labels,
     )
-    .unwrap_or_else(|_| unreachable!("hardcoded metric name '{name}' is always valid"))
+    .unwrap_or_else(|e| panic!("{FALLBACK_METRIC_BUG_MSG}: name={name:?} err={e}"))
 }
 
 // ============================================================================

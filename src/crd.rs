@@ -45,7 +45,16 @@ pub struct ScheduledMachineSpec {
     /// Machine scheduling configuration
     pub schedule: ScheduleSpec,
 
-    /// Name of the CAPI cluster this machine belongs to
+    /// Name of the CAPI cluster this machine belongs to.
+    ///
+    /// Bounded to 63 characters — the RFC-1123 DNS label limit and the
+    /// effective CAPI cluster-name cap, since the value flows downstream
+    /// into the `cluster.x-k8s.io/cluster-name` label and into generated
+    /// DNS labels. The schema also restricts the charset to ASCII
+    /// alphanumerics, `-`, `.`, and `_` to block log-injection via
+    /// embedded control characters and to bound Prometheus label
+    /// cardinality.
+    #[schemars(schema_with = "cluster_name_schema")]
     pub cluster_name: String,
 
     /// Inline bootstrap configuration spec (e.g., `K0sWorkerConfig`)
@@ -101,7 +110,14 @@ pub struct ScheduledMachineSpec {
     /// basename) and `/proc/<pid>/cmdline` (substring). See the
     /// `5spot-emergency-reclaim-by-process-match.md` roadmap for full
     /// semantics.
+    ///
+    /// Bounded to 100 entries × 256 characters each. The caps guard the
+    /// per-node agent's CPU (every pattern is evaluated against every
+    /// `/proc/<pid>`) and cap the size of the per-node `ConfigMap`
+    /// projection — an unbounded list is both an operator foot-gun and a
+    /// denial-of-service vector when driven from a malicious CR.
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[schemars(schema_with = "kill_if_commands_schema")]
     pub kill_if_commands: Option<Vec<String>>,
 }
 
@@ -219,6 +235,35 @@ fn timezone_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
         "type": "string",
         "maxLength": 64,
         "pattern": "^[A-Za-z][A-Za-z0-9_+\\-/]*$"
+    })
+}
+
+/// Schema for `spec.clusterName` — bounded to the effective CAPI cluster-name
+/// cap (RFC-1123 DNS label, 63 chars) with an ASCII-safe charset. Mirrors the
+/// runtime check in `validate_cluster_name()` (src/reconcilers/helpers.rs).
+fn cluster_name_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 63,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    })
+}
+
+/// Schema for `spec.killIfCommands` — bounded list of bounded strings.
+/// Mirrors the runtime check in `validate_kill_if_commands()`
+/// (src/reconcilers/helpers.rs). 100 patterns × 256 chars is well above any
+/// realistic workload and caps both reclaim-agent CPU cost and the per-node
+/// `ConfigMap` projection size.
+fn kill_if_commands_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "array",
+        "maxItems": 100,
+        "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+        }
     })
 }
 

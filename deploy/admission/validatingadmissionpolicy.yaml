@@ -34,9 +34,56 @@ spec:
 
   validations:
 
-    # ── 1. clusterName ────────────────────────────────────────────────────────
+    # ── 1. clusterName: non-empty ────────────────────────────────────────────
     - expression: "object.spec.clusterName.size() > 0"
       message: "spec.clusterName must not be empty"
+      reason: Invalid
+
+    # ── 1b. clusterName: length ≤ MAX_CLUSTER_NAME_LEN (63) ──────────────────
+    # Mirrors MAX_CLUSTER_NAME_LEN in src/constants.rs. 63 is the effective
+    # CAPI cluster-name cap because the value flows downstream into DNS
+    # labels (RFC-1123 limit) and into the
+    # `cluster.x-k8s.io/cluster-name` label value. Rejecting longer values
+    # at admission also bounds Prometheus label cardinality — the metrics
+    # pipeline emits cluster_name as a label on several counters.
+    - expression: "object.spec.clusterName.size() <= 63"
+      message: >-
+        spec.clusterName must be ≤ 63 characters (RFC-1123 DNS label limit;
+        the effective CAPI cluster-name cap)
+      reason: Invalid
+
+    # ── 1c. clusterName: safe character set ──────────────────────────────────
+    # Restricts clusterName to ASCII alphanumerics, '-', '.', '_'. Blocks
+    # log-injection via embedded newlines or NUL bytes and prevents exotic
+    # Unicode from bloating Prometheus label cardinality. Mirrors the
+    # runtime check in validate_cluster_name() (src/reconcilers/helpers.rs).
+    - expression: "object.spec.clusterName.matches('^[A-Za-z0-9][A-Za-z0-9._-]*$')"
+      message: >-
+        spec.clusterName must start with an ASCII alphanumeric and contain
+        only ASCII alphanumerics, '-', '.', or '_'
+      reason: Invalid
+
+    # ── 1d. killIfCommands: count ≤ MAX_KILL_IF_COMMANDS_COUNT (100) ─────────
+    # Mirrors MAX_KILL_IF_COMMANDS_COUNT in src/constants.rs. The per-node
+    # reclaim agent evaluates every pattern against every PID in /proc; an
+    # unbounded list lets a malicious CR pin agent CPU. Trivially true when
+    # killIfCommands is absent (optional field).
+    - expression: "!has(object.spec.killIfCommands) || object.spec.killIfCommands.size() <= 100"
+      message: >-
+        spec.killIfCommands must have at most 100 entries — each entry is
+        evaluated against every /proc/<pid> by the per-node reclaim agent
+      reason: Invalid
+
+    # ── 1e. killIfCommands: per-entry length ≤ MAX_KILL_IF_COMMAND_LEN (256) ─
+    # Mirrors MAX_KILL_IF_COMMAND_LEN in src/constants.rs. Caps both agent
+    # CPU per match attempt and the size of the per-node ConfigMap
+    # projection. Empty strings are also rejected — they would match every
+    # process and are almost certainly a mistake.
+    - expression: |
+        !has(object.spec.killIfCommands) ||
+        object.spec.killIfCommands.all(c, c.size() >= 1 && c.size() <= 256)
+      message: >-
+        spec.killIfCommands entries must be 1..=256 characters each
       reason: Invalid
 
     # ── 2. gracefulShutdownTimeout duration format ────────────────────────────

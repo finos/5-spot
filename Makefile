@@ -374,7 +374,11 @@ undeploy: ## Remove operator from cluster
 # Security Scanning
 # ============================================================
 
-gitleaks-install: ## Install gitleaks from GitHub with checksum verification
+# Sentinel string written into .git/hooks/pre-commit so we can recognise our
+# own hook on re-runs and avoid clobbering a developer's custom pre-commit.
+GITLEAKS_HOOK_SENTINEL := 5spot-managed-gitleaks-hook
+
+gitleaks-install: ## Install gitleaks (with checksum verification) AND wire the local pre-commit hook
 	@if ! command -v gitleaks >/dev/null 2>&1; then \
 		echo "Installing gitleaks v$(GITLEAKS_VERSION)..."; \
 		OS=$$(uname -s | tr '[:upper:]' '[:lower:]'); \
@@ -407,30 +411,56 @@ gitleaks-install: ## Install gitleaks from GitHub with checksum verification
 	else \
 		echo "✓ gitleaks already installed: $$(gitleaks version)"; \
 	fi
+	@$(MAKE) --no-print-directory install-git-hooks
 
 gitleaks: gitleaks-install ## Scan for hardcoded secrets and credentials
 	@echo "Scanning for secrets with gitleaks..."
 	@gitleaks detect --source . --verbose --redact
 
-install-git-hooks: gitleaks-install ## Install git hooks for pre-commit secret scanning
-	@echo "Installing git hooks..."
+# install-git-hooks is intentionally decoupled from gitleaks-install — the hook
+# only invokes gitleaks at *commit* time, not at install time, so we avoid a
+# circular dependency (gitleaks-install → install-git-hooks → gitleaks-install).
+# The hook is idempotent: if a custom pre-commit already exists without our
+# sentinel we back it up to pre-commit.bak rather than overwriting silently.
+install-git-hooks: ## Install git pre-commit hook for secret scanning (idempotent; preserves custom hooks)
+	@if [ ! -d .git ]; then \
+		echo "✗ Not inside a git repository (.git missing) — skipping hook install"; \
+		exit 0; \
+	fi
 	@mkdir -p .git/hooks
-	@echo '#!/bin/sh' > .git/hooks/pre-commit
-	@echo '# Pre-commit hook to scan for secrets' >> .git/hooks/pre-commit
-	@echo '' >> .git/hooks/pre-commit
-	@echo 'echo "Running gitleaks pre-commit scan..."' >> .git/hooks/pre-commit
-	@echo 'gitleaks protect --staged --verbose --redact' >> .git/hooks/pre-commit
-	@echo 'if [ $$? -ne 0 ]; then' >> .git/hooks/pre-commit
-	@echo '    echo ""' >> .git/hooks/pre-commit
-	@echo '    echo "ERROR: Secrets detected in staged changes!"' >> .git/hooks/pre-commit
-	@echo '    echo "Please remove secrets before committing."' >> .git/hooks/pre-commit
-	@echo '    echo "If this is a false positive, add to .gitleaks.toml allowlist."' >> .git/hooks/pre-commit
-	@echo '    exit 1' >> .git/hooks/pre-commit
-	@echo 'fi' >> .git/hooks/pre-commit
-	@chmod +x .git/hooks/pre-commit
-	@echo "✓ Pre-commit hook installed"
-	@echo "  Hook location: .git/hooks/pre-commit"
-	@echo "  Gitleaks will scan staged changes before each commit"
+	@if [ -f .git/hooks/pre-commit ] && grep -q "$(GITLEAKS_HOOK_SENTINEL)" .git/hooks/pre-commit 2>/dev/null; then \
+		echo "✓ Pre-commit hook already managed by 5spot — leaving in place"; \
+	else \
+		if [ -f .git/hooks/pre-commit ]; then \
+			echo "⚠ Existing pre-commit hook detected — backing up to .git/hooks/pre-commit.bak"; \
+			mv .git/hooks/pre-commit .git/hooks/pre-commit.bak; \
+		fi; \
+		echo "Installing git pre-commit hook..."; \
+		printf '%s\n' \
+			'#!/bin/sh' \
+			'# $(GITLEAKS_HOOK_SENTINEL)' \
+			'# Pre-commit hook to scan staged changes for secrets via gitleaks.' \
+			'# Reinstall with: make install-git-hooks   (idempotent)' \
+			'' \
+			'if ! command -v gitleaks >/dev/null 2>&1; then' \
+			'    echo "ERROR: gitleaks not found on PATH — run \"make gitleaks-install\" first." >&2' \
+			'    exit 1' \
+			'fi' \
+			'' \
+			'echo "Running gitleaks pre-commit scan..."' \
+			'gitleaks protect --staged --verbose --redact' \
+			'rc=$$?' \
+			'if [ $$rc -ne 0 ]; then' \
+			'    echo "" >&2' \
+			'    echo "ERROR: Secrets detected in staged changes!" >&2' \
+			'    echo "Please remove secrets before committing." >&2' \
+			'    echo "If this is a false positive, add to .gitleaks.toml allowlist." >&2' \
+			'    exit 1' \
+			'fi' \
+			> .git/hooks/pre-commit; \
+		chmod +x .git/hooks/pre-commit; \
+		echo "✓ Pre-commit hook installed at .git/hooks/pre-commit"; \
+	fi
 
 security-scan-local: gitleaks ## Run local security scans (gitleaks)
 	@echo "Running local security scans..."

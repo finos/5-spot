@@ -63,7 +63,19 @@ spec:
                 - spec
                 type: object
               clusterName:
-                description: Name of the CAPI cluster this machine belongs to
+                description: |-
+                  Name of the CAPI cluster this machine belongs to.
+
+                  Bounded to 63 characters — the RFC-1123 DNS label limit and the
+                  effective CAPI cluster-name cap, since the value flows downstream
+                  into the `cluster.x-k8s.io/cluster-name` label and into generated
+                  DNS labels. The schema also restricts the charset to ASCII
+                  alphanumerics, `-`, `.`, and `_` to block log-injection via
+                  embedded control characters and to bound Prometheus label
+                  cardinality.
+                maxLength: 63
+                minLength: 1
+                pattern: ^[A-Za-z0-9][A-Za-z0-9._-]*$
                 type: string
               gracefulShutdownTimeout:
                 default: 5m
@@ -104,9 +116,17 @@ spec:
                   basename) and `/proc/<pid>/cmdline` (substring). See the
                   `5spot-emergency-reclaim-by-process-match.md` roadmap for full
                   semantics.
+
+                  Bounded to 100 entries × 256 characters each. The caps guard the
+                  per-node agent's CPU (every pattern is evaluated against every
+                  `/proc/<pid>`) and cap the size of the per-node `ConfigMap`
+                  projection — an unbounded list is both an operator foot-gun and a
+                  denial-of-service vector when driven from a malicious CR.
                 items:
+                  maxLength: 256
+                  minLength: 1
                   type: string
-                nullable: true
+                maxItems: 100
                 type: array
               killSwitch:
                 default: false

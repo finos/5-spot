@@ -377,6 +377,15 @@ async fn reconcile_inner(
     })?;
     let name = resource.name_any();
 
+    // Defence-in-depth input validation. ValidatingAdmissionPolicy is the
+    // first line of defence (rejected at CREATE/UPDATE), but clusters that
+    // have not enabled VAP still need these bounds enforced. Runs early so
+    // every downstream phase handler sees a sanitised spec — notably
+    // cluster_name before any log/metric emission, killIfCommands before
+    // the reclaim-agent projection.
+    super::helpers::validate_cluster_name(&resource.spec.cluster_name)?;
+    super::helpers::validate_kill_if_commands(resource.spec.kill_if_commands.as_deref())?;
+
     // Get current status
     let current_phase = resource
         .status

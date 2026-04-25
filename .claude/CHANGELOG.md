@@ -9,6 +9,117 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-04-25 06:30] - `gitleaks-install` now wires the local pre-commit hook
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Makefile` (`gitleaks-install`): after installing the binary, invokes
+  `install-git-hooks` so a single `make gitleaks-install` leaves the
+  developer with both the tool AND the local secret-scanning hook in
+  place. Previously the two targets were independent and the hook had
+  to be set up via a second command.
+- `Makefile` (`install-git-hooks`): no longer depends on
+  `gitleaks-install` (would create a circular dependency now that
+  `gitleaks-install` calls it). The hook only invokes gitleaks at
+  *commit* time, so install-time independence is correct.
+- `Makefile` (`install-git-hooks`): now idempotent and non-destructive.
+  A `5spot-managed-gitleaks-hook` sentinel embedded in the hook lets
+  re-runs detect "already installed" and leave the file alone. If a
+  custom pre-commit hook is found (no sentinel), it is preserved at
+  `.git/hooks/pre-commit.bak` rather than overwritten silently.
+- `Makefile` (hook content): the generated hook now checks for
+  gitleaks on PATH and emits a clear "run make gitleaks-install"
+  message if it is missing, instead of failing with a cryptic
+  "command not found".
+
+### Why
+Onboarding friction: developers ran `make gitleaks-install` expecting
+the secret scan to fire on commit, then committed secrets because the
+hook had never been wired. Banking-environment requirement (no
+secrets in commits) was therefore enforced only by CI — too late.
+Wiring hook setup into the install target makes the local guard the
+default for every dev, while idempotency + backup keeps re-runs safe.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (developer tooling)
+- [ ] Documentation only
+
+---
+
+## [2026-04-24 15:00] - Security audit remediation: grace period, retry-count poisoning, input bounds
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/helpers.rs` (`check_grace_period_elapsed`): guard
+  against negative `elapsed` durations produced by clock-skew (NTP step,
+  VM freeze-thaw, backward wall-clock adjustment). The prior comparison
+  `elapsed.num_seconds() >= timeout.as_secs() as i64` silently returned
+  `false` when `elapsed` was negative, potentially bypassing the
+  graceful-drain window entirely. Negative elapsed is now treated as
+  "timeout reached" so the reconciler forces progress rather than
+  stalling on a misbehaving clock.
+- `src/reconcilers/helpers.rs` (`error_policy`): replace
+  `ctx.retry_counts.lock().unwrap_or_else(PoisonError::into_inner)`
+  with an explicit `match` that aborts the error-policy pass and
+  requeues after `ERROR_REQUEUE_SECS` on poison. The prior pattern
+  silently recovered a potentially-inconsistent map and continued
+  mutating it, corrupting the exponential-backoff schedule for every
+  subsequent error.
+- `src/reconcilers/helpers.rs`: new `validate_cluster_name()` and
+  `validate_kill_if_commands()` with bounds from `src/constants.rs`.
+  Called early in `reconcile_inner` (defence-in-depth against clusters
+  that have not enabled the ValidatingAdmissionPolicy) and re-called in
+  `add_machine_to_cluster` before touching CAPI.
+- `src/constants.rs`: new `MAX_CLUSTER_NAME_LEN = 63` (RFC-1123 DNS
+  label — the effective CAPI cluster-name cap), plus
+  `MAX_KILL_IF_COMMANDS_COUNT = 100` and `MAX_KILL_IF_COMMAND_LEN = 256`.
+- `src/crd.rs`: attach bounded JSON-schema generators
+  (`cluster_name_schema`, `kill_if_commands_schema`) so the generated
+  CRD enforces the same limits at the kube API level.
+- `src/metrics.rs`: replace `unreachable!()` in the metric-registration
+  fallback constructors with `panic!()` carrying
+  `FALLBACK_METRIC_BUG_MSG` — a pointed diagnostic that identifies the
+  offending metric name instead of a generic "entered unreachable code"
+  message.
+- `deploy/admission/validatingadmissionpolicy.yaml`: add CEL expressions
+  1b/1c/1d/1e mirroring the new runtime validators — `clusterName`
+  length/charset, `killIfCommands` count/per-entry-length — so invalid
+  specs are rejected at admission instead of only at reconciliation
+  time.
+- `src/reconcilers/helpers_tests.rs`: 20 new tests covering the grace-
+  period clock-skew fix, `validate_cluster_name` (happy path, empty,
+  over-cap, control chars, non-ASCII), and `validate_kill_if_commands`
+  (None/empty/typical/cap-boundary/over-cap/empty-entry).
+- `deploy/crds/scheduledmachine.yaml`: regenerated via `cargo run --bin
+  crdgen` to pick up the new schema constraints.
+- `docs/src/reference/api.md`: regenerated via `make crddoc`.
+
+### Why
+Findings from the deep security audit of the codebase (see
+conversation transcript 2026-04-24). Three issues were actionable: a
+clock-skew bypass of the graceful-drain window (critical; violates the
+contract of graceful shutdown under SOX §404 / NIST AC-3), an
+unbounded `killIfCommands` that could balloon Prometheus label
+cardinality and pin reclaim-agent CPU (high; DoS vector), and
+silent recovery from a poisoned retry-count mutex (medium; corrupts
+the exponential-backoff schedule). Cluster-name was also unbounded;
+the 63-char cap matches the effective CAPI constraint (cluster names
+flow into DNS labels downstream). Metric `unreachable!()` is a
+cosmetic bug-diagnostic improvement.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (new CRD schema constraints; existing
+      CRs that violate them will be rejected on next `kubectl apply`)
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
 ## [2026-04-23 08:00] - Fix vexctl-install Linux path (wrong asset filename)
 
 **Author:** Erick Bourgeois

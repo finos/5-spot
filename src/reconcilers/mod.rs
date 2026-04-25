@@ -20,7 +20,7 @@ pub mod scheduled_machine;
 // Re-export main types and functions
 pub use helpers::{
     error_policy, evaluate_schedule, machine_to_scheduled_machine, node_to_scheduled_machines,
-    parse_duration, reconcile_node_taints, should_process_resource, NodeTaintReconcileOutcome,
-    ReconcileNodeTaintsInput,
+    parse_duration, reconcile_node_taints, should_process_resource, validate_cluster_name,
+    validate_kill_if_commands, NodeTaintReconcileOutcome, ReconcileNodeTaintsInput,
 };
 pub use scheduled_machine::{reconcile_scheduled_machine, Context, ReconcilerError};

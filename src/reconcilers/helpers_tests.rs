@@ -5,7 +5,8 @@
 mod tests {
     use super::super::*;
     use crate::constants::{
-        ALLOWED_BOOTSTRAP_API_GROUPS, ALLOWED_INFRASTRUCTURE_API_GROUPS, MAX_DURATION_SECS,
+        ALLOWED_BOOTSTRAP_API_GROUPS, ALLOWED_INFRASTRUCTURE_API_GROUPS, MAX_CLUSTER_NAME_LEN,
+        MAX_DURATION_SECS, MAX_KILL_IF_COMMANDS_COUNT, MAX_KILL_IF_COMMAND_LEN,
     };
     use std::collections::BTreeMap;
 
@@ -3309,5 +3310,272 @@ mod tests {
             other => panic!("expected Conflict, got: {other:?}"),
         }
         srv.await.unwrap();
+    }
+
+    // ========================================================================
+    // check_grace_period_elapsed — clock-skew safety
+    //
+    // Regression: when the grace-period start timestamp is *ahead* of the
+    // current wall clock (system clock adjusted backward, NTP step, VM
+    // freeze-thaw, etc.), `elapsed.num_seconds()` is negative. The prior
+    // implementation cast the negative i64 to unsigned via
+    // `as i64 >= timeout.as_secs() as i64`, silently returning false and
+    // potentially bypassing the graceful-drain window altogether. The fix
+    // treats any negative elapsed duration as "timeout reached" so we never
+    // stall a drain on a misbehaving clock.
+    // ========================================================================
+
+    use crate::constants::REASON_GRACE_PERIOD;
+
+    fn sm_with_grace_period_start(
+        start_ts_rfc3339: &str,
+        graceful_shutdown_timeout: &str,
+    ) -> crate::crd::ScheduledMachine {
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+        crate::crd::ScheduledMachine {
+            metadata: ObjectMeta {
+                name: Some("sm-grace".to_string()),
+                namespace: Some("default".to_string()),
+                ..Default::default()
+            },
+            spec: crate::crd::ScheduledMachineSpec {
+                cluster_name: "test-cluster".to_string(),
+                bootstrap_spec: crate::crd::EmbeddedResource(serde_json::json!({
+                    "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
+                    "kind": "K0sWorkerConfig",
+                    "spec": {}
+                })),
+                infrastructure_spec: crate::crd::EmbeddedResource(serde_json::json!({
+                    "apiVersion": "infrastructure.cluster.x-k8s.io/v1beta1",
+                    "kind": "RemoteMachine",
+                    "spec": {}
+                })),
+                machine_template: None,
+                schedule: crate::crd::ScheduleSpec {
+                    days_of_week: vec!["mon-fri".to_string()],
+                    hours_of_day: vec!["9-17".to_string()],
+                    timezone: "UTC".to_string(),
+                    enabled: true,
+                },
+                priority: 50,
+                graceful_shutdown_timeout: graceful_shutdown_timeout.to_string(),
+                node_drain_timeout: "5m".to_string(),
+                kill_switch: false,
+                node_taints: vec![],
+                kill_if_commands: None,
+            },
+            status: Some(crate::crd::ScheduledMachineStatus {
+                phase: Some("ShuttingDown".to_string()),
+                conditions: vec![crate::crd::Condition {
+                    r#type: "Scheduled".to_string(),
+                    status: "False".to_string(),
+                    last_transition_time: start_ts_rfc3339.to_string(),
+                    reason: REASON_GRACE_PERIOD.to_string(),
+                    message: "Grace period started".to_string(),
+                }],
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn test_check_grace_period_elapsed_future_start_returns_true() {
+        // Clock skew: start time is 1 hour in the future. Prior code returned
+        // false (bypassing the drain check); fix must return true so the
+        // reconciler forces progress rather than hanging.
+        let future = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        let sm = sm_with_grace_period_start(&future, "5m");
+        let elapsed = check_grace_period_elapsed(&sm).expect("must not error");
+        assert!(
+            elapsed,
+            "negative elapsed (future start time) must be treated as timeout reached"
+        );
+    }
+
+    #[test]
+    fn test_check_grace_period_elapsed_recent_start_returns_false() {
+        // 10 seconds ago, timeout 5m — grace period still active.
+        let recent = (Utc::now() - chrono::Duration::seconds(10)).to_rfc3339();
+        let sm = sm_with_grace_period_start(&recent, "5m");
+        let elapsed = check_grace_period_elapsed(&sm).expect("must not error");
+        assert!(!elapsed, "recent start within timeout must return false");
+    }
+
+    #[test]
+    fn test_check_grace_period_elapsed_exceeded_start_returns_true() {
+        // 10 minutes ago, timeout 5m — grace period exceeded.
+        let old = (Utc::now() - chrono::Duration::minutes(10)).to_rfc3339();
+        let sm = sm_with_grace_period_start(&old, "5m");
+        let elapsed = check_grace_period_elapsed(&sm).expect("must not error");
+        assert!(elapsed, "start older than timeout must return true");
+    }
+
+    #[test]
+    fn test_check_grace_period_elapsed_invalid_timestamp_errors() {
+        let sm = sm_with_grace_period_start("not-a-timestamp", "5m");
+        let err = check_grace_period_elapsed(&sm).unwrap_err();
+        assert!(err.to_string().contains("Invalid timestamp"));
+    }
+
+    #[test]
+    fn test_check_grace_period_elapsed_no_status_errors() {
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+        let sm = crate::crd::ScheduledMachine {
+            metadata: ObjectMeta {
+                name: Some("sm".to_string()),
+                namespace: Some("default".to_string()),
+                ..Default::default()
+            },
+            spec: sm_with_grace_period_start(&Utc::now().to_rfc3339(), "5m")
+                .spec
+                .clone(),
+            status: None,
+        };
+        let err = check_grace_period_elapsed(&sm).unwrap_err();
+        assert!(err.to_string().contains("no status"));
+    }
+
+    // ========================================================================
+    // validate_cluster_name — CAPI cluster-name bounds
+    //
+    // `spec.clusterName` is stamped onto every derived resource as a label
+    // value (`cluster.x-k8s.io/cluster-name`) and appears in log lines and
+    // metric labels. Bounding it here stops both Prometheus label-cardinality
+    // DoS and log-line / label-value overflow.
+    // ========================================================================
+
+    #[test]
+    fn test_validate_cluster_name_accepts_short_dns_label() {
+        assert!(validate_cluster_name("prod-east-1").is_ok());
+    }
+
+    #[test]
+    fn test_validate_cluster_name_accepts_max_length() {
+        let name = "a".repeat(MAX_CLUSTER_NAME_LEN);
+        assert!(
+            validate_cluster_name(&name).is_ok(),
+            "exactly MAX_CLUSTER_NAME_LEN must be accepted"
+        );
+    }
+
+    #[test]
+    fn test_validate_cluster_name_rejects_empty() {
+        let err = validate_cluster_name("").unwrap_err();
+        assert!(err.to_string().contains("must not be empty"));
+    }
+
+    #[test]
+    fn test_validate_cluster_name_rejects_over_max() {
+        let name = "a".repeat(MAX_CLUSTER_NAME_LEN + 1);
+        let err = validate_cluster_name(&name).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&MAX_CLUSTER_NAME_LEN.to_string()),
+            "error should mention the cap, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_validate_cluster_name_rejects_control_chars() {
+        // Log-injection vector: newline in cluster name could forge JSON log
+        // records in a downstream SIEM.
+        let err = validate_cluster_name("prod\neast").unwrap_err();
+        assert!(err.to_string().contains("invalid character"));
+    }
+
+    #[test]
+    fn test_validate_cluster_name_rejects_non_ascii() {
+        let err = validate_cluster_name("prod-é").unwrap_err();
+        assert!(err.to_string().contains("invalid character"));
+    }
+
+    // ========================================================================
+    // validate_kill_if_commands — bounded list, bounded entries
+    //
+    // `spec.killIfCommands` is evaluated by the per-node reclaim agent
+    // against every `/proc/<pid>/{comm,cmdline}`; an unbounded count would
+    // pin agent CPU, and an unbounded per-entry length could balloon the
+    // per-node ConfigMap projection.
+    // ========================================================================
+
+    #[test]
+    fn test_validate_kill_if_commands_none_accepted() {
+        assert!(validate_kill_if_commands(None).is_ok());
+    }
+
+    #[test]
+    fn test_validate_kill_if_commands_empty_accepted() {
+        assert!(validate_kill_if_commands(Some(&[])).is_ok());
+    }
+
+    #[test]
+    fn test_validate_kill_if_commands_typical_list_accepted() {
+        let cmds = vec!["java".to_string(), "python".to_string(), "node".to_string()];
+        assert!(validate_kill_if_commands(Some(&cmds)).is_ok());
+    }
+
+    #[test]
+    fn test_validate_kill_if_commands_at_count_cap_accepted() {
+        let cmds: Vec<String> = (0..MAX_KILL_IF_COMMANDS_COUNT)
+            .map(|i| format!("cmd-{i}"))
+            .collect();
+        assert!(validate_kill_if_commands(Some(&cmds)).is_ok());
+    }
+
+    #[test]
+    fn test_validate_kill_if_commands_over_count_cap_rejected() {
+        let cmds: Vec<String> = (0..=MAX_KILL_IF_COMMANDS_COUNT)
+            .map(|i| format!("cmd-{i}"))
+            .collect();
+        let err = validate_kill_if_commands(Some(&cmds)).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&MAX_KILL_IF_COMMANDS_COUNT.to_string()),
+            "error should mention the count cap, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_validate_kill_if_commands_at_len_cap_accepted() {
+        let cmd = "a".repeat(MAX_KILL_IF_COMMAND_LEN);
+        assert!(validate_kill_if_commands(Some(&[cmd])).is_ok());
+    }
+
+    #[test]
+    fn test_validate_kill_if_commands_over_len_cap_rejected() {
+        let cmd = "a".repeat(MAX_KILL_IF_COMMAND_LEN + 1);
+        let err = validate_kill_if_commands(Some(&[cmd])).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&MAX_KILL_IF_COMMAND_LEN.to_string()),
+            "error should mention the per-entry cap, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_validate_kill_if_commands_empty_entry_rejected() {
+        let cmds = vec!["java".to_string(), String::new()];
+        let err = validate_kill_if_commands(Some(&cmds)).unwrap_err();
+        assert!(err.to_string().contains("must not be empty"));
+    }
+
+    #[test]
+    fn test_check_grace_period_elapsed_no_grace_condition_returns_true() {
+        // No condition with reason=GracePeriodActive → conservatively true so
+        // drain proceeds rather than hanging.
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+        let sm = crate::crd::ScheduledMachine {
+            metadata: ObjectMeta {
+                name: Some("sm".to_string()),
+                namespace: Some("default".to_string()),
+                ..Default::default()
+            },
+            spec: sm_with_grace_period_start(&Utc::now().to_rfc3339(), "5m")
+                .spec
+                .clone(),
+            status: Some(crate::crd::ScheduledMachineStatus::default()),
+        };
+        let elapsed = check_grace_period_elapsed(&sm).expect("must not error");
+        assert!(elapsed, "missing grace condition must return true");
     }
 }

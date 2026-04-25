@@ -486,6 +486,34 @@ pub const MAX_DURATION_SECS: u64 = 86_400;
 /// Maximum allowed timezone string length
 pub const MAX_TIMEZONE_LEN: usize = 64;
 
+/// Maximum allowed length of `spec.clusterName`.
+///
+/// CAPI's `Cluster.metadata.name` inherits the Kubernetes DNS-1123 subdomain
+/// cap (253 chars), but cluster names are used downstream as DNS labels and
+/// as label values (`cluster.x-k8s.io/cluster-name`), both of which are
+/// bounded by RFC-1123's 63-character DNS label limit. 63 is therefore the
+/// effective CAPI constraint. Rejecting longer values at the CR boundary
+/// also bounds Prometheus label cardinality (metrics emit the cluster name
+/// via `CAPI_CLUSTER_NAME_LABEL`) and caps log-line width, closing a
+/// cheap log-injection / cardinality-DoS vector.
+pub const MAX_CLUSTER_NAME_LEN: usize = 63;
+
+/// Maximum number of `spec.killIfCommands` patterns accepted on a single
+/// `ScheduledMachine`. The reclaim agent evaluates every pattern against
+/// every PID in `/proc`; an unbounded list lets a malicious (or
+/// misconfigured) CR pin agent CPU. 100 is well above any realistic
+/// workload — a single node rarely runs more than a dozen distinct
+/// kill-switchable processes — and keeps the worst-case match cost bounded.
+pub const MAX_KILL_IF_COMMANDS_COUNT: usize = 100;
+
+/// Maximum length of a single `spec.killIfCommands` entry. Patterns are
+/// matched against `/proc/<pid>/comm` (15 chars max per the kernel) and
+/// `/proc/<pid>/cmdline` (longer, but arguments beyond 256 bytes are a red
+/// flag for the intended use case of process-basename matching). This bound
+/// also caps Prometheus label widths if a future metric tags reclaim
+/// outcomes by matched pattern.
+pub const MAX_KILL_IF_COMMAND_LEN: usize = 256;
+
 /// Timeout for finalizer cleanup operations (10 minutes in seconds)
 pub const FINALIZER_CLEANUP_TIMEOUT_SECS: u64 = 600;
 

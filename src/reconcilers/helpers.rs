@@ -44,8 +44,9 @@ use crate::constants::{
     CAPI_CLUSTER_NAME_LABEL, CAPI_GROUP, CAPI_MACHINE_API_VERSION, CAPI_MACHINE_API_VERSION_FULL,
     CAPI_RESOURCE_MACHINES, CONDITION_STATUS_TRUE, CONDITION_TYPE_READY, DEFAULT_INSTANCE_ID,
     ENV_OPERATOR_INSTANCE_ID, ERROR_REQUEUE_SECS, FINALIZER_CLEANUP_TIMEOUT_SECS,
-    FINALIZER_SCHEDULED_MACHINE, MAX_BACKOFF_SECS, MAX_DURATION_SECS, MAX_RECONCILE_RETRIES,
-    PHASE_ACTIVE, PHASE_ERROR, PHASE_INACTIVE, PHASE_SHUTTING_DOWN, PHASE_TERMINATED,
+    FINALIZER_SCHEDULED_MACHINE, MAX_BACKOFF_SECS, MAX_CLUSTER_NAME_LEN, MAX_DURATION_SECS,
+    MAX_KILL_IF_COMMANDS_COUNT, MAX_KILL_IF_COMMAND_LEN, MAX_RECONCILE_RETRIES, PHASE_ACTIVE,
+    PHASE_ERROR, PHASE_INACTIVE, PHASE_SHUTTING_DOWN, PHASE_TERMINATED,
     POD_EVICTION_GRACE_PERIOD_SECS, REASON_GRACE_PERIOD, REASON_KILL_SWITCH,
     REASON_RECONCILE_SUCCEEDED, RESERVED_LABEL_PREFIXES, TIMER_REQUEUE_SECS,
 };
@@ -405,16 +406,38 @@ pub fn check_grace_period_elapsed(resource: &ScheduledMachine) -> Result<bool, R
         let timeout = parse_duration(&resource.spec.graceful_shutdown_timeout)?;
         let now = Utc::now();
         let elapsed = now.signed_duration_since(start_time);
+        let elapsed_secs = elapsed.num_seconds();
 
         debug!(
             grace_start = %start_time,
-            elapsed_secs = elapsed.num_seconds(),
+            elapsed_secs,
             timeout_secs = timeout.as_secs(),
             "Grace period check"
         );
 
+        // Clock-skew guard: if the recorded start timestamp is *ahead* of the
+        // current wall clock (NTP step, VM freeze-thaw, or a manual clock
+        // adjustment), `elapsed_secs` is negative. The prior
+        // `elapsed.num_seconds() >= timeout.as_secs() as i64` expression
+        // silently returned false in that case and could bypass the
+        // graceful-drain window entirely. Treat any negative elapsed as
+        // "timeout reached" so the reconciler forces progress rather than
+        // stalling on a misbehaving clock.
+        if elapsed_secs < 0 {
+            warn!(
+                grace_start = %start_time,
+                now_utc = %now,
+                elapsed_secs,
+                "Negative elapsed time detected (clock adjustment?); treating grace period as elapsed"
+            );
+            return Ok(true);
+        }
+
+        // Safe cast: u64 timeout converted to i64 cannot wrap because
+        // MAX_DURATION_SECS (24h) fits in i64, and elapsed_secs is now
+        // known non-negative.
         #[allow(clippy::cast_possible_wrap)]
-        Ok(elapsed.num_seconds() >= timeout.as_secs() as i64)
+        Ok(elapsed_secs >= timeout.as_secs() as i64)
     } else {
         // No grace period started yet
         Ok(true)
@@ -754,6 +777,89 @@ pub fn validate_labels(
     Ok(())
 }
 
+/// Reject `spec.clusterName` values that exceed the effective CAPI cap or
+/// contain characters unsafe for log / label / metric emission.
+///
+/// CAPI itself inherits the Kubernetes 253-char DNS-1123 subdomain cap on
+/// `Cluster.metadata.name`, but the name flows downstream into DNS labels
+/// (63 chars) and the `cluster.x-k8s.io/cluster-name` label value. 63 is
+/// therefore the *effective* upper bound — see [`MAX_CLUSTER_NAME_LEN`].
+///
+/// The character check rejects control chars, whitespace, and non-ASCII so
+/// a malicious CR cannot forge log records via embedded newlines or bloat
+/// Prometheus label cardinality with exotic Unicode.
+///
+/// # Errors
+/// [`ReconcilerError::ValidationError`] if the name is empty, too long, or
+/// contains a disallowed character.
+pub fn validate_cluster_name(cluster_name: &str) -> Result<(), ReconcilerError> {
+    if cluster_name.is_empty() {
+        return Err(ReconcilerError::ValidationError(
+            "spec.clusterName must not be empty".to_string(),
+        ));
+    }
+    if cluster_name.len() > MAX_CLUSTER_NAME_LEN {
+        return Err(ReconcilerError::ValidationError(format!(
+            "spec.clusterName length {} exceeds maximum of {MAX_CLUSTER_NAME_LEN} characters",
+            cluster_name.len()
+        )));
+    }
+    // Allow ASCII letters, digits, '-', '.', '_' — the intersection of
+    // DNS-1123 subdomain and Kubernetes label-value charsets. Anything
+    // outside that (including embedded NUL, newline, or multi-byte UTF-8)
+    // is rejected with a single uniform error.
+    if !cluster_name
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_')
+    {
+        return Err(ReconcilerError::ValidationError(format!(
+            "spec.clusterName contains invalid character(s); allowed: ASCII alphanumerics, '-', '.', '_' (got: {cluster_name:?})"
+        )));
+    }
+    Ok(())
+}
+
+/// Reject `spec.killIfCommands` lists that exceed the count cap or contain
+/// an over-length / empty pattern.
+///
+/// The reclaim agent evaluates each pattern against every PID in `/proc`;
+/// without a cap, a single CR can pin an entire node's agent CPU or balloon
+/// the per-node `ConfigMap` projection. Empty patterns would match every
+/// process and are almost certainly a mistake rather than an intentional
+/// kill-all rule — reject them loudly.
+///
+/// `None` and `Some(&[])` are both accepted: the controller treats them
+/// identically ("no reclaim agent on this node").
+///
+/// # Errors
+/// [`ReconcilerError::ValidationError`] on any violation, naming the
+/// offending index so operators can fix the CR quickly.
+pub fn validate_kill_if_commands(commands: Option<&[String]>) -> Result<(), ReconcilerError> {
+    let Some(cmds) = commands else {
+        return Ok(());
+    };
+    if cmds.len() > MAX_KILL_IF_COMMANDS_COUNT {
+        return Err(ReconcilerError::ValidationError(format!(
+            "spec.killIfCommands has {} entries, exceeds maximum of {MAX_KILL_IF_COMMANDS_COUNT}",
+            cmds.len()
+        )));
+    }
+    for (idx, cmd) in cmds.iter().enumerate() {
+        if cmd.is_empty() {
+            return Err(ReconcilerError::ValidationError(format!(
+                "spec.killIfCommands[{idx}] must not be empty"
+            )));
+        }
+        if cmd.len() > MAX_KILL_IF_COMMAND_LEN {
+            return Err(ReconcilerError::ValidationError(format!(
+                "spec.killIfCommands[{idx}] length {} exceeds maximum of {MAX_KILL_IF_COMMAND_LEN} characters",
+                cmd.len()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Validate that an apiVersion string belongs to an allowed API group.
 ///
 /// Core Kubernetes API versions (no `/`) are always rejected for CAPI resources.
@@ -838,6 +944,16 @@ pub async fn add_machine_to_cluster(
         .spec()
         .cloned()
         .unwrap_or_default();
+
+    // Validate cluster name and killIfCommands bounds before touching CAPI.
+    // `cluster_name` flows into every derived resource's label set and into
+    // log/metric emission; `killIfCommands` into the per-node reclaim-agent
+    // `ConfigMap`. Rejecting oversize input here keeps both failure modes
+    // out of the hot path. Admission policy does the same check at
+    // CREATE/UPDATE — this runtime guard is defence-in-depth for clusters
+    // that have not enabled ValidatingAdmissionPolicy.
+    validate_cluster_name(cluster_name)?;
+    validate_kill_if_commands(resource.spec.kill_if_commands.as_deref())?;
 
     // Validate API groups before creating any resources
     validate_api_group(
@@ -1591,14 +1707,27 @@ pub fn error_policy(
         resource.namespace().unwrap_or_default(),
         resource.name_any()
     );
-    let retry_count = {
-        let mut counts = ctx
-            .retry_counts
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let count = counts.entry(key).or_insert(0);
-        *count = count.saturating_add(1);
-        *count
+    // Explicit poison handling: if another reconciler thread panicked while
+    // holding `retry_counts`, the map may be in an inconsistent state. Rather
+    // than silently recovering the inner map and continuing with partially-
+    // modified retry counters (which would corrupt the exponential-backoff
+    // schedule), log the incident and requeue after the standard error
+    // interval — a subsequent reconcile will proceed from a fresh lock.
+    let retry_count = match ctx.retry_counts.lock() {
+        Ok(mut counts) => {
+            let count = counts.entry(key).or_insert(0);
+            *count = count.saturating_add(1);
+            *count
+        }
+        Err(poisoned) => {
+            error!(
+                resource_key = %key,
+                error = %poisoned,
+                original_error = %err,
+                "retry_counts mutex poisoned; aborting this error-policy pass and requeuing after ERROR_REQUEUE_SECS"
+            );
+            return Action::requeue(Duration::from_secs(ERROR_REQUEUE_SECS));
+        }
     };
     let backoff = compute_backoff_secs(retry_count);
     error!(
