@@ -476,4 +476,162 @@ mod tests {
             "error must name the parse failure, got: {err}"
         );
     }
+
+    // ========================================================================
+    // Phase 4: host-identity verification
+    //
+    // Closes the "modified DaemonSet hard-codes NODE_NAME" attack: before the
+    // agent PATCHes a Node with reclaim annotations, it cross-checks
+    // /etc/machine-id (the host's stable identifier, set by
+    // systemd-machine-id-setup / kairos / k0s-installer) against the target
+    // Node's status.nodeInfo.machineID (which kubelet populates from the
+    // same source). Mismatch ⇒ refuse to patch.
+    //
+    // Both helpers are pure — no kube I/O — so the binary can wire them
+    // around its own fetch.
+    // ========================================================================
+
+    #[test]
+    fn test_read_host_machine_id_returns_trimmed_content() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("machine-id");
+        // Real /etc/machine-id format: 32 hex digits + trailing newline.
+        fs::write(&path, "abc123def4567890aabbccddeeff0011\n").unwrap();
+        let id = read_host_machine_id(&path).expect("read");
+        assert_eq!(
+            id, "abc123def4567890aabbccddeeff0011",
+            "trailing newline must be trimmed"
+        );
+    }
+
+    #[test]
+    fn test_read_host_machine_id_missing_file_errors() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("does-not-exist");
+        let err = read_host_machine_id(&path).expect_err("missing file must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("does-not-exist") || msg.to_lowercase().contains("cannot read"),
+            "error must name the missing path, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_read_host_machine_id_empty_file_errors() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("machine-id");
+        fs::write(&path, "").unwrap();
+        let err = read_host_machine_id(&path).expect_err("empty file must error");
+        assert!(err.to_string().to_lowercase().contains("empty"));
+    }
+
+    #[test]
+    fn test_read_host_machine_id_whitespace_only_errors() {
+        // Defensive: a corrupted /etc/machine-id with only whitespace
+        // (newlines, spaces) is indistinguishable from "no identity"
+        // and must fail closed rather than producing an empty token.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("machine-id");
+        fs::write(&path, "   \n\t\n").unwrap();
+        let err = read_host_machine_id(&path).expect_err("whitespace-only must error");
+        assert!(err.to_string().to_lowercase().contains("empty"));
+    }
+
+    fn node_with_machine_id(machine_id: &str) -> k8s_openapi::api::core::v1::Node {
+        use k8s_openapi::api::core::v1::{Node, NodeStatus, NodeSystemInfo};
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+        Node {
+            metadata: ObjectMeta {
+                name: Some("worker-1".to_string()),
+                ..Default::default()
+            },
+            status: Some(NodeStatus {
+                node_info: Some(NodeSystemInfo {
+                    machine_id: machine_id.to_string(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_compare_machine_ids_match_returns_ok() {
+        let node = node_with_machine_id("abc123def4567890aabbccddeeff0011");
+        compare_machine_ids(&node, "worker-1", "abc123def4567890aabbccddeeff0011")
+            .expect("match must succeed");
+    }
+
+    #[test]
+    fn test_compare_machine_ids_mismatch_errors_with_both_ids() {
+        // Spoofed-NODE_NAME exploit: agent runs on host-A but DaemonSet was
+        // edited to NODE_NAME=victim-host. The fetched victim-host Node has
+        // a DIFFERENT machineID than this agent's /etc/machine-id. Refuse.
+        let node = node_with_machine_id("victim-host-id-aaaaaaaaaaaaaaaa");
+        let err = compare_machine_ids(&node, "victim-host", "agent-host-id-bbbbbbbbbbbbbbbb")
+            .expect_err("mismatch must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("victim-host"),
+            "error must name the target node, got: {msg}"
+        );
+        assert!(
+            msg.contains("agent-host-id-bbbbbbbbbbbbbbbb"),
+            "error must include the agent's host id for forensics, got: {msg}"
+        );
+        assert!(
+            msg.contains("victim-host-id-aaaaaaaaaaaaaaaa"),
+            "error must include the Node's id, got: {msg}"
+        );
+        assert!(
+            msg.to_lowercase().contains("mismatch") || msg.to_lowercase().contains("refus"),
+            "error must signal refusal, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_compare_machine_ids_node_without_status_errors() {
+        use k8s_openapi::api::core::v1::Node;
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+        let node = Node {
+            metadata: ObjectMeta {
+                name: Some("worker-1".to_string()),
+                ..Default::default()
+            },
+            status: None,
+            ..Default::default()
+        };
+        let err = compare_machine_ids(&node, "worker-1", "anything").expect_err("must error");
+        assert!(
+            err.to_string().to_lowercase().contains("machineid")
+                || err.to_string().to_lowercase().contains("missing"),
+            "error must signal missing machine-id, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_compare_machine_ids_empty_node_machine_id_errors() {
+        // Defensive: a Node with status.nodeInfo.machineID="" (kubelet hasn't
+        // populated it yet) must fail-closed — we cannot verify identity.
+        let node = node_with_machine_id("");
+        let err = compare_machine_ids(&node, "worker-1", "anything").expect_err("must error");
+        assert!(
+            err.to_string().to_lowercase().contains("machineid")
+                || err.to_string().to_lowercase().contains("missing"),
+            "error must signal missing machine-id, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_compare_machine_ids_whitespace_node_machine_id_is_ignored() {
+        // A whitespace-only machineID is equivalent to absent — fail closed.
+        let node = node_with_machine_id("   \n");
+        let err = compare_machine_ids(&node, "worker-1", "anything").expect_err("must error");
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("machineid") || msg.contains("no status") || msg.contains("missing"),
+            "error must signal absent machine-id, got: {err}"
+        );
+    }
 }

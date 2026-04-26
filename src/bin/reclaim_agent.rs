@@ -39,10 +39,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context as _, Result};
+use anyhow::{anyhow, bail, Context as _, Result};
 use clap::Parser;
 use five_spot::reclaim_agent::{
-    already_requested, build_patch_body, configmap_to_config, scan_proc, Config, Match,
+    already_requested, build_patch_body, compare_machine_ids, configmap_to_config,
+    read_host_machine_id, scan_proc, Config, Match,
 };
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{ConfigMap, Node};
@@ -56,6 +57,11 @@ use tracing::{debug, error, info, warn};
 
 /// Default path the agent reads as `/proc`. Overridable for testing.
 const DEFAULT_PROC_ROOT: &str = "/proc";
+
+/// Default path the agent reads for the host machine-id. Mounted into
+/// the DaemonSet via a single-file hostPath; the file is set at host
+/// boot by `systemd-machine-id-setup` (or kairos / k0s-installer).
+const DEFAULT_MACHINE_ID_PATH: &str = "/etc/machine-id";
 
 /// Field manager name used on PATCH. Distinct from the main controller
 /// so audit logs can tell apart a controller-side write from an
@@ -89,6 +95,29 @@ struct Cli {
     /// for one-shot invocations and for smoke tests.
     #[clap(long)]
     oneshot: bool,
+
+    /// Path to the host machine-id file. Default `/etc/machine-id`. Mounted
+    /// into the DaemonSet via a single-file hostPath; override only for
+    /// tests / sandboxes where the file lives elsewhere.
+    #[clap(long, env = "MACHINE_ID_PATH", default_value = DEFAULT_MACHINE_ID_PATH)]
+    machine_id_path: PathBuf,
+
+    /// Skip the host-identity cross-check before patching the Node.
+    ///
+    /// Default: false (strict). Before each PATCH the agent fetches the
+    /// target Node, reads its `status.nodeInfo.machineID`, and refuses to
+    /// proceed if it does not match `/etc/machine-id` from the agent's
+    /// host. This closes the "modified DaemonSet hard-codes NODE_NAME"
+    /// impersonation vector documented in Phase 4 of the 2026-04-25
+    /// security audit roadmap.
+    ///
+    /// Set to true ONLY for environments where `/etc/machine-id` is
+    /// genuinely unavailable (containers without the host file mounted,
+    /// dev sandboxes, kubelet variants that do not populate
+    /// `status.nodeInfo.machineID`). The strict default is the safe
+    /// posture for production.
+    #[clap(long, env = "SKIP_HOST_ID_CHECK", default_value_t = false)]
+    skip_host_id_check: bool,
 }
 
 #[tokio::main]
@@ -104,6 +133,30 @@ async fn main() -> Result<()> {
         .await
         .context("build in-cluster kube client")?;
     let nodes: Api<Node> = Api::all(client.clone());
+
+    // Read host machine-id once at startup. Failing here (file missing,
+    // empty, etc.) is fatal in strict mode so an operator notices and
+    // either fixes the mount or sets --skip-host-id-check explicitly.
+    let host_machine_id: Option<String> = if cli.skip_host_id_check {
+        warn!(
+            machine_id_path = %cli.machine_id_path.display(),
+            "--skip-host-id-check set: agent will trust NODE_NAME without verifying \
+             /etc/machine-id. Use only when the file is genuinely unavailable."
+        );
+        None
+    } else {
+        let id = read_host_machine_id(&cli.machine_id_path).with_context(|| {
+            format!(
+                "read host machine-id from {} (set --skip-host-id-check=true to bypass)",
+                cli.machine_id_path.display()
+            )
+        })?;
+        info!(
+            machine_id_path = %cli.machine_id_path.display(),
+            "host machine-id loaded; will cross-check against Node.status.nodeInfo.machineID before each patch"
+        );
+        Some(id)
+    };
 
     if is_already_requested(&nodes, &cli.node_name).await? {
         info!(node = %cli.node_name, "reclaim annotation already present — exiting idempotently");
@@ -132,7 +185,15 @@ async fn main() -> Result<()> {
     // resubscribe inside `kube::runtime::watcher`.
     let watcher_handle = tokio::spawn(run_config_watcher(client, cm_name, tx));
 
-    let scanner_result = run_scanner(&nodes, &cli.node_name, &cli.proc_root, rx, cli.oneshot).await;
+    let scanner_result = run_scanner(
+        &nodes,
+        &cli.node_name,
+        &cli.proc_root,
+        rx,
+        cli.oneshot,
+        host_machine_id.as_deref(),
+    )
+    .await;
     watcher_handle.abort();
     scanner_result
 }
@@ -239,6 +300,7 @@ async fn run_scanner(
     proc_root: &Path,
     mut rx: watch::Receiver<Option<Config>>,
     oneshot: bool,
+    host_machine_id: Option<&str>,
 ) -> Result<()> {
     loop {
         let cfg = rx.borrow().clone();
@@ -264,7 +326,7 @@ async fn run_scanner(
             Some(cfg) => match scan_proc(proc_root, &cfg) {
                 Ok(Some(m)) => {
                     info!(pid = m.pid, pattern = %m.matched_pattern, "match → annotating node");
-                    annotate_node(nodes, node_name, &m).await?;
+                    annotate_node(nodes, node_name, &m, host_machine_id).await?;
                     return Ok(());
                 }
                 Ok(None) => {
@@ -283,7 +345,36 @@ async fn run_scanner(
     }
 }
 
-async fn annotate_node(nodes: &Api<Node>, node_name: &str, m: &Match) -> Result<()> {
+/// PATCH the Node with reclaim annotations.
+///
+/// Before the PATCH (when `host_machine_id` is `Some`) the agent fetches
+/// the target Node and cross-checks `status.nodeInfo.machineID` against
+/// the host machine-id loaded at startup — refusing to patch a Node
+/// that does not match. This blocks the
+/// "modified-DaemonSet → impersonate-victim-Node" attack documented in
+/// Phase 4 of the 2026-04-25 security audit roadmap.
+///
+/// `host_machine_id == None` means the operator passed
+/// `--skip-host-id-check`; the function falls back to the pre-Phase-4
+/// behaviour of trusting `NODE_NAME` blindly.
+async fn annotate_node(
+    nodes: &Api<Node>,
+    node_name: &str,
+    m: &Match,
+    host_machine_id: Option<&str>,
+) -> Result<()> {
+    if let Some(expected) = host_machine_id {
+        let node = nodes
+            .get(node_name)
+            .await
+            .with_context(|| format!("fetch Node/{node_name} for host-identity check"))?;
+        if let Err(e) = compare_machine_ids(&node, node_name, expected) {
+            error!(error = %e, "host-identity check failed — refusing to patch Node");
+            bail!(e);
+        }
+        debug!(node = %node_name, "host-identity check passed");
+    }
+
     let ts = chrono::Utc::now().to_rfc3339();
     let patch = build_patch_body(m, &ts);
     let params = PatchParams::apply(FIELD_MANAGER).force();

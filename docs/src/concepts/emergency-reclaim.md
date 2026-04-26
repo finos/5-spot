@@ -374,6 +374,80 @@ These are out of scope — recorded here because operators often ask:
 
 ---
 
+## Host-identity verification
+
+Before the agent PATCHes any Node with reclaim annotations, it
+cross-checks the host's `/etc/machine-id` against the target Node's
+`status.nodeInfo.machineID`. Both are populated from the same source
+(`systemd-machine-id-setup` on host boot; kubelet on Node registration),
+so they agree on a healthy node — and a mismatch is a strong signal
+that the agent is about to write to the wrong Node.
+
+### Why
+
+This closes the *modified-DaemonSet → impersonate-victim-Node* path:
+
+1. Without the check, the agent trusts whatever value `NODE_NAME` carries
+   (sourced from the downward API: `spec.nodeName`).
+2. An attacker with `update daemonsets` in `5spot-system` can override
+   `NODE_NAME` to a hard-coded value (e.g. `victim-node`).
+3. The agent runs on host A, sees a process match, and PATCHes
+   `victim-node` instead of host A — triggering `Phase::EmergencyRemove`
+   on a node it has no business reclaiming.
+
+The cross-check makes the impersonation visible: the spoofed Node's
+`status.nodeInfo.machineID` belongs to a different host, so the
+comparison fails and the agent refuses to write.
+
+The exploit precondition (`update daemonsets`) is cluster-admin in most
+clusters, so this is **defence-in-depth** — but the check is cheap and
+removes a category of impersonation. Filed as Phase 4 of the
+2026-04-25 security audit roadmap.
+
+### Modes
+
+| Mode | Flag / env | Behaviour |
+|---|---|---|
+| **Strict (default)** | `--skip-host-id-check=false` / `SKIP_HOST_ID_CHECK=false` | Read `/etc/machine-id` at startup; fail to start if missing or empty. Before each PATCH, fetch the target Node and refuse if `status.nodeInfo.machineID` does not match. |
+| Bypass | `--skip-host-id-check=true` / `SKIP_HOST_ID_CHECK=true` | Trust `NODE_NAME` blindly (pre-Phase-4 behaviour). Use **only** when `/etc/machine-id` is genuinely unavailable: containers without the host file mounted, dev sandboxes, kubelet variants that do not populate `status.nodeInfo.machineID`. |
+
+### How `/etc/machine-id` is exposed
+
+The DaemonSet mounts the host file as a single read-only file (not the
+whole `/etc`):
+
+```yaml
+volumeMounts:
+  - name: host-machine-id
+    mountPath: /host/etc/machine-id
+    readOnly: true
+volumes:
+  - name: host-machine-id
+    hostPath:
+      path: /etc/machine-id
+      type: File
+```
+
+`type: File` makes kubelet refuse to schedule the pod if the host file
+is missing — fail-fast is preferable to silently degrading to skip-check
+mode. The agent reads the path from `MACHINE_ID_PATH` (default
+`/host/etc/machine-id` when deployed via the manifest).
+
+### What it does NOT defend against
+
+- A compromise that lets an attacker modify *both* the DaemonSet **and**
+  the host's `/etc/machine-id` (would require root on the node).
+- Kubelet bugs or out-of-band manipulation of
+  `Node.status.nodeInfo.machineID`. The kubelet writes this field; if
+  the cluster trusts a misbehaving kubelet, identity verification has
+  no anchor.
+
+Both gaps are out of scope for a node-side agent; remediating them
+requires a stronger node-attestation primitive (TPM-backed identity,
+SPIFFE SVIDs, etc.) — not in this controller's scope.
+
+---
+
 ## Related
 
 - [Machine Lifecycle](./machine-lifecycle.md) — full phase state machine including `EmergencyRemove`

@@ -111,6 +111,23 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            # MACHINE_ID_PATH points at the host's /etc/machine-id, mounted
+            # read-only via the host-machine-id volume below. The agent
+            # cross-checks its value against the target Node's
+            # status.nodeInfo.machineID before each PATCH; a mismatch
+            # refuses the write. Closes the "modified-DaemonSet
+            # → impersonate-victim-Node" attack documented in Phase 4 of
+            # the 2026-04-25 security audit roadmap.
+            - name: MACHINE_ID_PATH
+              value: "/host/etc/machine-id"
+            # SKIP_HOST_ID_CHECK opts out of the cross-check above. Default
+            # is "false" (strict). Enable ONLY for environments where
+            # /etc/machine-id is genuinely unavailable (containers without
+            # the host file, dev sandboxes, kubelet variants that do not
+            # populate status.nodeInfo.machineID). Production must stay
+            # strict — leaving this commented out keeps the binary default.
+            # - name: SKIP_HOST_ID_CHECK
+            #   value: "true"
           # Reading every `/proc/<pid>/comm` + `cmdline` requires root;
           # CAP_SYS_PTRACE is not strictly required for rung 1 but is kept
           # dropped. CAP_NET_ADMIN will be re-added for rung 2 (netlink
@@ -141,6 +158,15 @@ spec:
             - name: host-proc
               mountPath: /host/proc
               readOnly: true
+            # Single-file mount of the host's /etc/machine-id into
+            # /host/etc/machine-id (matches MACHINE_ID_PATH above).
+            # Mounted read-only — the agent only ever reads it. Single
+            # file rather than the whole /etc to minimise host filesystem
+            # exposure: the only path the agent needs is machine-id, so
+            # everything else stays out of the container's view.
+            - name: host-machine-id
+              mountPath: /host/etc/machine-id
+              readOnly: true
       volumes:
         # Host /proc — the detection surface. Mounted read-only; the agent
         # never writes to /proc, only reads comm + cmdline.
@@ -148,6 +174,16 @@ spec:
           hostPath:
             path: /proc
             type: Directory
+        # Host machine-id (Phase 4 of the 2026-04-25 security audit
+        # roadmap). hostPath type=File ensures kubelet refuses to
+        # schedule the pod if the file is missing on the host — fail
+        # fast rather than silently degrading to skip-check mode. The
+        # file is written at host boot by systemd-machine-id-setup
+        # (or kairos / k0s-installer) and is stable across reboots.
+        - name: host-machine-id
+          hostPath:
+            path: /etc/machine-id
+            type: File
         # No ConfigMap volume. The agent uses the kube API directly to watch
         # its per-node ConfigMap (reclaim-agent-<NODE_NAME>) and reloads
         # live on every change — see src/bin/reclaim_agent.rs. This sidesteps

@@ -252,6 +252,144 @@ pub use crate::constants::RECLAIM_CONFIG_DATA_KEY;
 // ConfigMap → Config bridge (reactive watch path)
 // ============================================================================
 
+// ============================================================================
+// Host-identity verification — Phase 4 of the 2026-04-25 security audit
+//
+// Closes the "modified DaemonSet hard-codes NODE_NAME" attack: an
+// attacker with `update daemonsets` could change the agent's NODE_NAME
+// env var to a victim node, causing the agent to PATCH the wrong Node
+// with reclaim annotations. The fix cross-checks /etc/machine-id (the
+// host's stable identifier set by systemd-machine-id-setup / kairos /
+// k0s-installer) against the target Node's status.nodeInfo.machineID
+// (which kubelet populates from the same source). Mismatch ⇒ refuse
+// to patch.
+//
+// The exploit precondition (`update daemonsets`) is cluster-admin in
+// most clusters, so this is defence-in-depth — but the binding makes
+// the cross-check cheap and removes a category of impersonation.
+// ============================================================================
+
+/// Errors returned by host-identity verification.
+#[derive(Debug, thiserror::Error)]
+pub enum HostIdentityError {
+    /// The machine-id file could not be read (e.g. missing mount,
+    /// permission denied). The agent should refuse to patch.
+    #[error("cannot read host machine-id from {path}: {source}")]
+    ReadFailed {
+        /// Path the agent tried to read (default `/etc/machine-id`).
+        path: String,
+        /// Underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+    /// The machine-id file exists but is empty or whitespace-only —
+    /// indistinguishable from "no host identity" and must fail closed.
+    #[error("host machine-id at {path} is empty or whitespace-only")]
+    Empty {
+        /// Path to the offending file.
+        path: String,
+    },
+    /// The fetched Node's `status.nodeInfo.machineID` does not match
+    /// the agent's host machine-id. This is the attack-blocking case —
+    /// either the DaemonSet was tampered with to point at a wrong
+    /// Node, or kubelet+/etc/machine-id are inconsistent on the host.
+    #[error(
+        "host identity mismatch — refusing to patch wrong Node: agent /etc/machine-id={host_id:?}, \
+         Node/{node_name}.status.nodeInfo.machineID={node_id:?}"
+    )]
+    Mismatch {
+        /// Machine-id read from the agent's filesystem.
+        host_id: String,
+        /// Machine-id reported by the target Node's kubelet.
+        node_id: String,
+        /// Name of the Node the agent was about to patch.
+        node_name: String,
+    },
+    /// The Node has no `status.nodeInfo.machineID` (kubelet hasn't
+    /// populated it yet, or status is absent). Fail closed: we cannot
+    /// verify identity.
+    #[error("Node/{node_name} has no status.nodeInfo.machineID; cannot verify host identity")]
+    NodeMachineIdMissing {
+        /// Name of the Node missing the field.
+        node_name: String,
+    },
+}
+
+/// Read the host machine-id from disk and return it trimmed.
+///
+/// In production the path is `/etc/machine-id`; tests pass a tempfile.
+/// The file is single-line `man machine-id` format (32 hex digits +
+/// trailing newline) — we trim whitespace but otherwise accept any
+/// non-empty content for compatibility with kairos / k0s-installer
+/// variants that may format slightly differently.
+///
+/// # Errors
+/// - [`HostIdentityError::ReadFailed`] if the file cannot be read.
+/// - [`HostIdentityError::Empty`] if the file is empty or contains only
+///   whitespace.
+pub fn read_host_machine_id(path: &Path) -> Result<String, HostIdentityError> {
+    let raw = fs::read_to_string(path).map_err(|e| HostIdentityError::ReadFailed {
+        path: path.display().to_string(),
+        source: e,
+    })?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(HostIdentityError::Empty {
+            path: path.display().to_string(),
+        });
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Compare a Node's `status.nodeInfo.machineID` against an expected
+/// host machine-id.
+///
+/// Pure — the caller fetches the Node via the kube API, then this
+/// function does the comparison and produces a precise error message
+/// useful for forensics (both ids appear in the message so an
+/// operator chasing a security alert sees the spoofed vs expected
+/// values directly).
+///
+/// # Errors
+/// - [`HostIdentityError::NodeMachineIdMissing`] when the Node has no
+///   `status`, no `nodeInfo`, or an empty/whitespace-only `machineID`.
+/// - [`HostIdentityError::Mismatch`] when both values are present and
+///   differ.
+pub fn compare_machine_ids(
+    node: &k8s_openapi::api::core::v1::Node,
+    node_name: &str,
+    expected_host_id: &str,
+) -> Result<(), HostIdentityError> {
+    let node_id_raw = node
+        .status
+        .as_ref()
+        .and_then(|s| s.node_info.as_ref())
+        .map(|info| info.machine_id.as_str());
+
+    let node_id = match node_id_raw {
+        Some(s) => s.trim(),
+        None => {
+            return Err(HostIdentityError::NodeMachineIdMissing {
+                node_name: node_name.to_string(),
+            })
+        }
+    };
+
+    if node_id.is_empty() {
+        return Err(HostIdentityError::NodeMachineIdMissing {
+            node_name: node_name.to_string(),
+        });
+    }
+    if node_id != expected_host_id {
+        return Err(HostIdentityError::Mismatch {
+            host_id: expected_host_id.to_string(),
+            node_id: node_id.to_string(),
+            node_name: node_name.to_string(),
+        });
+    }
+    Ok(())
+}
+
 /// Translate a `ConfigMap` (as observed by a kube watcher) into an
 /// `Option<Config>`:
 ///

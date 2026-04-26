@@ -9,6 +9,66 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-04-26 00:30] - Phase 4 of security audit: reclaim-agent host-identity verification
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reclaim_agent.rs`: new pure helpers `read_host_machine_id(path)`
+  and `compare_machine_ids(node, node_name, expected_host_id)` plus a
+  `HostIdentityError` enum with four variants (`ReadFailed`, `Empty`,
+  `Mismatch`, `NodeMachineIdMissing`). Both helpers are I/O-light and
+  unit-testable without a kube client.
+- `src/bin/reclaim_agent.rs`: read `/etc/machine-id` once at startup
+  via `read_host_machine_id`; cache as `Option<String>`. Before each
+  `annotate_node` PATCH, fetch the target Node and call
+  `compare_machine_ids` against the cached host id. On mismatch the
+  agent logs `error!` and bails (no PATCH). New `--machine-id-path`
+  (env `MACHINE_ID_PATH`, default `/etc/machine-id`) and
+  `--skip-host-id-check` (env `SKIP_HOST_ID_CHECK`, default false /
+  strict) CLI flags.
+- `deploy/node-agent/daemonset.yaml`:
+  - Single-file read-only mount of `/etc/machine-id` →
+    `/host/etc/machine-id`. `hostPath.type: File` so kubelet fails to
+    schedule the pod if the host file is missing (fail-fast over
+    silent skip-check).
+  - `MACHINE_ID_PATH=/host/etc/machine-id` env var to point the agent
+    at the mounted location.
+  - Commented `SKIP_HOST_ID_CHECK` env var documenting the bypass for
+    operators who deploy in environments without `/etc/machine-id`.
+- `src/reclaim_agent_tests.rs`: 9 new tests covering both helpers —
+  `read_host_machine_id` happy path / missing file / empty file /
+  whitespace-only file; `compare_machine_ids` match / mismatch (asserts
+  both ids appear in the error message for forensics) / no status /
+  empty machine-id / whitespace-only machine-id.
+- `docs/src/concepts/emergency-reclaim.md`: new "Host-identity
+  verification" section documenting the contract, the two modes
+  (strict default vs `--skip-host-id-check` opt-out), the mount shape
+  in the DaemonSet, and what the check does NOT defend against
+  (TPM-grade attestation is out of scope).
+
+### Why
+Phase 4 of the 2026-04-25 security audit roadmap. Without the
+cross-check, an attacker with `update daemonsets` in `5spot-system`
+could override the agent's `NODE_NAME` env var (downward API value →
+hard-coded victim) and cause the agent to trigger emergency-reclaim on
+a Node it has no business touching. The exploit precondition is
+cluster-admin-equivalent in most clusters, so this is filed Low
+severity / defence-in-depth, but the binding cost is small and removes
+the impersonation primitive entirely.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (DaemonSet manifest now mounts
+      `/etc/machine-id`; existing deployments need `kubectl apply` of
+      the new manifest. Hosts that lack `/etc/machine-id` will fail
+      pod scheduling — operators must either populate the host file
+      or set `SKIP_HOST_ID_CHECK=true` for those nodes.)
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
 ## [2026-04-25 22:00] - Phase 3 of security audit: route Node→SM via canonical CAPI Machine
 
 **Author:** Erick Bourgeois
