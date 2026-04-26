@@ -9,6 +9,71 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-04-25 22:00] - Phase 3 of security audit: route Node→SM via canonical CAPI Machine
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/helpers.rs`: new
+  `node_to_scheduled_machines_via_machine(node, machines)` mapper. Routes
+  Node events to owning ScheduledMachines via the canonical CAPI Machine
+  ownership chain — `Machine.status.nodeRef.name` (written only by the
+  CAPI controller) plus the controller-stamped
+  `LABEL_SCHEDULED_MACHINE` label on the Machine. Both legs are
+  write-controlled by trusted controllers, not by the tenant.
+- `src/reconcilers/helpers.rs`: `node_to_scheduled_machines` (the
+  pre-existing mapper that trusted `SM.status.nodeRef.name`) marked
+  `#[deprecated(since = "0.1.2")]` with a note pointing at the
+  replacement. Kept exported and tested for one release so any external
+  caller (none expected) gets a compile-time pointer.
+- `src/reconcilers/mod.rs`: re-export the new symbol; gate the legacy
+  re-export with `#[allow(deprecated)]`.
+- `src/main.rs`: wire a standalone `kube::runtime::reflector` for CAPI
+  Machines (filtered by `LABEL_SCHEDULED_MACHINE`). Spawn its watcher in
+  the background; pass the reader handle into the Node watch closure.
+  Switch the Node mapper from `node_to_scheduled_machines` to
+  `node_to_scheduled_machines_via_machine`. The
+  `Controller::watches_with` Machine watch keeps its own internal
+  reflector for the existing Machine→SM route — kube-rs does not expose
+  that internal store, so the secondary watch is intentional. Doubled
+  watch traffic is minor (same kind, same label selector).
+- `src/reconcilers/helpers_tests.rs`: 9 new tests covering the
+  canonical-Machine mapper:
+  - happy-path single-Machine match returns owning SM
+  - Node with no owning Machine → NOT enqueued (closes spoof window)
+  - Machine for a different node → NOT enqueued (canonical wins over
+    spoofed SM status)
+  - unlabelled / namespace-less / no-nodeRef Machine → ignored
+  - Node without metadata.name → ignored
+  - whitespace-only label value → ignored (mirrors
+    `machine_to_scheduled_machine`'s defensive trim)
+  - multiple Machines for same Node → both owning SMs enqueued
+- Existing `test_node_to_sms_*` tests for the deprecated mapper kept
+  with per-test `#[allow(deprecated)]` annotations so the legacy
+  surface stays covered until removal.
+
+### Why
+Phase 3 of the 2026-04-25 security audit roadmap. The pre-existing
+`node_to_scheduled_machines` mapper filtered SMs by
+`status.nodeRef.name`, which is writable by anyone with `patch
+scheduledmachines/status` on the resource. A tenant could write a
+fast-changing node name (e.g. a busy worker that's frequently
+updating) into status to amplify how many SM reconciliations they
+caused per Node update — a CPU DoS amplifier. The drain target itself
+was never affected (the reconciler always reads canonical
+`Machine.status.nodeRef` via `get_node_from_machine`), so this was
+verified as Low severity, but the routing change closes the
+amplification regardless of how the reconciler evolves.
+
+### Impact
+- [ ] Breaking change (deprecated symbol still exported)
+- [ ] Requires cluster rollout (no schema or RBAC changes)
+- [x] Config change only (in-binary; one extra Machine watch on the
+      same selector that already exists)
+- [ ] Documentation only
+
+---
+
 ## [2026-04-25 18:00] - Phase 2 of security audit: finalizer cleanup force-remove on PDB stall
 
 **Author:** Erick Bourgeois

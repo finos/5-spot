@@ -28,15 +28,19 @@ use five_spot::health::{start_health_server, HealthState};
 use five_spot::labels::LABEL_SCHEDULED_MACHINE;
 use five_spot::metrics::init_controller_info;
 use five_spot::reconcilers::{
-    error_policy, machine_to_scheduled_machine, node_to_scheduled_machines,
+    error_policy, machine_to_scheduled_machine, node_to_scheduled_machines_via_machine,
     reconcile_scheduled_machine, Context,
 };
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use k8s_openapi::api::core::v1::Node;
 use kube::{
     api::{ApiResource, GroupVersionKind, ListParams},
     core::DynamicObject,
-    runtime::{watcher::Config, Controller},
+    runtime::{
+        reflector,
+        watcher::{self, Config},
+        Controller, WatchStreamExt,
+    },
     Api, Client,
 };
 use tracing::{error, info, warn};
@@ -276,10 +280,21 @@ async fn main() -> Result<()> {
     info!("Starting controller for ScheduledMachine resources");
 
     // Secondary watches — event-driven reactivity without polling.
-    // 1. CAPI Machine (dynamic GVK) — filtered by the scheduled-machine label we
-    //    already stamp on every Machine we create. Reverse-mapped via that label.
-    // 2. Kubernetes Node — name-matched against every SM's status.nodeRef.name
-    //    using a snapshot of the controller's own primary-resource Store.
+    //
+    // 1. CAPI Machine (dynamic GVK), filtered by the scheduled-machine label
+    //    we stamp on every Machine we create. Reverse-mapped via that label
+    //    (`machine_to_scheduled_machine`). The `Controller::watches_with`
+    //    call below maintains its own internal reflector for this watch.
+    //
+    // 2. Kubernetes Node, mapped to owning ScheduledMachines via the
+    //    canonical CAPI Machine ownership chain
+    //    (`node_to_scheduled_machines_via_machine`). This requires its own
+    //    Machine reflector store, separate from #1's internal one — kube-rs
+    //    `watches_with` does not expose its internal store. The doubled
+    //    watch traffic is minor: same kind, same label selector. Routing
+    //    via the canonical Machine instead of the tenant-writable
+    //    `SM.status.nodeRef.name` closes the watch-amplification vector
+    //    documented in Phase 3 of the 2026-04-25 security audit roadmap.
     let machine_ar = ApiResource::from_gvk_with_plural(
         &GroupVersionKind::gvk(CAPI_GROUP, CAPI_MACHINE_API_VERSION, "Machine"),
         CAPI_RESOURCE_MACHINES,
@@ -287,8 +302,29 @@ async fn main() -> Result<()> {
     let machines_api: Api<DynamicObject> = Api::all_with(client.clone(), &machine_ar);
     let nodes_api: Api<Node> = Api::all(client.clone());
 
+    // Standalone Machine reflector for the Node→SM mapper. We build its
+    // store here, spawn the watcher in the background, and clone the
+    // reader handle into the Node closure below. The store starts empty
+    // and fills as Machine watch events arrive — Node events that fire
+    // during the warmup window will see an empty store and enqueue
+    // nothing, which is correct (no Machine yet ⇒ no SM owns this Node).
+    let machine_writer: reflector::store::Writer<DynamicObject> =
+        reflector::store::Writer::new(machine_ar.clone());
+    let machine_store = machine_writer.as_reader();
+    let machine_reflector_machines_api = machines_api.clone();
+    tokio::spawn(async move {
+        let stream = watcher::watcher(
+            machine_reflector_machines_api,
+            watcher::Config::default().labels(LABEL_SCHEDULED_MACHINE),
+        )
+        .reflect(machine_writer)
+        .applied_objects();
+        if let Err(e) = stream.try_for_each(|_| async { Ok(()) }).await {
+            error!(error = %e, "Machine reflector for Node→SM mapping terminated");
+        }
+    });
+
     let controller = Controller::new(scheduled_machines, Config::default());
-    let sm_store = controller.store();
 
     controller
         .watches_with(
@@ -298,8 +334,14 @@ async fn main() -> Result<()> {
             |machine: DynamicObject| machine_to_scheduled_machine(&machine),
         )
         .watches(nodes_api, Config::default(), move |node: Node| {
-            let snapshot = sm_store.state();
-            node_to_scheduled_machines(&node, snapshot.iter().map(std::convert::AsRef::as_ref))
+            // Snapshot the standalone Machine reflector's store. Each
+            // entry is an Arc<DynamicObject>; deref through AsRef to feed
+            // the pure mapper.
+            let machines_snapshot = machine_store.state();
+            node_to_scheduled_machines_via_machine(
+                &node,
+                machines_snapshot.iter().map(std::convert::AsRef::as_ref),
+            )
         })
         .shutdown_on_signal()
         .run(reconcile_scheduled_machine, error_policy, context)

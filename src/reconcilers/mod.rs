@@ -18,9 +18,11 @@ mod helpers;
 pub mod scheduled_machine;
 
 // Re-export main types and functions
+#[allow(deprecated)] // re-export of legacy node_to_scheduled_machines for one release
 pub use helpers::{
     error_policy, evaluate_schedule, machine_to_scheduled_machine, node_to_scheduled_machines,
-    parse_duration, reconcile_node_taints, should_process_resource, validate_cluster_name,
-    validate_kill_if_commands, NodeTaintReconcileOutcome, ReconcileNodeTaintsInput,
+    node_to_scheduled_machines_via_machine, parse_duration, reconcile_node_taints,
+    should_process_resource, validate_cluster_name, validate_kill_if_commands,
+    NodeTaintReconcileOutcome, ReconcileNodeTaintsInput,
 };
 pub use scheduled_machine::{reconcile_scheduled_machine, Context, ReconcilerError};

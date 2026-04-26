@@ -1750,6 +1750,12 @@ mod tests {
     // node_to_scheduled_machines — name-lookup mapper (Phase 4)
     //   A Node event → ObjectRef<ScheduledMachine> for each SM whose
     //   status.nodeRef.name matches node.metadata.name.
+    //
+    // DEPRECATED in 0.1.2 — superseded by
+    // node_to_scheduled_machines_via_machine (Phase 3 of the 2026-04-25
+    // security audit). Tests retained to verify legacy behaviour for
+    // one release before the symbol is removed; the intentional
+    // deprecated-call sites are gated by allow(deprecated) below.
     // ========================================================================
 
     fn sm_with_node_ref(
@@ -1819,6 +1825,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the legacy mapper kept for one release
     fn test_node_to_sms_single_match_returns_one_ref() {
         let node = node_named("worker-1");
         let sms = [
@@ -1832,6 +1839,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the legacy mapper kept for one release
     fn test_node_to_sms_multiple_matches_returns_all() {
         // Defensive: if two SMs claim the same Node (misconfiguration), reconcile BOTH
         // so the operator can surface the conflict via status.
@@ -1848,6 +1856,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the legacy mapper kept for one release
     fn test_node_to_sms_no_match_returns_empty() {
         let node = node_named("worker-999");
         let sms = [
@@ -1858,6 +1867,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the legacy mapper kept for one release
     fn test_node_to_sms_empty_list_returns_empty() {
         let node = node_named("worker-1");
         let sms: Vec<crate::crd::ScheduledMachine> = Vec::new();
@@ -1865,6 +1875,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the legacy mapper kept for one release
     fn test_node_to_sms_sm_without_status_is_skipped() {
         let node = node_named("worker-1");
         let sms = [sm_with_node_ref("sm-a", "default", None)];
@@ -1875,6 +1886,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the legacy mapper kept for one release
     fn test_node_to_sms_node_with_no_name_returns_empty() {
         // Defensive: Node without metadata.name should not match anything — especially
         // not SMs that also happen to have an empty/missing nodeRef.name.
@@ -1884,6 +1896,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the legacy mapper kept for one release
     fn test_node_to_sms_empty_node_ref_name_is_not_matched() {
         // SM with an empty-string nodeRef.name must never match anything.
         let node = node_named("worker-1");
@@ -3700,5 +3713,188 @@ mod tests {
             !ctx.force_finalizer_on_timeout,
             "with_force_finalizer_on_timeout(false) must opt into strict-cleanup mode"
         );
+    }
+
+    // ========================================================================
+    // node_to_scheduled_machines_via_machine — Phase 3 hardening
+    //
+    // Routes Node events through the canonical CAPI Machine ownership chain
+    // (Node → Machine via Machine.status.nodeRef.name → SM via the
+    // controller-stamped LABEL_SCHEDULED_MACHINE label) instead of the
+    // tenant-writable SM.status.nodeRef.name. Closes the watch-amplification
+    // vector where a tenant with `patch scheduledmachines/status` could pin
+    // controller CPU by writing a fast-changing node name into status.
+    // ========================================================================
+
+    use crate::reconcilers::helpers::node_to_scheduled_machines_via_machine;
+
+    /// Build a CAPI Machine `DynamicObject` carrying `metadata.labels`,
+    /// `metadata.namespace`, and an optional `status.nodeRef.name` so the
+    /// new mapper has something realistic to consume.
+    fn machine_with_label_and_node_ref(
+        sm_label: Option<&str>,
+        namespace: Option<&str>,
+        node_ref_name: Option<&str>,
+    ) -> kube::core::DynamicObject {
+        let mut meta = kube::core::ObjectMeta::default();
+        if let Some(sm) = sm_label {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert(
+                crate::labels::LABEL_SCHEDULED_MACHINE.to_string(),
+                sm.to_string(),
+            );
+            meta.labels = Some(m);
+        }
+        meta.namespace = namespace.map(std::string::ToString::to_string);
+        let data = match node_ref_name {
+            Some(n) => serde_json::json!({ "status": { "nodeRef": { "name": n } } }),
+            None => serde_json::json!({}),
+        };
+        kube::core::DynamicObject {
+            types: None,
+            metadata: meta,
+            data,
+        }
+    }
+
+    #[test]
+    fn test_via_machine_match_returns_owning_sm() {
+        let node = node_named("worker-1");
+        let machines = [machine_with_label_and_node_ref(
+            Some("sm-a"),
+            Some("team-ns"),
+            Some("worker-1"),
+        )];
+        let refs = node_to_scheduled_machines_via_machine(&node, machines.iter());
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].name, "sm-a");
+        assert_eq!(refs[0].namespace.as_deref(), Some("team-ns"));
+    }
+
+    #[test]
+    fn test_via_machine_node_with_no_owning_machine_returns_empty() {
+        // Node update for a host that no Machine claims — must NOT enqueue
+        // any SM, even if some SM has a stale or spoofed status.nodeRef.
+        // (No Machine vouches for the relationship, so nothing to enqueue.)
+        let node = node_named("victim-node");
+        let machines: Vec<kube::core::DynamicObject> = Vec::new();
+        let refs = node_to_scheduled_machines_via_machine(&node, machines.iter());
+        assert!(
+            refs.is_empty(),
+            "no Machine vouches for victim-node ⇒ no SM enqueued"
+        );
+    }
+
+    #[test]
+    fn test_via_machine_machine_for_different_node_is_ignored() {
+        // The closing-the-status-spoof case: there's an SM with an owning
+        // Machine, but the Machine's canonical nodeRef points at a DIFFERENT
+        // node than the one in the event. Even if a malicious actor wrote
+        // SM.status.nodeRef = "victim-node" via patch status, this mapper
+        // looks at the canonical Machine.status.nodeRef and ignores the SM.
+        let node = node_named("victim-node");
+        let machines = [machine_with_label_and_node_ref(
+            Some("sm-a"),
+            Some("ns"),
+            Some("worker-1"), // canonical: NOT victim-node
+        )];
+        let refs = node_to_scheduled_machines_via_machine(&node, machines.iter());
+        assert!(
+            refs.is_empty(),
+            "Machine for a different node must not enqueue the SM on victim-node updates"
+        );
+    }
+
+    #[test]
+    fn test_via_machine_unlabelled_machine_is_ignored() {
+        // A Machine that matches the node but has no LABEL_SCHEDULED_MACHINE
+        // is not one of ours — ignore it (do NOT enqueue anything).
+        let node = node_named("worker-1");
+        let machines = [machine_with_label_and_node_ref(
+            None,
+            Some("ns"),
+            Some("worker-1"),
+        )];
+        let refs = node_to_scheduled_machines_via_machine(&node, machines.iter());
+        assert!(
+            refs.is_empty(),
+            "unlabelled Machine must not enqueue any SM"
+        );
+    }
+
+    #[test]
+    fn test_via_machine_machine_without_namespace_is_ignored() {
+        // Defensive: ObjectRef requires namespace. A Machine without one is
+        // malformed and must not produce a reconcile request.
+        let node = node_named("worker-1");
+        let machines = [machine_with_label_and_node_ref(
+            Some("sm-a"),
+            None,
+            Some("worker-1"),
+        )];
+        let refs = node_to_scheduled_machines_via_machine(&node, machines.iter());
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn test_via_machine_machine_without_node_ref_is_ignored() {
+        // Machine has no status.nodeRef yet (CAPI hasn't bound a Node).
+        // Cannot match a Node event — ignore.
+        let node = node_named("worker-1");
+        let machines = [machine_with_label_and_node_ref(
+            Some("sm-a"),
+            Some("ns"),
+            None,
+        )];
+        let refs = node_to_scheduled_machines_via_machine(&node, machines.iter());
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn test_via_machine_multiple_machines_for_same_node_returns_all_owning_sms() {
+        // Defensive: if two Machines claim the same Node (misconfiguration
+        // or replay race), reconcile BOTH owning SMs so the operator can
+        // surface the conflict via status.
+        let node = node_named("worker-1");
+        let machines = [
+            machine_with_label_and_node_ref(Some("sm-a"), Some("ns-1"), Some("worker-1")),
+            machine_with_label_and_node_ref(Some("sm-b"), Some("ns-2"), Some("worker-1")),
+        ];
+        let refs = node_to_scheduled_machines_via_machine(&node, machines.iter());
+        assert_eq!(refs.len(), 2, "both conflicting SMs must be enqueued");
+        let names: std::collections::HashSet<_> = refs.iter().map(|r| r.name.as_str()).collect();
+        assert!(names.contains("sm-a"));
+        assert!(names.contains("sm-b"));
+    }
+
+    #[test]
+    fn test_via_machine_node_without_name_returns_empty() {
+        // A Node event with no metadata.name is degenerate — never enqueue.
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+        let node = k8s_openapi::api::core::v1::Node {
+            metadata: ObjectMeta::default(),
+            ..Default::default()
+        };
+        let machines = [machine_with_label_and_node_ref(
+            Some("sm-a"),
+            Some("ns"),
+            Some(""),
+        )];
+        let refs = node_to_scheduled_machines_via_machine(&node, machines.iter());
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn test_via_machine_label_with_whitespace_is_rejected() {
+        // Mirrors machine_to_scheduled_machine's defensive trim+empty check
+        // — a whitespace-only label value is invalid and must not enqueue.
+        let node = node_named("worker-1");
+        let machines = [machine_with_label_and_node_ref(
+            Some("   "),
+            Some("ns"),
+            Some("worker-1"),
+        )];
+        let refs = node_to_scheduled_machines_via_machine(&node, machines.iter());
+        assert!(refs.is_empty());
     }
 }

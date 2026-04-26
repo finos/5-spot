@@ -1600,10 +1600,32 @@ pub fn machine_to_scheduled_machine(
 /// Map a `Node` event to all `ScheduledMachine`s whose
 /// `status.nodeRef.name == node.metadata.name`.
 ///
+/// **DEPRECATED — replaced by [`node_to_scheduled_machines_via_machine`].**
+/// This function trusts the SM's own `status.nodeRef.name`, which is
+/// writable by anyone with `patch scheduledmachines/status` on the
+/// resource. A tenant could write a fast-changing node name into
+/// status to amplify how many SM reconciliations they trigger from
+/// unrelated Node events (CPU DoS amplifier — see Phase 3 of the
+/// 2026-04-25 security audit roadmap).
+///
+/// The replacement routes Node → Machine (canonical
+/// `Machine.status.nodeRef.name` written by CAPI) → SM (via the
+/// controller-stamped `LABEL_SCHEDULED_MACHINE` label on the Machine),
+/// closing the spoof window.
+///
+/// Kept exported with `#[deprecated]` for one release so external
+/// callers (none expected) get a compile-time pointer at the
+/// replacement.
+///
 /// Runs `O(N)` over the supplied SM iterator. Fine at small scale (tens to
 /// hundreds of SMs); if the cluster ever hosts thousands, swap in a reverse
 /// index keyed by the last-observed `nodeRef.name`.
 #[must_use]
+#[deprecated(
+    since = "0.1.2",
+    note = "Trusts tenant-writable SM.status.nodeRef.name; use \
+            node_to_scheduled_machines_via_machine for canonical-Machine routing."
+)]
 pub fn node_to_scheduled_machines<'a, I>(
     node: &k8s_openapi::api::core::v1::Node,
     scheduled_machines: I,
@@ -1629,6 +1651,95 @@ where
             Some(
                 kube::runtime::reflector::ObjectRef::<ScheduledMachine>::new(name)
                     .within(namespace),
+            )
+        })
+        .collect()
+}
+
+/// Map a `Node` event to all `ScheduledMachine`s whose **owning CAPI Machine**
+/// has `status.nodeRef.name == node.metadata.name`.
+///
+/// This is the canonical-Machine replacement for
+/// [`node_to_scheduled_machines`]. Routing via the CAPI Machine instead of the
+/// SM's own status closes the watch-amplification vector where a tenant with
+/// `patch scheduledmachines/status` could spoof `SM.status.nodeRef.name` to
+/// pin controller CPU on unrelated Node updates: only the CAPI controller
+/// writes `Machine.status.nodeRef`, and only the 5-Spot controller stamps
+/// the [`crate::labels::LABEL_SCHEDULED_MACHINE`] label that walks back to
+/// the SM. Both legs are write-controlled by trusted controllers, not by
+/// the tenant.
+///
+/// Algorithm (per Machine in the supplied iterator):
+/// 1. Read `metadata.namespace` — required to build a namespaced
+///    `ObjectRef`. Skip Machines without one.
+/// 2. Read `status.nodeRef.name` from the Machine's dynamic `data` field
+///    (`DynamicObject` because CAPI types are not statically modelled in
+///    this codebase). Skip Machines whose `nodeRef` is absent or doesn't
+///    match the node's name.
+/// 3. Read `metadata.labels[LABEL_SCHEDULED_MACHINE]` to identify the
+///    owning SM. Skip if the label is missing, empty, or whitespace-only
+///    (mirrors the same defensive trim+empty check in
+///    [`machine_to_scheduled_machine`]).
+/// 4. Emit one [`kube::runtime::reflector::ObjectRef`] per match.
+///
+/// Returns an empty `Vec` for the degenerate case where the Node itself
+/// has no `metadata.name` — there is nothing meaningful to match against.
+///
+/// Runs `O(N)` over the supplied Machine iterator. With one Machine per
+/// SM and tens-to-hundreds of SMs per cluster this is comfortably cheap;
+/// at thousands of SMs, build a reverse index keyed by node name.
+///
+/// # Threat model context
+/// Filed as Phase 3 of the 2026-04-25 security audit roadmap (severity:
+/// Low — CPU amplification, not a drain pivot). The reconciler always
+/// reads canonical `Machine.status.nodeRef` via `get_node_from_machine`
+/// before draining, so the spoof never reached the drain target — but
+/// it still amplified per-SM CPU cost. This routing change makes the
+/// amplification impossible regardless of how the reconciler evolves.
+#[must_use]
+pub fn node_to_scheduled_machines_via_machine<'a, M>(
+    node: &k8s_openapi::api::core::v1::Node,
+    machines: M,
+) -> Vec<kube::runtime::reflector::ObjectRef<ScheduledMachine>>
+where
+    M: IntoIterator<Item = &'a kube::core::DynamicObject>,
+{
+    let Some(node_name) = node.metadata.name.as_deref() else {
+        return Vec::new();
+    };
+    if node_name.is_empty() {
+        return Vec::new();
+    }
+
+    machines
+        .into_iter()
+        .filter_map(|machine| {
+            // Canonical nodeRef from Machine.status — written only by the
+            // CAPI controller, not by the tenant.
+            let machine_node_name = machine
+                .data
+                .get("status")?
+                .get("nodeRef")?
+                .get("name")?
+                .as_str()?;
+            if machine_node_name.is_empty() || machine_node_name != node_name {
+                return None;
+            }
+
+            // Walk to the owning SM via the controller-stamped label —
+            // same primitive used by machine_to_scheduled_machine.
+            let labels = machine.metadata.labels.as_ref()?;
+            let raw_sm_name = labels.get(crate::labels::LABEL_SCHEDULED_MACHINE)?;
+            let sm_name = raw_sm_name.trim();
+            if sm_name.is_empty() {
+                return None;
+            }
+
+            let sm_namespace = machine.metadata.namespace.as_deref()?;
+
+            Some(
+                kube::runtime::reflector::ObjectRef::<ScheduledMachine>::new(sm_name)
+                    .within(sm_namespace),
             )
         })
         .collect()
