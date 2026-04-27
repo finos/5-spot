@@ -50,7 +50,7 @@ tower = "0.5"
 regex = "1"
 lazy_static = "1.5"
 warp = "0.3"
-toml = "0.8"
+toml = "1.1"
 
 [[bin]]
 name = "5spot-reclaim-agent"
