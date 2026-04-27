@@ -49,7 +49,7 @@ http-body-util = "0.1"
 tower = "0.5"
 regex = "1"
 lazy_static = "1.5"
-warp = "0.3"
+warp = "0.4"
 toml = "0.8"
 
 [[bin]]
