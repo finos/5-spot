@@ -188,11 +188,17 @@ pub fn build_document(
     }
 }
 
-/// Read every `*.json` file in `vex_dir` and return the set of
-/// `vulnerability.name` values across all statements. Non-existent
-/// directories are treated as "nothing triaged yet" (permissive) so that
-/// fresh repos work without special-casing. Malformed JSON surfaces as an
-/// error so bad files don't silently become unsuppressed findings.
+/// Read every non-dotfile `*.json` file in `vex_dir` and return the set
+/// of `vulnerability.name` values across all statements. Non-existent
+/// directories are treated as "nothing triaged yet" (permissive) so
+/// that fresh repos work without special-casing. Malformed JSON
+/// surfaces as an error so bad files don't silently become unsuppressed
+/// findings.
+///
+/// Dot-prefixed files (e.g., `.affected-functions.json`, the curated
+/// CVE → function mapping consumed by Phase 3) are skipped — they
+/// match the `*.json` extension but are sidecar config, not OpenVEX
+/// statements. Same convention shell globs use.
 pub fn load_triaged_from_vex_dir(vex_dir: &Path) -> std::io::Result<HashSet<String>> {
     let mut triaged = HashSet::new();
     let entries = match std::fs::read_dir(vex_dir) {
@@ -204,6 +210,14 @@ pub fn load_triaged_from_vex_dir(vex_dir: &Path) -> std::io::Result<HashSet<Stri
         let entry = entry?;
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        // Skip dot-prefixed files (sidecar config, not statements).
+        if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with('.'))
+        {
             continue;
         }
         let bytes = std::fs::read(&path)?;

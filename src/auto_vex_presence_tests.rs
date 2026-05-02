@@ -431,6 +431,43 @@ mod tests {
     }
 
     #[test]
+    fn load_triaged_skips_dotfiles() {
+        // Dot-prefixed *.json files are sidecar config (e.g., the Phase
+        // 3 curated affected-functions mapping at
+        // .vex/.affected-functions.json), not OpenVEX statements.
+        // Default shell globs already skip them; the loader must too,
+        // otherwise it tries to parse them as OpenVEX docs and fails.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join(".sidecar-config.json"),
+            r#"{"some": "config", "not": ["a", "vex", "doc"]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("CVE-2026-30002.json"),
+            json!({
+                "@context": "https://openvex.dev/ns/v0.2.0",
+                "@id": "https://example/4",
+                "author": "test",
+                "timestamp": "2026-04-22T00:00:00Z",
+                "version": 1,
+                "statements": [{
+                    "vulnerability": {"name": "CVE-2026-30002"},
+                    "products": [{"@id": "pkg:oci/5-spot"}],
+                    "status": "not_affected",
+                    "justification": "vulnerable_code_not_in_execute_path",
+                    "timestamp": "2026-04-22T00:00:00Z"
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let triaged = load_triaged_from_vex_dir(tmp.path()).unwrap();
+        assert_eq!(triaged.len(), 1);
+        assert!(triaged.contains("CVE-2026-30002"));
+    }
+
+    #[test]
     fn load_triaged_missing_directory_is_permissive() {
         let triaged = load_triaged_from_vex_dir(std::path::Path::new(
             "/nonexistent/vex-dir-that-does-not-exist",

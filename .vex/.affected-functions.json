@@ -1,0 +1,60 @@
+{
+  "_comment": [
+    "Curated CVE → [function-symbol-name] mapping consumed by",
+    "auto-vex-reachability (roadmap Phase 3). Each entry names the",
+    "public C-library entry points whose absence from the Rust",
+    "binary's dynamic symbol-import table proves the CVE's affected",
+    "code path is unreachable. Internal helpers (e.g.",
+    "check_dst_limits_calc_pos_1 inside regexec) are intentionally",
+    "NOT listed — we want the public API the affected code is reached",
+    "through, not the internal frames of glibc itself.",
+    "",
+    "CVEs whose affected code is not function-bounded (adversary-model",
+    "preconditions, ASLR bypasses, missing-shell-at-runtime, etc.)",
+    "are deliberately omitted from this map and stay hand-authored",
+    "in .vex/<id>.json. The bin treats 'no entry in this map' as 'do",
+    "not auto-derive', not as 'reachable'.",
+    "",
+    "Filename is dot-prefixed so default shell globs (.vex/*.json) do",
+    "not pick it up — vexctl merge would otherwise try to parse it as",
+    "an OpenVEX statement and fail."
+  ],
+  "CVE-2010-4756": ["glob", "fnmatch"],
+  "CVE-2018-20796": ["regcomp", "regexec"],
+  "CVE-2019-9192": ["regcomp", "regexec"],
+  "CVE-2026-27171": ["crc32_combine", "crc32_combine64"],
+  "CVE-2026-4046": ["iconv", "iconv_open", "iconv_close"],
+  "_CVE-2026-4438_note": [
+    "CVE-2026-4438 has a hand-authored .vex/CVE-2026-4438.json that",
+    "carries the stronger vulnerable_code_cannot_be_controlled_by_adversary",
+    "justification (5-Spot performs no reverse DNS lookups so no",
+    "attacker-controlled address can reach gethostbyaddr). The mapping",
+    "entry below stays as a safety net: if the hand-authored file is",
+    "ever removed, auto-reachability will jump in with the weaker",
+    "vulnerable_code_not_in_execute_path claim — still correct, just",
+    "less informative. Underscore-prefixed key, so the bin's loader",
+    "skips this metadata block."
+  ],
+  "CVE-2026-4438": ["gethostbyaddr", "gethostbyaddr_r"],
+  "CVE-2026-5358": [
+    "nis_local_principal",
+    "nis_local_directory",
+    "yp_match",
+    "yp_first",
+    "yp_next",
+    "yp_get_default_domain",
+    "ypbind"
+  ],
+  "CVE-2026-5450": [
+    "scanf",
+    "sscanf",
+    "fscanf",
+    "vscanf",
+    "vsscanf",
+    "vfscanf",
+    "__isoc99_scanf",
+    "__isoc99_sscanf",
+    "__isoc99_fscanf"
+  ],
+  "CVE-2026-5928": ["ungetwc"]
+}

@@ -22,23 +22,59 @@ document that is:
 Downstream scanners (Grype, Trivy, Harbor) consume the OpenVEX document
 and suppress findings we have already triaged as not applicable.
 
-## Automated statements (roadmap Phase 2)
+## Automated statements
 
-On every push + release, CI also produces a `vex-auto-presence`
-workflow artifact: a separate OpenVEX document containing
-`not_affected + component_not_present` statements for every Grype
-finding whose affected package URL is not present in any image SBOM
-(and is not already triaged in this directory). This is produced by
-the `auto-vex-presence` bin under `src/bin/auto_vex_presence.rs` and
-is merged **unconditionally** into the signed release VEX alongside
-the hand-authored statements in this directory.
+On every push + release, CI produces two automated VEX artifacts that
+are merged **unconditionally** into the signed release VEX alongside
+the hand-authored statements in this directory:
 
-Verification of the merged document — including the auto-generated
-statements — is performed downstream by the Security team, which
-re-evaluates the VEX against the attached evidence (SBOMs, Cosign
-attestations, SLSA provenance) and counter-signs the document if they
-agree. There is no parallel-run gate on our side: our job is to emit
-as aggressively as the evidence supports; their job is to verify.
+1. **`vex-auto-presence`** (roadmap Phase 2,
+   `src/auto_vex_presence.rs`). Emits `not_affected +
+   component_not_present` statements for every Grype finding whose
+   affected package URL is absent from every image SBOM and is not
+   already triaged here. The SBOM digest is the evidence.
+2. **`vex-auto-reachability`** (roadmap Phase 3,
+   `src/auto_vex_reachability.rs`). Emits `not_affected +
+   vulnerable_code_not_in_execute_path` statements for every Grype
+   finding whose CVE id is present in the curated
+   `.affected-functions.json` mapping (see below) **and** whose
+   listed library functions are *all absent* from the release
+   binary's dynamic symbol-import table. The accompanying
+   `vex-auto-reachability-evidence` artifact is the raw `nm -D
+   --undefined-only` output the analyzer used.
+
+Verification of the merged document — including both auto-generated
+sets — is performed downstream by the Security team, which
+re-evaluates each claim against the attached evidence (SBOMs,
+symbol-imports, Cosign attestations, SLSA provenance) and
+counter-signs the document if they agree. There is no parallel-run
+gate on our side: our job is to emit as aggressively as the evidence
+supports; their job is to verify.
+
+### `.affected-functions.json`
+
+A curated CVE → list-of-public-API-function-names mapping consumed
+by the Phase 3 reachability check. The file is dot-prefixed so
+default shell globs (e.g., `vexctl merge .vex/*.json`) skip it.
+Underscore-prefixed keys (`_comment`, `_meta`) are sidecar metadata
+and are ignored by the parser.
+
+Example entry:
+
+```json
+"CVE-2010-4756": ["glob", "fnmatch"]
+```
+
+The list names the **public C library entry points** the affected
+code path is reached through. Internal helpers (e.g. glibc's
+`check_dst_limits_calc_pos_1` inside `regexec`) are intentionally
+*not* listed — the auto-reachability check inspects the binary's
+dynamic-symbol-import table, which only sees public APIs. CVEs
+whose affected behaviour is not function-bounded (adversary-model
+preconditions, ASLR bypasses, missing-shell-at-runtime, etc.) are
+deliberately omitted from the map and stay hand-authored in their
+respective `.vex/<id>.json` files. The bin treats "no entry" as "do
+not auto-derive", not as "reachable".
 
 ## When to add a statement
 

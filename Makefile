@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
 # SPDX-License-Identifier: Apache-2.0
 
-.PHONY: help install build build-debug build-linux-amd64 build-linux-arm64 build-macos-arm64 prepare-binaries-linux-amd64 prepare-binaries-linux-arm64 test test-lib lint format clean crds crddoc docs docs-serve docs-clean docs-rustdoc calm-diagrams calm-validate run-local docker-build docker-build-amd64 docker-build-arm64 docker-build-chainguard docker-push docker-buildx docker-buildx-chainguard gitleaks gitleaks-install install-git-hooks security-scan-local sbom audit vexctl-install vex-validate vex-assemble vex-auto-presence kind-install kind-create kind-delete kind-load kind-deploy kind-example kind-setup kind-status
+.PHONY: help install build build-debug build-linux-amd64 build-linux-arm64 build-macos-arm64 prepare-binaries-linux-amd64 prepare-binaries-linux-arm64 test test-lib lint format clean crds crddoc docs docs-serve docs-clean docs-rustdoc calm-diagrams calm-validate run-local docker-build docker-build-amd64 docker-build-arm64 docker-build-chainguard docker-push docker-buildx docker-buildx-chainguard gitleaks gitleaks-install install-git-hooks security-scan-local sbom audit vexctl-install vex-validate vex-assemble vex-auto-presence vex-auto-reachability kind-install kind-create kind-delete kind-load kind-deploy kind-example kind-setup kind-status
 
 # CALM (FINOS Common Architecture Language Model) configuration
 CALM_CLI_VERSION ?= 1.37.0
@@ -557,6 +557,46 @@ vex-auto-presence: ## Run auto-vex-presence bin over $(GRYPE_JSON) + $(SBOM_FILE
 		--author "auto-vex-presence" \
 		--output vex.auto-presence.json
 	@echo "✓ wrote vex.auto-presence.json"
+
+# Inputs for vex-auto-reachability (Phase 3).
+# RELEASE_BINARY defaults to the local release build under
+# target/release/5spot. AFFECTED_FUNCTIONS is the curated CVE → fns map.
+RELEASE_BINARY     ?= target/release/5spot
+AFFECTED_FUNCTIONS ?= .vex/.affected-functions.json
+
+vex-auto-reachability: ## Run auto-vex-reachability over $(GRYPE_JSON) + symbols of $(RELEASE_BINARY) (Phase 3)
+	@if [ ! -f "$(GRYPE_JSON)" ]; then \
+		echo "ERROR: $(GRYPE_JSON) not found. Override with: make vex-auto-reachability GRYPE_JSON=path/to/grype.json"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(RELEASE_BINARY)" ]; then \
+		echo "ERROR: $(RELEASE_BINARY) not found. Build with: cargo build --release"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(AFFECTED_FUNCTIONS)" ]; then \
+		echo "ERROR: $(AFFECTED_FUNCTIONS) not found"; \
+		exit 1; \
+	fi
+	@# nm -D --undefined-only is the ELF dynamic-symbol-imports view.
+	@# On macOS Mach-O, nm reports "no dynamic symbol table" — use
+	@# -gU (global undefined) as the closest equivalent.
+	@if [ "$$(uname -s)" = "Darwin" ]; then \
+		nm -gU "$(RELEASE_BINARY)" > /tmp/avr-symbols.txt 2>/dev/null || \
+			nm -D --undefined-only "$(RELEASE_BINARY)" > /tmp/avr-symbols.txt; \
+	else \
+		nm -D --undefined-only "$(RELEASE_BINARY)" > /tmp/avr-symbols.txt; \
+	fi
+	@cargo run --quiet --bin auto-vex-reachability -- \
+		--grype-json "$(GRYPE_JSON)" \
+		--binary-symbols /tmp/avr-symbols.txt \
+		--affected-functions "$(AFFECTED_FUNCTIONS)" \
+		--vex-dir .vex \
+		--product-purl "$(PRODUCT_PURL)" \
+		--id "https://5-spot/local/auto-reachability" \
+		--author "auto-vex-reachability" \
+		--output vex.auto-reachability.json
+	@rm -f /tmp/avr-symbols.txt
+	@echo "✓ wrote vex.auto-reachability.json"
 
 # ============================================================
 # Kind Cluster (local testing for ScheduledMachine)

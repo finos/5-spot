@@ -24,6 +24,10 @@ path = "src/bin/crddoc.rs"
 name = "auto-vex-presence"
 path = "src/bin/auto_vex_presence.rs"
 
+[[bin]]
+name = "auto-vex-reachability"
+path = "src/bin/auto_vex_reachability.rs"
+
 [dependencies]
 kube = { version = "3.1", features = ["runtime", "derive", "client", "ws"] }
 kube-lease-manager = "0.11"

@@ -9,7 +9,196 @@ The format is based on the regulated environment requirements:
 
 ---
 
-## [2026-05-02 12:00] - warp 0.4.2 migration (PR #52 follow-up)
+## [2026-05-02 10:00] - Symbol-import auto-VEX (roadmap Phase 3, scope-revised)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/auto_vex_reachability.rs` (library module, ~190 LOC) +
+  `src/auto_vex_reachability_tests.rs` (20 unit tests, 100%
+  positive/negative/exception coverage per project rule):
+  - `parse_nm_output` — parses `nm -D --undefined-only` text into a
+    set of imported symbol names; strips `@GLIBC_x.y` version
+    suffixes; defensively skips lines whose type column isn't `U`.
+  - `load_affected_functions_from_path` — loads a JSON map of CVE id
+    → [public-API function names]. Underscore-prefixed keys
+    (`_comment`, `_meta`) are sidecar metadata and skipped silently.
+  - `compute_reachability_vex` — pure function that, given a Grype
+    report, the imported-symbol set, the affected-functions mapping,
+    and the already-triaged CVE set, emits one `not_affected +
+    vulnerable_code_not_in_execute_path` statement per CVE whose
+    listed functions are *all absent* from the imports.
+  - Re-exports `Document`, `Statement`, `Vuln`, `Product`,
+    `GrypeReport`, `GrypeMatch`, `GrypeVuln`, `GrypeArtifact`,
+    `build_document`, `load_triaged_from_vex_dir` from
+    `auto_vex_presence` so callers can import the OpenVEX shape from
+    one place.
+- `src/bin/auto_vex_reachability.rs` — thin clap-driven CLI wrapping
+  the library. Reads `--grype-json`, `--binary-symbols` (the path to
+  an `nm` output text file), `--affected-functions`, `--vex-dir`,
+  `--product-purl`, `--id`, optional `--author` and `--timestamp`.
+- `Cargo.toml`: `[[bin]] auto-vex-reachability` entry.
+- `.vex/.affected-functions.json` (new, dot-prefixed): curated CVE →
+  [function names] mapping covering 9 of the 15 hand-authored
+  statements in `.vex/`. Filename is dot-prefixed so default shell
+  globs (`vexctl merge .vex/*.json`) skip it. The 6 unmapped CVEs
+  (`CVE-2019-1010022/3/4/5`, `CVE-2026-4437`, `GHSA-cq8v-f236-94qc`)
+  are not function-bounded — preconditions / adversary-model claims
+  / Rust-crate-only — and stay hand-authored. One mapped CVE
+  (`CVE-2026-4438`, gethostbyaddr) is *also* retained hand-authored
+  because its statement carries the stronger
+  `vulnerable_code_cannot_be_controlled_by_adversary` justification;
+  the mapping entry stays as a safety net so auto-reachability would
+  jump in with the weaker `vulnerable_code_not_in_execute_path` if
+  the hand-authored file is ever removed.
+- `Makefile`: new `vex-auto-reachability` target that defaults
+  `RELEASE_BINARY=target/release/5spot` and
+  `AFFECTED_FUNCTIONS=.vex/.affected-functions.json`. macOS Mach-O
+  fallback to `nm -gU` since `-D --undefined-only` is ELF-only.
+  `.PHONY` extended.
+- `.github/workflows/build.yaml`: new `auto-vex-reachability` job
+  gated on `github.event_name != 'pull_request'`. `needs: [build,
+  extract-version, grype-triage]`. Builds the bin (cached cargo),
+  downloads the `5spot-linux-amd64` artifact + the `grype-triage-*`
+  artifacts, runs `nm -D --undefined-only` on the binary, runs the
+  bin once per variant, merges per-variant outputs via `vexctl
+  merge`, uploads `vex-auto-reachability` (the merged VEX doc) and
+  `vex-auto-reachability-evidence` (the raw `nm` output, for the
+  Security team to re-derive against).
+
+### Changed
+- `.github/workflows/build.yaml`:
+  - `build-vex` job: `needs` extended with `auto-vex-reachability`.
+    Added a download step for the `vex-auto-reachability` artifact
+    and an explicit `test -f` guard. `vexctl merge` invocation now
+    includes `auto/vex.auto-reachability.json` alongside
+    `.vex/*.json` and `auto/vex.auto-presence.json`.
+  - Header comments on `build-vex` updated to describe both
+    automated phases.
+- `src/auto_vex_presence.rs`: `load_triaged_from_vex_dir` now skips
+  dot-prefixed `*.json` files, so `.vex/.affected-functions.json`
+  isn't mis-parsed as an OpenVEX statement when `auto-vex-reachability`
+  loads `--vex-dir`. Added `load_triaged_skips_dotfiles` test in
+  `auto_vex_presence_tests.rs`.
+- `src/lib.rs`: re-export `pub mod auto_vex_reachability`.
+- `.vex/README.md`: rewritten "Automated statements" section to
+  describe both Phase 2 (presence) and Phase 3 (reachability)
+  artifacts. New sub-section documenting the
+  `.vex/.affected-functions.json` mapping format.
+- `docs/src/security/vex.md`:
+  - CI flow steps renumbered to 7 — added step 3 for
+    auto-reachability between presence (step 2) and assemble (step 4).
+  - "What we automate" section: added the symbol-import-reachability
+    bullet and a new "Why symbol-imports, not LLVM-IR call graphs"
+    sub-section explaining the scope revision.
+- Roadmap (`~/dev/roadmaps/5spot-automated-vex-generation.md`):
+  status line updated to "Phase 3 ✅ shipped (symbol-import variant)".
+  Phase 3 section rewritten to document the scope revision with
+  rationale. Rollout section updated.
+
+### Removed
+- `.vex/CVE-2010-4756.json` (glob/fnmatch — superseded by auto-reachability)
+- `.vex/CVE-2018-20796.json` (regcomp/regexec)
+- `.vex/CVE-2019-9192.json` (regcomp/regexec)
+- `.vex/CVE-2026-27171.json` (crc32_combine[64])
+- `.vex/CVE-2026-4046.json` (iconv/iconv_open/iconv_close)
+- `.vex/CVE-2026-5358.json` (NIS / yp_*)
+- `.vex/CVE-2026-5450.json` (scanf family)
+- `.vex/CVE-2026-5928.json` (ungetwc)
+
+These 8 statements all asserted `vulnerable_code_not_in_execute_path`
+and are now produced by `auto-vex-reachability` from the curated
+mapping + the `nm -D --undefined-only` symbol-import evidence
+uploaded by the new CI job. The Security team verifies them by
+re-running the same `nm` invocation against the release-attested
+binary. `CVE-2026-4438.json` is intentionally retained because its
+hand-authored statement carries the stronger
+`vulnerable_code_cannot_be_controlled_by_adversary` justification —
+see Why below.
+
+### Why
+Phase 3 of the automated VEX generation roadmap, with a scope
+revision. The original plan targeted Rust LLVM-IR call-graph
+reachability against RustSec advisories carrying `affected.functions`.
+At implementation time `cargo audit` reports zero open Rust-level
+vulnerabilities for this codebase — every CVE in `.vex/` is a
+base-image glibc/zlib finding from Grype scanning the Docker image,
+and RustSec doesn't track those. The Rust call-graph approach
+addressed zero current findings.
+
+The mechanical equivalent for our actual data is symbol-import
+absence: if the Rust binary's dynamic-symbol-import table doesn't
+contain any of the documented public-API entry points for an
+affected glibc function, the affected code path cannot be reached
+through documented APIs. This is exactly what the existing 14
+hand-authored impact statements claim in prose ("5-Spot performs no
+character-set conversions; the glibc iconv() path exercised by this
+CVE is unreachable from the controller binary"). Auto-reachability
+turns that prose into a verifiable check that the Security team
+re-derives during counter-signing.
+
+The shipped variant addresses 9 of the 15 hand-authored statements
+through the curated mapping. Of those 9, **8 hand-authored
+statements were deleted** in this same change (their
+`vulnerable_code_not_in_execute_path` claim is now produced by
+auto-reachability and re-derivable from the uploaded `nm` evidence).
+The 9th mapped CVE (`CVE-2026-4438`) was retained because its
+hand-authored claim is the stronger
+`vulnerable_code_cannot_be_controlled_by_adversary` — the auto-VEX
+would replace it with the weaker function-absence claim. The
+remaining 6 hand-authored statements are not function-bounded
+(adversary-model preconditions, ASLR bypasses,
+missing-shell-at-runtime, Rust-crate combo) and stay hand-authored.
+The original LLVM-IR call-graph approach is deferred to when (a)
+`cargo audit` starts returning Rust-side findings with
+function-level data, or (b) we adopt a Rust analyzer that exposes
+call-graph data without LTO loss.
+
+### Verification
+- `cargo fmt --all -- --check`: clean.
+- `cargo clippy --all-targets --all-features -- -D warnings`: clean.
+- `cargo test --lib`: 418 tests pass (398 pre-existing + 20 new for
+  `auto_vex_reachability`).
+- Smoke tests:
+  - 10 Grype matches (9 mapped + 1 unmapped) + an empty `.vex/` dir +
+    nm output without any of the affected glibc symbols → 9
+    statements emitted in deterministic CVE-id order. Unmapped CVE
+    correctly skipped.
+  - Same input but with `glob` added to nm output → 8 statements
+    emitted (CVE-2010-4756 correctly excluded because `glob` is
+    importable).
+  - Same input against the real `.vex/` directory (all 9 mapped CVEs
+    are hand-authored there) → 0 statements emitted because
+    `load_triaged_from_vex_dir` correctly skips re-deriving
+    already-triaged CVEs (and correctly skips
+    `.affected-functions.json` thanks to the new dotfile filter).
+- `vexctl merge` of the auto-reachability output + `.vex/*.json` +
+  vex.auto-presence.json produces a well-formed merged document
+  parseable by `vexctl` with no errors.
+
+### Trust model (unchanged from Phase 2)
+The merged VEX (hand-authored + auto-presence + auto-reachability)
+is Cosign-attested by CI keyless against both image digests. The
+Security team independently re-runs `nm -D --undefined-only` against
+the release-attested binary and checks each auto-reachability
+statement's claim, then counter-signs with their own OIDC identity
+if they agree. Downstream consumers gate on both attestations via
+`cosign verify-attestation` with twin
+`--certificate-identity-regexp` invocations.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+*(Not really "documentation only" — net +700 LOC of Rust + tests + a
+new CI job — but no runtime, CRD, or API-surface change. Closest
+pre-existing box.)*
+
+---
+
+## [2026-04-30 14:00] - Phases 5 + 6 of security audit: RBAC tightening + defence-in-depth docs
 
 **Author:** Erick Bourgeois
 

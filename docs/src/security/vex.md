@@ -36,19 +36,28 @@ On every release of 5-Spot the CI pipeline performs the following steps:
    component_not_present` statement for every finding whose affected
    package URL is absent from the image SBOM and not already covered
    by a hand-authored statement. The result is uploaded as the
-   `vex-auto-presence` workflow artifact for review on every build.
-3. **Assemble** a single OpenVEX document (`vex.openvex.json`) with
+   `vex-auto-presence` workflow artifact.
+3. **Generate symbol-import reachability auto-VEX** (roadmap Phase 3):
+   the `auto-vex-reachability` job inspects the release binary's
+   dynamic symbol-import table (`nm -D --undefined-only`) and emits a
+   `not_affected + vulnerable_code_not_in_execute_path` statement for
+   every Grype finding whose CVE id is present in the curated
+   `.vex/.affected-functions.json` mapping **and** whose listed
+   library functions are *all absent* from the imports. The result
+   is uploaded as the `vex-auto-reachability` artifact, with the raw
+   symbol-import dump alongside as `vex-auto-reachability-evidence`.
+4. **Assemble** a single OpenVEX document (`vex.openvex.json`) with
    `vexctl merge`, stamped with a canonical
    `@id = https://github.com/<owner>/<repo>/releases/tag/<tag>/vex`
-   and the release actor as the document-level author. The
-   auto-presence document is included in the merge on every build —
+   and the release actor as the document-level author. Both
+   auto-* documents are included in the merge on every build —
    there is no feature-flag gate.
-4. **Cosign-attest** the document to *both* image digests (Chainguard
+5. **Cosign-attest** the document to *both* image digests (Chainguard
    and Distroless). The attestation lands in the Sigstore transparency
    log and is pushed to the registry alongside the image.
-5. **GitHub attest** the document with `actions/attest-build-provenance`
+6. **GitHub attest** the document with `actions/attest-build-provenance`
    so `gh attestation verify` works for downstream pulls.
-6. **Attach** `vex.openvex.json` and its `.bundle` to the GitHub
+7. **Attach** `vex.openvex.json` and its `.bundle` to the GitHub
    Release as assets and register them in `checksums.sha256`.
 
 No new GitHub secrets are required — all signing is keyless via the
@@ -163,22 +172,51 @@ what's in the product.
 
 The split is therefore:
 
-- **Automated** (roadmap Phase 2, active on every build): if Grype
-  flags a CVE on a package whose `purl` is not in any image SBOM, and
-  the CVE isn't already triaged in `.vex/`, the `auto-vex-presence`
-  job emits a `not_affected + component_not_present` statement. The
-  SBOM digest is the evidence backing the claim. The resulting
-  statements are merged unconditionally into the signed VEX document.
+- **Automated — presence** (roadmap Phase 2, active on every build):
+  if Grype flags a CVE on a package whose `purl` is not in any image
+  SBOM, and the CVE isn't already triaged in `.vex/`, the
+  `auto-vex-presence` job emits a `not_affected +
+  component_not_present` statement. The SBOM digest is the evidence
+  backing the claim.
+- **Automated — symbol-import reachability** (roadmap Phase 3, active
+  on every build): if Grype flags a CVE that's listed in the curated
+  `.vex/.affected-functions.json` mapping, and **none** of the listed
+  public-API function names appear in the release binary's dynamic
+  symbol-import table, the `auto-vex-reachability` job emits a
+  `not_affected + vulnerable_code_not_in_execute_path` statement.
+  The raw `nm -D --undefined-only` output is uploaded as the
+  `vex-auto-reachability-evidence` artifact and is the evidence
+  backing the claim.
 - **Hand-authored** (everything else): `not_affected` with any
-  justification other than `component_not_present`, plus all
-  `affected`, `fixed`, and `under_investigation` statements, stay in
-  `.vex/*.json` and go through PR review. Grype findings drive
-  maintainers to write statements; the statements themselves are
-  deliberate human decisions.
+  justification other than `component_not_present` /
+  `vulnerable_code_not_in_execute_path`, plus all `affected`,
+  `fixed`, and `under_investigation` statements, stay in `.vex/*.json`
+  and go through PR review. Grype findings drive maintainers to write
+  statements; the statements themselves are deliberate human
+  decisions.
 
-Reachability-based auto-VEX (justification
-`vulnerable_code_not_in_execute_path`) is Phase 3 of the roadmap and
-is not yet in production.
+Both automated paths are merged unconditionally into the signed VEX
+document — there is no feature-flag gate. The Security team's
+downstream re-verification (see "Trust model" below) is the safety
+net.
+
+### Why symbol-imports, not LLVM-IR call graphs
+
+The original Phase 3 plan targeted Rust LLVM-IR call-graph
+reachability against RustSec advisories carrying `affected.functions`.
+At implementation time, `cargo audit` reported zero open Rust-level
+vulnerabilities for this codebase — every CVE in `.vex/` is a
+base-image glibc/zlib finding from Grype scanning the Docker image,
+none of which RustSec tracks. The Rust call-graph approach addressed
+zero current findings.
+
+The mechanical equivalent for our actual data is symbol-import
+absence: if the Rust binary doesn't link against `glob` / `scanf` /
+`iconv` / etc., the affected glibc code paths cannot be reached
+through their documented entry points. The `nm -D --undefined-only`
+output is auditable and the Security team re-derives the same
+conclusion by running `nm` against the release-attested binary
+themselves.
 
 ---
 
