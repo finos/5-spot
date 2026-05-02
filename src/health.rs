@@ -95,24 +95,37 @@ pub async fn start_health_server(port: u16, health_state: HealthState) {
     let health_state_status = health_state;
 
     // /healthz - Kubernetes liveness probe
-    // Returns 200 if the process is alive
+    // Returns 200 if the process is alive.
+    //
+    // Body type is `String` (not `&str`) because `Reply` is only implemented
+    // for `&'static str`; using owned `String` avoids inferring a non-'static
+    // closure return type. The `.boxed()` on the final filter chain is the
+    // companion fix — without it, the warp 0.4 filter type carries a higher-
+    // ranked `AsRef<str>` bound that propagates through `tokio::spawn` and
+    // fails `Send + 'static`.
     let healthz = warp::path("healthz").map(move || {
         if health_state_healthz.is_healthy() {
-            warp::reply::with_status("OK", warp::http::StatusCode::OK)
+            warp::reply::with_status("OK".to_string(), warp::http::StatusCode::OK)
         } else {
             error!("Health check failed");
-            warp::reply::with_status("UNHEALTHY", warp::http::StatusCode::SERVICE_UNAVAILABLE)
+            warp::reply::with_status(
+                "UNHEALTHY".to_string(),
+                warp::http::StatusCode::SERVICE_UNAVAILABLE,
+            )
         }
     });
 
     // /readyz - Kubernetes readiness probe
-    // Returns 200 if the controller is ready to serve traffic
+    // Returns 200 if the controller is ready to serve traffic.
     let readyz = warp::path("readyz").map(move || {
         if health_state_readyz.is_ready() {
-            warp::reply::with_status("OK", warp::http::StatusCode::OK)
+            warp::reply::with_status("OK".to_string(), warp::http::StatusCode::OK)
         } else {
             debug!("Readiness check failed - controller not ready");
-            warp::reply::with_status("NOT READY", warp::http::StatusCode::SERVICE_UNAVAILABLE)
+            warp::reply::with_status(
+                "NOT READY".to_string(),
+                warp::http::StatusCode::SERVICE_UNAVAILABLE,
+            )
         }
     });
 
@@ -122,17 +135,18 @@ pub async fn start_health_server(port: u16, health_state: HealthState) {
         warp::reply::json(&status)
     });
 
-    // Legacy endpoints for backward compatibility
-    let health_legacy =
-        warp::path("health").map(|| warp::reply::with_status("OK", warp::http::StatusCode::OK));
-    let ready_legacy =
-        warp::path("ready").map(|| warp::reply::with_status("OK", warp::http::StatusCode::OK));
+    // Legacy endpoints for backward compatibility.
+    let health_legacy = warp::path("health")
+        .map(|| warp::reply::with_status("OK".to_string(), warp::http::StatusCode::OK));
+    let ready_legacy = warp::path("ready")
+        .map(|| warp::reply::with_status("OK".to_string(), warp::http::StatusCode::OK));
 
     let routes = healthz
         .or(readyz)
         .or(status)
         .or(health_legacy)
-        .or(ready_legacy);
+        .or(ready_legacy)
+        .boxed();
 
     warp::serve(routes).run(([0, 0, 0, 0], port)).await;
 }

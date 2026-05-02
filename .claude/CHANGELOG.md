@@ -9,6 +9,55 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-05-02 12:00] - warp 0.4.2 migration (PR #52 follow-up)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: pin `warp = { version = "0.4", default-features = false, features = ["server"] }`.
+  warp 0.4 made every previously-default feature opt-in; we only need
+  `server` (used by `src/main.rs::run_metrics_server` and
+  `src/health.rs::start_health_server`). `default-features = false`
+  also drops `multipart`, `websocket`, and `test`, which we don't
+  use, shrinking the supply-chain surface visible to cargo-deny /
+  Grype / auto-VEX.
+- `src/health.rs`: every closure body that returned `&'static str`
+  now returns `String` (warp 0.4's `Reply` impl on `&str` is gated
+  to `&'static str` only and the if/else inference would otherwise
+  pick a non-'static lifetime). Final filter chain calls `.boxed()`
+  to type-erase into `BoxedFilter` — without it the filter type
+  carries a higher-ranked `AsRef<str>` bound from the new generic
+  `path::path<P: AsRef<str>>` signature, which propagates through
+  `tokio::spawn` and fails `Send + 'static`.
+- `src/main.rs`: `warp::serve(metrics.boxed())` for the same
+  HRTB / Send reason as health.rs.
+- `Cargo.lock`: regenerated (warp 0.3.7 → 0.4.2; drops the legacy
+  hyper 0.14 / http 0.2 / h2 0.3 / base64 0.21 / encoding_rs /
+  displaydoc duplicate-stack now that warp pulls hyper 1).
+
+### Why
+PR #52 (Dependabot) bumped warp 0.3 → 0.4; the upstream release is
+breaking (server/test feature-gated, hyper 1 underneath, narrower
+Reply bounds, generic `path()`). The bump is the unfinished tail of
+the auto-VEX Phase 3 work in `5spot-automated-vex-generation.md` —
+warp 0.3 sits on hyper 0.14 which is end-of-life upstream and visible
+to the supply-chain scanners tracked in
+`5spot-code-scanning-remediation.md`.
+
+### Impact
+- [ ] Breaking change (no API surface change; internal-only)
+- [x] Requires cluster rollout (new binary)
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- `cargo build` clean.
+- `cargo test`: 397 passed, 0 failed.
+- `cargo fmt --check`: clean.
+- `cargo clippy --all-targets -- -D warnings`: clean.
+
+---
+
 ## [2026-04-26 00:30] - Phase 4 of security audit: reclaim-agent host-identity verification
 
 **Author:** Erick Bourgeois

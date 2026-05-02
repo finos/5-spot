@@ -406,7 +406,7 @@ async fn run_metrics_server(port: u16) {
         }
     });
 
-    warp::serve(metrics).run(([0, 0, 0, 0], port)).await;
+    warp::serve(metrics.boxed()).run(([0, 0, 0, 0], port)).await;
 }
 
 #[cfg(test)]

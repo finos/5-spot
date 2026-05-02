@@ -49,7 +49,11 @@ http-body-util = "0.1"
 tower = "0.5"
 regex = "1"
 lazy_static = "1.5"
-warp = "0.4"
+# warp 0.4 made every previously-default feature opt-in. We use
+# `warp::serve` for the metrics + health/readiness HTTP servers
+# (src/main.rs and src/health.rs), so the `server` feature must be
+# enabled explicitly.
+warp = { version = "0.4", default-features = false, features = ["server"] }
 toml = "1.1"
 
 [[bin]]
