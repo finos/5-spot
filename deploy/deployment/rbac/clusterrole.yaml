@@ -66,10 +66,20 @@ rules:
     resources: ["secrets"]
     verbs: ["get", "list", "watch"]
 
-  # Nodes for drain operations
+  # Nodes for drain operations and reclaim-agent label / taint management.
+  #
+  # `update` was removed in Phase 5 of the 2026-04-25 security audit
+  # roadmap. Every Node touchpoint in the controller uses `.get` or
+  # `.patch` (cordon, reclaim-agent label, applied taints) — no path
+  # uses `Api::replace` or any other update-shaped call. Granting only
+  # the verbs that are actually exercised reduces blast radius if the
+  # controller's ServiceAccount token is ever compromised. If a future
+  # change reintroduces a need for full-object replacement, the lint
+  # rule in `deny.toml` will surface it before this rule has to be
+  # widened.
   - apiGroups: [""]
     resources: ["nodes"]
-    verbs: ["get", "list", "watch", "patch", "update"]
+    verbs: ["get", "list", "watch", "patch"]
 
   # Pods for eviction during drain
   - apiGroups: [""]
@@ -79,7 +89,14 @@ rules:
     resources: ["pods/eviction"]
     verbs: ["create"]
 
-  # Leases for leader election (no delete needed for HA)
+  # Leases for leader election (no delete needed for HA).
+  #
+  # `update` is retained: `kube_lease_manager` (the leader-election
+  # library used in src/main.rs) currently uses HTTP PUT semantics
+  # (Api::replace) on the Lease object during renewal. Removing
+  # `update` would break leader election. If the upstream library
+  # switches to merge-patch in a future release we can drop the verb;
+  # tracked alongside Phase 5 of the security audit roadmap.
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "create", "update", "patch"]

@@ -199,6 +199,33 @@ impl ScheduleSpec {
 ///
 /// Must contain at minimum `apiVersion` and `kind` fields. The controller
 /// will extract these to create the appropriate dynamic resource.
+///
+/// # Security — pass-through trust boundary
+///
+/// **The `spec` field of an `EmbeddedResource` is forwarded unchanged
+/// to the named provider.** The 5-Spot reconciler validates the
+/// envelope (`apiVersion` group allowlist, presence of `kind`, etc.)
+/// but **does not inspect the inner spec**. That is by design —
+/// 5-Spot is provider-agnostic and cannot ship a schema for every
+/// possible CAPI provider.
+///
+/// This means the trust boundary is the provider, not 5-Spot:
+///
+/// - `k0smotron.io/K0sWorkerConfig.spec.cloudInit` is interpreted as
+///   cloud-init YAML and executed verbatim on the provisioned VM.
+/// - `k0smotron.io/RemoteMachine.spec.address` is an SSH endpoint
+///   reached by the infrastructure controller.
+/// - Other providers carry their own code-execution / network-reach
+///   surfaces in their inline specs.
+///
+/// In multi-tenant clusters where different teams can `create
+/// scheduledmachines` in their own namespaces, operators **MUST**
+/// either pre-stage approved provider specs (out of scope for
+/// v1alpha1) or layer a complementary `ValidatingAdmissionPolicy`
+/// that inspects the provider payload — the 5-Spot VAP only
+/// validates structure. See `docs/src/concepts/scheduled-machine.md`
+/// (section "Security: Provider payload pass-through") for the full
+/// trade-off discussion.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[schemars(schema_with = "embedded_resource_schema")]
 pub struct EmbeddedResource(pub Value);

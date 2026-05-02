@@ -22,6 +22,10 @@ A STRIDE-based analysis of the threats facing 5-Spot and the mitigations in plac
 
 How 5-Spot publishes a signed OpenVEX document with every release so downstream scanners can suppress CVEs we have already triaged as non-exploitable. Covers the `.vex/` authoring workflow, the Cosign attestation chain, and `grype --vex` / `trivy --vex` consumer usage.
 
+### [CRD Attack Surface](crd-attack-surface.md)
+
+Per-field validation status and downstream sinks for every attacker-controllable field on the `ScheduledMachine` CRD. Generated alongside the schema; useful for security reviews and for understanding which spec / status fields a namespace tenant can influence.
+
 ---
 
 ## Security Posture at a Glance

@@ -230,6 +230,7 @@ nav:
       - Admission Validation: security/admission-validation.md
       - Threat Model: security/threat-model.md
       - VEX (Vulnerability Exploitability eXchange): security/vex.md
+      - CRD Attack Surface: security/crd-attack-surface.md
 
   - Developer Guide:
       - Development Setup: development/setup.md

@@ -228,9 +228,61 @@ The controller:
 4. When schedule ends: gracefully shuts down and cleans up all created resources
 5. Maintains owner references for automatic garbage collection
 
+## Security: Provider payload pass-through
+
+`spec.bootstrapSpec.spec` and `spec.infrastructureSpec.spec` are
+**forwarded unchanged** to the named provider. 5-Spot validates the
+provider name (allowlist of `bootstrap.cluster.x-k8s.io`,
+`infrastructure.cluster.x-k8s.io`, and `k0smotron.io` groups) and the
+envelope shape (`apiVersion`, `kind`, presence of `spec`) but
+**does not inspect the inner spec**. That is by design — the controller
+is provider-agnostic, and inspecting every possible provider's schema
+would couple the controller to every provider's release cycle.
+
+The trust boundary is therefore the **provider**, not 5-Spot:
+
+- **k0smotron `K0sWorkerConfig.spec.cloudInit`** is interpreted as
+  cloud-init YAML and executed verbatim on the provisioned machine. A
+  user with `create scheduledmachines` can run any cloud-init payload
+  on the VMs they cause to be provisioned.
+- **k0smotron `RemoteMachine.spec.address`** is the SSH endpoint the
+  infrastructure controller connects to. A user can point this at any
+  reachable host or IP.
+- **CAPA / CAPM3 / other CAPI providers** carry their own attack
+  surfaces in their inline specs (image, command, env-with-secret,
+  etc.).
+
+### Implications for multi-tenant operators
+
+If different teams self-service `ScheduledMachine` CRs in their own
+namespaces, you MUST review provider documentation for fields that
+grant code execution or cross-tenant reachability **before** granting
+`create scheduledmachines` to a tenant. Options:
+
+1. **Pre-stage approved bootstrap / infrastructure resources** in a
+   platform-controlled namespace and expose only their `kind` + `name`
+   to tenants via your own wrapper CR. This eliminates the inline spec
+   entirely. (Out of scope for v1alpha1; tracked for a future
+   v1alpha2.)
+2. **Layer policy on top of 5-Spot**: a CEL `ValidatingAdmissionPolicy`
+   can reject specific provider fields (e.g. `cloudInit`,
+   `address` outside an approved CIDR) at admission time. The 5-Spot
+   `ValidatingAdmissionPolicy` validates structure but does not inspect
+   provider payloads — that's a complementary policy.
+3. **Trust-but-verify**: scope `create` to trusted teams and audit the
+   inline specs out of band.
+
+The 5-Spot `ValidatingAdmissionPolicy` and the runtime validators in
+`src/reconcilers/helpers.rs` together cover everything that 5-Spot
+itself can decide is malformed (cluster name length, label prefixes,
+schedule format, kill-if-commands bounds, …). They do not — and cannot
+— validate provider-specific cloud-init, SSH targets, or container
+images.
+
 ## Related
 
 - [API Reference](../reference/api.md) - Complete API documentation
 - [Machine Lifecycle](./machine-lifecycle.md) - Phase transitions
 - [Schedules](./schedules.md) - Schedule configuration details
 - [Emergency Reclaim](./emergency-reclaim.md) - `killIfCommands` and the process-match kill switch
+- [CRD Attack Surface](../security/crd-attack-surface.md) - per-field validation status and downstream sinks

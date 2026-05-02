@@ -1029,12 +1029,37 @@ pub fn validate_api_group(
 /// 1. Creates the bootstrap resource from bootstrapSpec
 /// 2. Creates the infrastructure resource from infrastructureSpec
 /// 3. Creates the CAPI Machine referencing both
+///
+/// # Invariants
+///
+/// `namespace` MUST equal `resource.namespace()`. Every child resource
+/// (bootstrap, infrastructure, Machine) carries an `ownerReference` back
+/// to the `ScheduledMachine`. Kubernetes' garbage collector treats
+/// owner-cascade as a same-namespace relationship: a child in
+/// namespace `B` cannot be garbage-collected by an owner in namespace
+/// `A` — the API server silently ignores the ownerRef. Mismatching
+/// namespaces would therefore produce orphan resources on cascading
+/// delete without any error surfaced at creation time.
+///
+/// The `debug_assert_eq!` below makes the violation loud in test and
+/// dev builds. Today every caller passes `resource.namespace()` so the
+/// invariant holds; the assertion is a regression guard for future
+/// refactors that might move bootstrap / infra creation to a different
+/// namespace without updating the ownerRef contract. Filed as Phase 6b
+/// of the 2026-04-25 security audit roadmap.
 #[allow(clippy::too_many_lines)]
 pub async fn add_machine_to_cluster(
     resource: &ScheduledMachine,
     client: &Client,
     namespace: &str,
 ) -> Result<(), ReconcilerError> {
+    debug_assert_eq!(
+        resource.namespace().as_deref(),
+        Some(namespace),
+        "ownerRef contract: bootstrap/infra/Machine MUST be created in the SM's own \
+         namespace; cross-namespace ownerReferences are silently ignored by the GC"
+    );
+
     let name = resource.name_any();
     let cluster_name = &resource.spec.cluster_name;
 
