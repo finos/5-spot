@@ -173,6 +173,23 @@ AVD-KSV-0118
 # writable volumes whose ownership fsGroup would govern.
 AVD-KSV-0116
 
+# KSV-0022 — Container has non-default capabilities added.
+# Architecturally required for rung 2 of the reclaim-agent's detection
+# ladder (`5spot-emergency-reclaim-by-process-match.md` Phase 2 rung 2,
+# GitHub issue #40). `CAP_NET_ADMIN` is required to open an
+# `AF_NETLINK` / `NETLINK_CONNECTOR` socket and bind to the
+# `CN_IDX_PROC` multicast group — the kernel-pushed event source the
+# subscriber in `src/netlink_proc.rs` consumes. Rung 1 (the `/proc`
+# poll) does not need this cap; operators who pin `--detector=poll`
+# never exercise it. We grant the cap once at the pod level rather than
+# letting the binary fall back to rung 1 silently at runtime — the
+# detector choice is an operator decision, not an availability
+# heuristic. Scope is bounded by the existing opt-in
+# `5spot.finos.org/reclaim-agent: enabled` nodeSelector, so the cap is
+# only granted on the small set of nodes the operator has explicitly
+# armed.
+AVD-KSV-0022
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Dockerfile — Dockerfile, Dockerfile.chainguard
 # ─────────────────────────────────────────────────────────────────────────────

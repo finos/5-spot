@@ -60,6 +60,14 @@ lazy_static = "1.5"
 warp = { version = "0.4", default-features = false, features = ["server"] }
 toml = "1.1"
 
+# Linux-only — used by the reclaim-agent's rung 2 netlink proc connector
+# subscriber (`src/netlink_proc.rs`). The portable byte parsers in that
+# module have no `nix` dep; only the actual socket / bind / send / recv
+# dance does. Non-Linux builds compile the module's `Subscriber::new` to
+# a stub that returns `NetlinkError::Unsupported`.
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "0.30", default-features = false, features = ["socket", "net", "uio"] }
+
 [[bin]]
 name = "5spot-reclaim-agent"
 path = "src/bin/reclaim_agent.rs"

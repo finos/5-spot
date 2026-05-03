@@ -1,6 +1,6 @@
 # Emergency Reclaim (Process-Match Kill Switch)
 
-**Status:** In progress — trigger contract, node-side agent (rung 1 `/proc` poll), CRD field, and opt-in DaemonSet shipped. Controller-side dispatch (Phase `EmergencyRemove`) is follow-up work. See the [roadmap](https://github.com/finos/5-spot/blob/main/docs/roadmaps/5spot-emergency-reclaim-by-process-match.md) for the current implementation cut.
+**Status:** Shipped — trigger contract, node-side agent (both rung 1 `/proc` poll and rung 2 netlink proc connector), CRD field, controller-side `EmergencyRemove` dispatch, and opt-in DaemonSet are all live. See the [roadmap](https://github.com/finos/5-spot/blob/main/docs/roadmaps/5spot-emergency-reclaim-by-process-match.md) for the full design and the per-phase ship dates.
 
 ---
 
@@ -248,7 +248,62 @@ A config with both match lists empty (or `killIfCommands: []`) is **inert** — 
 
 ### Poll interval
 
-The agent polls `/proc` every `poll_interval_ms` (default 250 ms — see `DEFAULT_POLL_INTERVAL_MS` in `src/reclaim_agent.rs`). This is the worst-case detection latency on rung 1 (`/proc` poll). A future rung 2 (netlink proc connector) will drop this to sub-millisecond latency with no code change to the matching logic.
+The agent polls `/proc` every `poll_interval_ms` (default 250 ms — see `DEFAULT_POLL_INTERVAL_MS` in `src/reclaim_agent.rs`). This is the worst-case detection latency on rung 1 (`/proc` poll).
+
+### Detector — rung 1 (`/proc` poll) vs rung 2 (netlink)
+
+The agent ships two detection back-ends. Both produce identical [`Match`](https://github.com/finos/5-spot/blob/main/src/reclaim_agent.rs) values, both go through the same Node-PATCH path; the only difference is the event source.
+
+| Mode | What it does | Latency | Idle CPU | Linux only? | Extra capability |
+|---|---|---|---|---|---|
+| `poll` (rung 1) | Walks `/proc` every `poll_interval_ms` | up to one poll interval (250 ms default) | ~0 (one syscall per pid per tick) | No — works wherever `/proc` exists | None |
+| `netlink` (rung 2) | Subscribes to the kernel's [proc connector](https://www.kernel.org/doc/html/latest/driver-api/connector.html) (`PROC_EVENT_EXEC`); kernel pushes one message per `exec(2)` | <10 ms (kernel-pushed) | sleeps until the kernel wakes it | **Yes** — Linux only | `CAP_NET_ADMIN` |
+
+Selection:
+
+```
+--detector=auto       # default. Linux → netlink, anywhere else → poll.
+--detector=netlink    # force netlink. Errors loudly on non-Linux or
+                      # without CAP_NET_ADMIN.
+--detector=poll       # force the rung-1 poll loop on any platform.
+```
+
+Override at deploy time via `RECLAIM_DETECTOR={auto|netlink|poll}` on the DaemonSet pod.
+
+**Tradeoff.** `netlink` is lower latency and lower idle CPU in steady state. Under heavy-exec workloads (`make -j32`, compile farms) it can be **more** expensive than `poll`, because rung 2 sees every short-lived process whereas rung 1 only sees those that survive to the next tick. If the operator's fleet runs exec storms, pin `--detector=poll` explicitly; otherwise keep the `auto` default.
+
+The DaemonSet manifest grants `CAP_NET_ADMIN` once at the pod level (see `deploy/node-agent/daemonset.yaml`), so an operator switching `--detector=poll → netlink` (or vice versa) does not need to re-roll the pod's security context. The cap is unused on `poll`; the kernel never sees a netlink syscall in that mode.
+
+### Kernel and capability requirements
+
+Rung 1 (`poll`) needs essentially nothing — `/proc` exists on every Linux kernel and the agent already has UID 0 + host `/proc` mount for [other reasons](#opt-in-installation). It also runs unmodified in a non-Linux container if you ever need to (the `Subscriber` constructor reports "unsupported" and the bin falls back automatically when `--detector=auto` is in effect).
+
+Rung 2 (`netlink`) has three runtime prerequisites:
+
+| Requirement | Provided by | What happens if missing |
+|---|---|---|
+| **Kernel built with `CONFIG_PROC_EVENTS=y`** | Distro kernel build (Debian, Ubuntu, RHEL/CentOS, Alpine, Talos, Bottlerocket, Chainguard host kernels — all default `y`) | The netlink socket opens cleanly but the kernel never pushes events. Agent sits idle, never matches. No userspace error to detect this. Diagnose by `zgrep CONFIG_PROC_EVENTS /proc/config.gz` on the host; mitigate by `--detector=poll`. |
+| **`CAP_NET_ADMIN` on the agent container** | `deploy/node-agent/daemonset.yaml` `securityContext.capabilities.add: [NET_ADMIN]` | `Subscriber::new()` fails at startup with `EPERM`; the bin exits non-zero and `kubelet` restarts it (crash loop until the cap is granted). `--detector=poll` works without it. |
+| **Linux kernel ≥ 2.6.15** | Effectively guaranteed on any cluster you'd actually deploy 5-Spot to (released 2006) | Same as missing `CONFIG_PROC_EVENTS` — silent. |
+
+The cap chain is straightforward:
+
+```
+deploy/node-agent/daemonset.yaml
+  └─ container.securityContext.capabilities
+       ├─ drop: [ALL]                 # default-deny
+       └─ add: [NET_ADMIN]            # rung 2 only — rung 1 doesn't use it
+```
+
+This is the *only* added capability. UID 0 + host `/proc` + `hostPID` were already required for rung 1 (the agent has to read every process's `/proc/<pid>/{comm,cmdline}` under `hidepid=2`). See [`.trivyignore`](https://github.com/finos/5-spot/blob/main/.trivyignore) for the architectural-necessity rationale on each Trivy / Semgrep finding the configuration trips.
+
+`CAP_NET_ADMIN` is broader than just netlink-connector access — it also grants ability to edit routes, iptables, etc. on the host network namespace. The risk is bounded by:
+
+1. **Opt-in nodeSelector** — the cap is granted only on Nodes labelled `5spot.finos.org/reclaim-agent: enabled`, which the controller stamps only when a `ScheduledMachine` on that Node has a non-empty `spec.killIfCommands`. A cluster that never uses `killIfCommands` never has the cap on any pod.
+2. **Single-purpose binary** — the agent has no shell, no exec of children, no remote-control surface. Compromising it requires swapping the binary on disk, at which point an attacker could grant any cap they wanted anyway.
+3. **Operator opt-out** — pin `--detector=poll` (env `RECLAIM_DETECTOR=poll`) and the cap is granted-but-unused. Operators with PSA `restricted` profiles or capability allowlists can deploy in this mode and never need the cap.
+
+See the [threat model](../security/threat-model.md#64-reclaim-agent-trust-boundary-tb5) for the full STRIDE table on the reclaim agent.
 
 ---
 
@@ -444,7 +499,10 @@ mode. The agent reads the path from `MACHINE_ID_PATH` (default
 
 Both gaps are out of scope for a node-side agent; remediating them
 requires a stronger node-attestation primitive (TPM-backed identity,
-SPIFFE SVIDs, etc.) — not in this controller's scope.
+SPIFFE SVIDs, etc.) — not in this controller's scope. A phased design
+for closing both gaps (TPM-quoted machine-id → SPIRE `tpm_devid`
+attestation → controller-side SVID verification) is tracked in the
+`5spot-strong-node-attestation` roadmap.
 
 ---
 

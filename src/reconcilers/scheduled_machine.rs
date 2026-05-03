@@ -97,6 +97,18 @@ pub struct Context {
     /// after the resource recovers.  Uses a `std::sync::Mutex` because
     /// `error_policy` is synchronous.
     pub retry_counts: Arc<Mutex<HashMap<String, u32>>>,
+    /// Recent emergency-reclaim event timestamps per `"namespace/name"`.
+    ///
+    /// Tracked in-memory only — see [`crate::loop_protection`] for the
+    /// reasoning. The reconciler appends a timestamp on every successful
+    /// entry into the `EmergencyRemove` flow and emits a `RapidReReclaim`
+    /// Warning Event when the deque length within
+    /// [`crate::constants::RAPID_RE_RECLAIM_WINDOW_SECS`] crosses
+    /// [`crate::constants::RAPID_RE_RECLAIM_THRESHOLD`]. Capped at
+    /// [`crate::constants::RAPID_RE_RECLAIM_MAX_TRACKED`] entries per SM
+    /// to bound worst-case allocation.
+    pub recent_reclaims:
+        Arc<Mutex<HashMap<String, std::collections::VecDeque<chrono::DateTime<chrono::Utc>>>>>,
     /// When `true` (default), `handle_deletion` force-removes the finalizer if
     /// CAPI cleanup exceeds [`crate::constants::FINALIZER_CLEANUP_TIMEOUT_SECS`],
     /// surfacing a `FinalizerCleanupTimedOut` Warning event and incrementing
@@ -130,6 +142,7 @@ impl Context {
             instance_count,
             recorder,
             retry_counts: Arc::new(Mutex::new(HashMap::new())),
+            recent_reclaims: Arc::new(Mutex::new(HashMap::new())),
             // Default to true so existing single-instance deployments without
             // leader election continue to work without any configuration change.
             is_leader: Arc::new(AtomicBool::new(true)),

@@ -69,6 +69,92 @@ Non-leader replicas watch for leadership changes and take over automatically wit
 
 > **Note:** Leader election and multi-instance sharding (`OPERATOR_INSTANCE_COUNT > 1`) are alternative HA strategies. Use leader election for active/standby HA; use instance sharding to distribute load across all replicas.
 
+## Reclaim agent (DaemonSet)
+
+The node-side `5spot-reclaim-agent` is a separate binary deployed
+via DaemonSet (`deploy/node-agent/daemonset.yaml`). It has its own
+flags and environment variables — distinct from the controller — and
+is opt-in: nothing happens on a Node until the controller stamps the
+`5spot.finos.org/reclaim-agent: enabled` label, which it does only
+when a `ScheduledMachine` on that Node has a non-empty
+`spec.killIfCommands`. See the [emergency-reclaim concept doc](../concepts/emergency-reclaim.md)
+for the full design.
+
+### Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `NODE_NAME` | _(required, injected via downward API)_ | Name of the Node the agent is running on. The agent only PATCHes this Node. |
+| `RECLAIM_PROC_ROOT` | `/proc` | Path the agent treats as `/proc`. Override for sandboxed/test runs only. |
+| `RECLAIM_DETECTOR` | `auto` | Process-event source. `auto` picks `netlink` on Linux and `poll` elsewhere. See the [Detector](#detector) subsection below. |
+| `MACHINE_ID_PATH` | `/etc/machine-id` | Path the agent reads for the host machine-id (host-identity verification, security-audit Phase 4). The DaemonSet mounts the host file at `/host/etc/machine-id` and sets this to that path. |
+| `SKIP_HOST_ID_CHECK` | `false` | If `true`, skip the `Node.status.nodeInfo.machineID` cross-check before PATCH. Use only when `/etc/machine-id` is genuinely unavailable; production must stay strict. |
+
+### Command-line arguments
+
+```bash
+5spot-reclaim-agent [OPTIONS]
+
+Options:
+  --proc-root <PATH>           Filesystem root mapped to /proc
+                                 [default: /proc] [env: RECLAIM_PROC_ROOT]
+  --node-name <NAME>           Node to annotate
+                                 [env: NODE_NAME]
+  --detector <DETECTOR>        Process-event source: auto | netlink | poll
+                                 [default: auto] [env: RECLAIM_DETECTOR]
+  --machine-id-path <PATH>     Host machine-id file
+                                 [default: /etc/machine-id] [env: MACHINE_ID_PATH]
+  --skip-host-id-check         Skip the host-identity cross-check before PATCH
+                                 (defence-in-depth; default off)
+                                 [env: SKIP_HOST_ID_CHECK]
+  --oneshot                    Run the detector once and exit
+                                 (one-shot tests / smoke verification)
+  -h, --help                   Print help
+  -V, --version                Print version
+```
+
+### Detector
+
+Two detection back-ends ship with the agent. Both produce identical
+matches and go through the same Node-PATCH path; only the event
+source differs.
+
+| Mode | Mechanism | Latency | Idle CPU | Linux only? | Extra capability |
+|---|---|---|---|---|---|
+| `poll` | Walks `/proc` every `poll_interval_ms` | up to one poll interval (250 ms default) | ~0 | No | None |
+| `netlink` | Subscribes to the kernel proc connector (`PROC_EVENT_EXEC`) | <10 ms (kernel-pushed) | sleeps until kernel wakes it | **Yes** | `CAP_NET_ADMIN` |
+
+`auto` (the default):
+- Linux → `netlink`
+- macOS / any non-Linux → `poll` (the netlink subscriber's
+  constructor returns `Unsupported` on those platforms)
+
+When to **pin `--detector=poll`** explicitly:
+
+- **Heavy-exec workloads** (`make -j32`, compile farms, CI workers)
+  — `netlink` sees every short-lived process even if it exits in
+  microseconds; `poll` only sees processes that survive to the
+  next tick. Under exec storms `poll` can be cheaper.
+- **`CAP_NET_ADMIN` is unacceptable** in your environment (PSA
+  `restricted` profile, hardened cluster policy). The cap is
+  granted only on opted-in nodes via the DaemonSet's pod-level
+  `securityContext`, but you may have organisational reasons to
+  keep it dropped.
+- **Kernel without `CONFIG_PROC_EVENTS`** (very rare; some
+  embedded / hardened distros). `netlink` socket opens cleanly
+  but no events are ever delivered. See
+  [troubleshooting](./troubleshooting.md#reclaim-agent-runs-but-never-observes-any-events).
+
+Override at deploy time:
+
+```bash
+# Switch a running DaemonSet to poll mode (no pod restart needed —
+# the agent watches its per-node ConfigMap, but env changes need a
+# rollout; use kubectl set env to trigger one):
+kubectl set env -n 5spot-system ds/5spot-reclaim-agent \
+  RECLAIM_DETECTOR=poll
+```
+
 ## ConfigMap Example
 
 ```yaml

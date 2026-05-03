@@ -120,10 +120,21 @@ flowchart LR
         Nodes["Kubernetes Nodes\n(cordon · drain · evict)"]
     end
 
+    subgraph TB5["TB5 · Node-Side Reclaim Agent"]
+        direction TB
+        Agent["5spot-reclaim-agent\n(opt-in DaemonSet pod)"]
+        AgentSA["Per-pod ServiceAccount\n(nodes:get,patch · cm:get,list,watch)"]
+        Caps["UID 0 + hostPID + CAP_NET_ADMIN\n+ host /proc + /etc/machine-id"]
+        Agent --- AgentSA
+        Agent --- Caps
+    end
+
     User -->|"F1 · HTTPS + RBAC"| TB1
     TB1 -->|"F2 · watch"| TB2
     TB2 -->|"F3 · create/delete"| TB3
     TB2 -->|"F4 · cordon/evict"| TB4
+    TB2 -->|"F5 · per-node CM project"| TB5
+    TB5 -->|"F6 · annotate own Node"| TB4
 ```
 
 ---
@@ -233,6 +244,52 @@ flowchart LR
 
 ---
 
+### 6.4 Reclaim Agent (Trust Boundary: TB5)
+
+The node-side `5spot-reclaim-agent` DaemonSet runs on opted-in
+worker nodes only and signals the controller via three Node
+annotations. It is the lowest-trust component in the system: pod
+runs as UID 0 with `hostPID: true`, host `/proc` mount, host
+`/etc/machine-id` mount, and `CAP_NET_ADMIN` (for rung 2 netlink
+proc connector). Per-pod `ServiceAccount` grants only
+`nodes: get,patch` cluster-wide and `configmaps: get,list,watch`
+in `5spot-system`.
+
+#### Spoofing
+| ID | Threat | Likelihood | Impact | Status |
+|---|---|---|---|---|
+| S5 | Attacker with `update daemonsets` overrides the agent pod's `NODE_NAME` env var, causing the agent to PATCH reclaim annotations on a victim Node it isn't actually running on | Low (precondition is cluster-admin-equivalent in most clusters) | High (would trigger emergency-remove on innocent host) | **Mitigated** — host-identity verification (`read_host_machine_id` + `compare_machine_ids`, security-audit Phase 4, 2026-04-26): agent reads `/etc/machine-id` from a `hostPath.type: File` mount at startup and refuses to PATCH a Node whose `status.nodeInfo.machineID` doesn't match. `--skip-host-id-check` opt-out exists but defaults off. |
+| S6 | Compromised pod somewhere else in the cluster spoofs the reclaim annotations directly on a Node, triggering an emergency-remove the agent never decided on | Low | High | **Partially mitigated** — `nodes: patch` is broadly held in most clusters (kubelet itself has it); the controller treats the annotation as authoritative. Mitigation: monitor `5spot.finos.org/reclaim-requested` PATCH events via API audit logs, alert when the field manager is anything other than `5spot-reclaim-agent`. |
+
+#### Tampering
+| ID | Threat | Likelihood | Impact | Status |
+|---|---|---|---|---|
+| T12 | Compromised agent escalates to other Nodes via stolen ServiceAccount token | Low (per-pod SA, scoped credentials) | Medium | **Mitigated** — RBAC: `nodes: get,patch` cluster-wide (no `list/watch` — can't enumerate). Host-identity check refuses any PATCH against a Node whose `machineID` doesn't match the agent's own `/etc/machine-id`. |
+| T13 | `CAP_NET_ADMIN` (granted for rung 2 netlink) is misused to send rogue netlink messages on other subsystems | Low | Low–Medium | **Accepted** — `CAP_NET_ADMIN` is Linux's coarsest-grained networking cap and grants more than just netlink connector access (route table edits, iptables, etc.). Scope-bounded in two ways: (1) the cap is added only on opted-in Nodes via the existing `5spot.finos.org/reclaim-agent: enabled` nodeSelector, so only the small set of Nodes with `killIfCommands` set ever sees it; (2) the agent binary is single-purpose with no shell, no exec of children — a compromise would need an attacker to swap the binary, at which point they could grant themselves any cap they wanted. Operators who refuse the cap can pin `--detector=poll` (rung 1) which needs no extra capability. |
+
+#### Repudiation
+| ID | Threat | Likelihood | Impact | Status |
+|---|---|---|---|---|
+| R1 | Agent PATCH on the Node is indistinguishable from controller writes in audit logs | Low | Low | **Mitigated** — the agent uses field manager `5spot-reclaim-agent`; the controller uses the distinct field manager `5spot-controller-reclaim-agent`. Every Node PATCH carries the field manager in `managedFields`, so audit attribution is unambiguous (NIST AU-2 / AU-10). |
+
+#### Information Disclosure
+| ID | Threat | Likelihood | Impact | Status |
+|---|---|---|---|---|
+| I3 | Reading host `/proc/<pid>/cmdline` for matching exposes argv strings (which can include passwords / tokens passed on the command line) to the agent's logs | Low (logs are operator-owned) | Low | **Accepted** — the agent logs `matched_pattern` (the operator-supplied pattern) and the matched pid, NOT the full cmdline. Patterns themselves are operator-authored config, not user input. |
+
+#### Denial of Service
+| ID | Threat | Likelihood | Impact | Status |
+|---|---|---|---|---|
+| D8 | User repeatedly re-enables a SM whose conflicting process is still running, generating an ejection loop | Medium | Low | **Mitigated** — loop-protection: ≥3 reclaims for the same SM within 10 minutes emits a `RapidReReclaim` Warning Event and bumps `fivespot_rapid_re_reclaims_total{namespace, name}`. Operator runbook in [troubleshooting](../operations/troubleshooting.md) covers the response. |
+| D9 | Heavy-exec workload (`make -j32`) overwhelms the netlink subscriber's recv loop with `PROC_EVENT_EXEC` traffic | Low | Low | **Accepted** — agent CPU is bounded by container limits (`50m`); `ENOBUFS` on the netlink socket surfaces as `NetlinkError::Io` and is logged, not silently dropped. Operators who anticipate exec storms should pin `--detector=poll`. |
+
+#### Elevation of Privilege
+| ID | Threat | Likelihood | Impact | Status |
+|---|---|---|---|---|
+| E4 | `hostPID: true` lets the agent see all host PIDs — could be abused to extract data from another container's `/proc/<pid>/environ` if the agent is compromised | Low | Medium | **Accepted** — `hostPID` is architecturally required (the agent's job is to read host process state). Mitigated by: opt-in `nodeSelector` (only on nodes with `killIfCommands`), single-purpose binary with no shell, `readOnlyRootFilesystem: true`, drop ALL caps + add only `NET_ADMIN`, `seccompProfile: RuntimeDefault`. Trivy / Semgrep suppressions in `.trivyignore` document the architectural-necessity reasoning. |
+
+---
+
 ## 7. Mitigations Summary
 
 ### Implemented (as of 2026-04-08)
@@ -250,6 +307,11 @@ flowchart LR
 | CPU/memory resource limits | `deploy/deployment/deployment.yaml` | D1 — resource exhaustion |
 | PDB 429 handling in `evict_pod` | `src/reconcilers/helpers.rs` | D5 — API rate limit crash |
 | Cosign image signing in release CI | `.github/workflows/release.yaml` | S3 — image tampering |
+| Host-identity verification (machine-id cross-check) | `src/reclaim_agent.rs::compare_machine_ids` + `deploy/node-agent/daemonset.yaml` (`/etc/machine-id` mount) | S5 — DaemonSet-tampering NODE_NAME spoof |
+| Distinct field managers (`5spot-reclaim-agent` vs `5spot-controller-reclaim-agent`) | All Node PATCH paths | R1 — audit attribution |
+| Per-pod `ServiceAccount` with `nodes: get,patch` only (no `list/watch`) | `deploy/node-agent/rbac.yaml` | T12 — agent enumerates other Nodes |
+| Opt-in `5spot.finos.org/reclaim-agent: enabled` nodeSelector | `deploy/node-agent/daemonset.yaml` | T13 — `CAP_NET_ADMIN` scope-bounding |
+| Loop-protection (`RapidReReclaim` warning + counter) | `src/loop_protection.rs` + `src/reconcilers/helpers.rs::handle_emergency_remove` | D8 — re-enable loop |
 
 ### Deployment-Layer Controls (operator responsibility)
 

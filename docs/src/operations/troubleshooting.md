@@ -369,6 +369,142 @@ kubectl patch scheduledmachine/<name> --type merge \
 
 5. **The agent only reads `/proc/<pid>/comm` (exact basename) and `/proc/<pid>/cmdline` (substring).** A process whose `comm` is `java-wrapper` but argv starts with `/opt/jdk/bin/java ...` matches on `cmdline` (substring), not on `comm` (exact).
 
+### Reclaim agent crash-loops with `EPERM` on netlink socket
+
+**Symptom:** `kubectl logs -n 5spot-system <reclaim-agent-pod>` shows
+the agent exiting at startup with an error like:
+
+```
+netlink i/o: Operation not permitted (os error 1)
+```
+
+or `Subscriber::new() failed: netlink i/o: EPERM`.
+
+**Cause:** `--detector=netlink` is in effect (the default on Linux),
+but the pod's container does not have `CAP_NET_ADMIN`. The kernel
+refuses to bind an `AF_NETLINK` socket to the `CN_IDX_PROC`
+multicast group without it.
+
+**Fix (one of):**
+
+1. **Confirm the cap is in the manifest** —
+   `deploy/node-agent/daemonset.yaml` should grant `NET_ADMIN`
+   under the container's `securityContext.capabilities.add`. If a
+   downstream patch removed it, restore:
+
+   ```bash
+   kubectl get ds -n 5spot-system 5spot-reclaim-agent \
+     -o jsonpath='{.spec.template.spec.containers[0].securityContext.capabilities}'
+   # Expect: {"add":["NET_ADMIN"],"drop":["ALL"]}
+   ```
+
+2. **Force `poll` mode** if granting `CAP_NET_ADMIN` is not
+   acceptable in your environment. The agent's rung 1 (`/proc`
+   poll) detects the same processes at higher latency (≤250 ms vs
+   <10 ms) and zero added capability:
+
+   ```bash
+   kubectl set env -n 5spot-system ds/5spot-reclaim-agent \
+     RECLAIM_DETECTOR=poll
+   ```
+
+   See [Detector — rung 1 vs rung 2](../concepts/emergency-reclaim.md)
+   for the tradeoff.
+
+3. **Pod Security Admission may strip capabilities** under the
+   `restricted` profile. The DaemonSet's pod-level
+   `securityContext` already drops `runAsNonRoot=false` and other
+   restricted-profile bumps; if PSA is enforcing `restricted` on
+   `5spot-system`, downgrade the namespace label to `baseline` or
+   add an exemption. The reclaim-agent's privileges are
+   architecturally bounded by its opt-in nodeSelector.
+
+### Reclaim agent runs but never observes any events
+
+**Symptom:** Agent pod is `Running`, no errors in logs, host has
+exec activity (e.g. user is launching processes), but `kubectl
+describe node <name>` never shows the reclaim annotations even with
+a known-matching `killIfCommands` list.
+
+**Possible cause: kernel built without `CONFIG_PROC_EVENTS`.** This
+is rare but possible on heavily-stripped distro kernels (some
+embedded / hardened images). The netlink socket opens cleanly but
+the kernel never pushes events.
+
+**Diagnose:**
+
+```bash
+# Inspect the running kernel's config (if /proc/config.gz is present)
+zgrep CONFIG_PROC_EVENTS /proc/config.gz
+# Or grep the booted kernel's config file
+grep CONFIG_PROC_EVENTS /boot/config-$(uname -r)
+# Expect: CONFIG_PROC_EVENTS=y
+```
+
+**Fix:** switch to `--detector=poll` (or `RECLAIM_DETECTOR=poll`).
+The rung-1 poll does not depend on the kernel feature.
+
+### Rapid re-reclaim loop — `RapidReReclaim` Warning Event
+
+**Symptom:** `kubectl get events` shows multiple `RapidReReclaim`
+warnings on the same ScheduledMachine within minutes; the
+controller log carries the corresponding warning lines; the
+`fivespot_rapid_re_reclaims_total{namespace, name}` metric is
+incrementing.
+
+**Meaning:** The controller has observed ≥3 emergency-reclaim
+events for this SM within 10 minutes
+(`RAPID_RE_RECLAIM_THRESHOLD = 3`,
+`RAPID_RE_RECLAIM_WINDOW_SECS = 600`). Almost always: a user is
+re-enabling the schedule (`spec.schedule.enabled=true`) before
+they have stopped the conflicting process the agent is matching
+on. The agent fires again the moment the Node rejoins, and the
+loop repeats.
+
+**Diagnose:**
+
+```bash
+# 1. Find the offending SM and pull its emergency-reclaim history
+kubectl get events --field-selector reason=EmergencyReclaim \
+  --sort-by='.lastTimestamp' \
+  -o jsonpath='{range .items[*]}{.lastTimestamp} {.involvedObject.namespace}/{.involvedObject.name} {.message}{"\n"}{end}'
+
+# 2. Check what `killIfCommands` patterns are configured
+kubectl get scheduledmachine <name> -o jsonpath='{.spec.killIfCommands}'
+
+# 3. Walk the agent log to see what was matched on the most recent fire
+kubectl logs -n 5spot-system -l app=5spot-reclaim-agent --tail=100 \
+  | jq -c 'select(.fields.matched_pattern)'
+```
+
+**Fix paths (operator-side):**
+
+- **Confirm with the user** that the conflicting process is gone
+  before they re-enable. The whole point of the agent is the user's
+  workstation got their attention; `ps aux | grep <pattern>` on the
+  host (or `kubectl debug node/<node-name> -it --image=alpine` if
+  no host shell) is the canonical confirmation.
+- **Adjust `killIfCommands`** if the pattern is over-matching
+  (e.g. `java` matches every JVM, including the user's IDE that
+  may be acceptable). Switch to the more specific
+  `match_argv_substrings` form via direct ConfigMap edit, or narrow
+  the basename.
+- **Suppress the loop temporarily** by clearing the spec:
+  ```bash
+  kubectl patch scheduledmachine <name> --type=merge \
+    -p '{"spec":{"killIfCommands":null}}'
+  ```
+  This tears down the per-node ConfigMap + label, which evicts the
+  agent pod from the Node, which means no further reclaim fires
+  even if the user starts a matching process.
+
+**Why no auto-resume:** the controller deliberately does not flip
+`spec.schedule.enabled` back to `true` automatically when the
+matching process exits. Doing so would invite races between the
+Node rejoining and the agent restarting, and would silently mask
+the user behaviour the warning is trying to surface. Re-enable is
+explicit by design.
+
 ### `EmergencyReclaim` event fires but schedule is not disabled
 
 **Symptom:** The `EmergencyReclaim` event is on the `ScheduledMachine`, but `spec.schedule.enabled` is still `true`.

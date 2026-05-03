@@ -67,3 +67,64 @@ fn test_set_leader_status() {
     set_leader_status(true);
     set_leader_status(false);
 }
+
+#[test]
+fn test_record_emergency_drain_observes_each_outcome() {
+    let before_success = EMERGENCY_DRAIN_DURATION_SECONDS
+        .with_label_values(&["success"])
+        .get_sample_count();
+    record_emergency_drain(2.5, EmergencyDrainOutcome::Success);
+    let after_success = EMERGENCY_DRAIN_DURATION_SECONDS
+        .with_label_values(&["success"])
+        .get_sample_count();
+    assert_eq!(after_success, before_success + 1);
+
+    let before_timeout = EMERGENCY_DRAIN_DURATION_SECONDS
+        .with_label_values(&["timeout"])
+        .get_sample_count();
+    record_emergency_drain(60.0, EmergencyDrainOutcome::Timeout);
+    let after_timeout = EMERGENCY_DRAIN_DURATION_SECONDS
+        .with_label_values(&["timeout"])
+        .get_sample_count();
+    assert_eq!(after_timeout, before_timeout + 1);
+
+    let before_error = EMERGENCY_DRAIN_DURATION_SECONDS
+        .with_label_values(&["error"])
+        .get_sample_count();
+    record_emergency_drain(0.1, EmergencyDrainOutcome::Error);
+    let after_error = EMERGENCY_DRAIN_DURATION_SECONDS
+        .with_label_values(&["error"])
+        .get_sample_count();
+    assert_eq!(after_error, before_error + 1);
+}
+
+#[test]
+fn test_record_emergency_reclaim_increments_per_sm_counter() {
+    let ns = "test-emergency-reclaim";
+    let name = "sm-counter-fixture";
+    let before = EMERGENCY_RECLAIMS_TOTAL
+        .with_label_values(&[ns, name])
+        .get();
+    record_emergency_reclaim(ns, name);
+    record_emergency_reclaim(ns, name);
+    let after = EMERGENCY_RECLAIMS_TOTAL
+        .with_label_values(&[ns, name])
+        .get();
+    assert!(
+        (after - before - 2.0).abs() < f64::EPSILON,
+        "EMERGENCY_RECLAIMS_TOTAL must increment exactly twice: before={before} after={after}"
+    );
+}
+
+#[test]
+fn test_record_rapid_re_reclaim_increments_per_sm_counter() {
+    let ns = "test-rapid-re-reclaim";
+    let name = "sm-loop-fixture";
+    let before = RAPID_RE_RECLAIMS_TOTAL.with_label_values(&[ns, name]).get();
+    record_rapid_re_reclaim(ns, name);
+    let after = RAPID_RE_RECLAIMS_TOTAL.with_label_values(&[ns, name]).get();
+    assert!(
+        (after - before - 1.0).abs() < f64::EPSILON,
+        "RAPID_RE_RECLAIMS_TOTAL must increment by one: before={before} after={after}"
+    );
+}

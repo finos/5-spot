@@ -51,24 +51,58 @@ Port: 8080 (default)
 
 ### Available Metrics
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `five_spot_up` | Gauge | Operator health (1 = healthy) |
-| `five_spot_reconciliations_total` | Counter | Total reconciliations by phase and result |
-| `five_spot_reconciliation_duration_seconds` | Histogram | Reconciliation duration |
-| `five_spot_machines_total` | Gauge | Total machines by phase |
-| `five_spot_schedule_evaluations_total` | Counter | Schedule evaluations performed |
+All metrics use the `fivespot_` prefix. The full list lives in
+`src/metrics.rs`; the table below is the operator-facing summary.
+
+#### Reconciler
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `fivespot_reconciliations_total` | Counter | `phase`, `result` | Reconciliation attempts |
+| `fivespot_reconciliation_duration_seconds` | Histogram | `phase` | Reconciliation latency (s) |
+| `fivespot_machines_active` | Gauge | — | Machines currently in `Active` phase |
+| `fivespot_machines_by_phase` | Gauge | `phase` | Machines per lifecycle phase |
+| `fivespot_schedule_evaluations_total` | Counter | `result` | Schedule evaluations by outcome |
+| `fivespot_kill_switch_activations_total` | Gauge | — | Kill-switch activations |
+| `fivespot_controller_info` | Gauge | `version`, `instance_id` | Always 1; carries label metadata |
+| `fivespot_is_leader` | Gauge | — | 1 if this instance holds the leader lease |
+| `fivespot_errors_total` | Counter | `error_type` | Errors by type |
+| `fivespot_finalizer_cleanup_timeouts_total` | Counter | — | Finalizer cleanup timeouts (force-removed; possible orphans) |
+
+#### Node drain & eviction
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `fivespot_node_drains_total` | Counter | `result` | Node drain attempts |
+| `fivespot_pod_evictions_total` | Counter | `result` | Pod eviction attempts during drain |
+
+#### Emergency reclaim (process-match)
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `fivespot_emergency_drain_duration_seconds` | Histogram | `outcome` | Wall-clock duration of emergency-reclaim drains. `outcome={success\|timeout\|error}` |
+| `fivespot_emergency_reclaims_total` | Counter | `namespace`, `name` | Emergency-reclaim events fired per ScheduledMachine |
+| `fivespot_rapid_re_reclaims_total` | Counter | `namespace`, `name` | `RapidReReclaim` warnings emitted per ScheduledMachine (loop-protection — see [Emergency reclaim concept](../concepts/emergency-reclaim.md)) |
+
+`fivespot_emergency_drain_duration_seconds` buckets are sized for the
+60 s `EMERGENCY_DRAIN_TIMEOUT_SECS` ceiling: `[0.5, 1.0, 2.5, 5.0,
+10.0, 15.0, 20.0, 30.0, 45.0, 60.0, 90.0]` seconds. The `outcome`
+label lets dashboards compute success-only P95 and timeout-rate
+side by side without mixing them in the same query.
 
 ### Labels
 
 Common labels across metrics:
 
 | Label | Description |
-|-------|-------------|
+|---|---|
 | `phase` | Machine lifecycle phase |
-| `result` | Operation result (success, error) |
-| `namespace` | Resource namespace |
-| `name` | Resource name |
+| `result` | Operation result (`success`, `failure`, `error`) |
+| `outcome` | Outcome label on emergency-drain histogram (`success`, `timeout`, `error`) |
+| `namespace` | Resource namespace (per-SM emergency-reclaim metrics only) |
+| `name` | Resource name (per-SM emergency-reclaim metrics only) |
+| `error_type` | Error category for `fivespot_errors_total` |
+| `version` / `instance_id` | Controller info labels (carried on `fivespot_controller_info`) |
 
 ## ServiceMonitor (Prometheus Operator)
 
@@ -95,35 +129,85 @@ spec:
 
 Example queries for a Grafana dashboard:
 
-### Operator Health
+### Operator health (leader presence)
 
 ```promql
-five_spot_up
+sum(fivespot_is_leader)
 ```
 
-### Machines by Phase
+A value of 0 across all replicas is a paging condition — no instance
+holds the lease, no reconciles are running.
+
+### Machines by phase
 
 ```promql
-sum by (phase) (five_spot_machines_total)
+sum by (phase) (fivespot_machines_by_phase)
 ```
 
-### Reconciliation Rate
+### Reconciliation rate
 
 ```promql
-rate(five_spot_reconciliations_total[5m])
+rate(fivespot_reconciliations_total[5m])
 ```
 
-### Reconciliation Latency (p99)
+### Reconciliation latency (P99)
 
 ```promql
-histogram_quantile(0.99, rate(five_spot_reconciliation_duration_seconds_bucket[5m]))
+histogram_quantile(0.99, rate(fivespot_reconciliation_duration_seconds_bucket[5m]))
 ```
 
-### Error Rate
+### Reconciliation failure rate
 
 ```promql
-rate(five_spot_reconciliations_total{result="error"}[5m])
+rate(fivespot_reconciliations_total{result="failure"}[5m])
 ```
+
+### Emergency-reclaim drain — success P95
+
+```promql
+histogram_quantile(
+  0.95,
+  rate(fivespot_emergency_drain_duration_seconds_bucket{outcome="success"}[10m])
+)
+```
+
+Operator SLO: P95 should sit well below 30 s on a healthy fleet. A
+growing P95 signals workloads with bad
+`terminationGracePeriodSeconds` defaults or PodDisruptionBudgets
+that are clipping the drain.
+
+### Emergency-reclaim drain — timeout rate
+
+```promql
+sum(rate(fivespot_emergency_drain_duration_seconds_count{outcome="timeout"}[10m]))
+```
+
+Any non-zero value means the 60 s `EMERGENCY_DRAIN_TIMEOUT_SECS`
+ceiling is biting. Cross-reference with
+`fivespot_pod_evictions_total{result="failure"}` to identify the
+workloads that wouldn't evict.
+
+### Top emergency-reclaim offenders (per-SM rate)
+
+```promql
+topk(10, sum by (namespace, name) (rate(fivespot_emergency_reclaims_total[1h])))
+```
+
+The 10 ScheduledMachines emergency-reclaimed most often in the last
+hour. A SM that consistently shows up here is a candidate for
+`killIfCommands` review — the user's workload may not be a true
+"got my box back" emergency.
+
+### `RapidReReclaim` warnings
+
+```promql
+sum by (namespace, name) (rate(fivespot_rapid_re_reclaims_total[1h]))
+```
+
+Any non-zero rate is operator-actionable: a user is re-enabling a
+SM whose conflicting process is still running. Trigger an alert and
+follow the "Rapid re-reclaim loop" runbook in
+[troubleshooting](./troubleshooting.md).
 
 ## Structured Logging
 
@@ -247,6 +331,9 @@ Event types and reasons:
 | Normal | `ScheduleDisabled` | Schedule disabled, machine deactivated |
 | Warning | `ReconcileFailed` | Unrecoverable error — machine in Error phase |
 | Warning | `KillSwitchActivated` | Emergency kill switch triggered |
+| Warning | `EmergencyReclaim` | Reclaim-agent process-match fired; emergency-remove flow started |
+| Warning | `EmergencyReclaimDisabledSchedule` | Step 5 of the flow: `spec.schedule.enabled=false` patched (load-bearing — breaks the eject→re-add→re-eject loop) |
+| Warning | `RapidReReclaim` | ≥3 reclaims for the same SM within 10 min — the user is re-enabling without first stopping the conflicting process. See [troubleshooting](./troubleshooting.md) |
 
 Events are written to the `events.k8s.io/v1` API and are immutable once created, providing an auditable state-change trail (SOX §404 / NIST AU-2).
 
@@ -258,29 +345,65 @@ Events are written to the `events.k8s.io/v1` API and are immutable once created,
 groups:
   - name: 5spot
     rules:
-      - alert: FiveSpotOperatorDown
-        expr: five_spot_up == 0
+      - alert: FiveSpotNoLeader
+        expr: sum(fivespot_is_leader) == 0
         for: 5m
         labels:
           severity: critical
         annotations:
-          summary: "5-Spot controller is down"
-          
-      - alert: FiveSpotHighErrorRate
-        expr: rate(five_spot_reconciliations_total{result="error"}[5m]) > 0.1
+          summary: "No 5-Spot controller instance holds the leader lease"
+
+      - alert: FiveSpotHighFailureRate
+        expr: rate(fivespot_reconciliations_total{result="failure"}[5m]) > 0.1
         for: 10m
         labels:
           severity: warning
         annotations:
-          summary: "High reconciliation error rate"
-          
+          summary: "High reconciliation failure rate"
+
       - alert: FiveSpotSlowReconciliation
-        expr: histogram_quantile(0.99, rate(five_spot_reconciliation_duration_seconds_bucket[5m])) > 30
+        expr: histogram_quantile(0.99, rate(fivespot_reconciliation_duration_seconds_bucket[5m])) > 30
         for: 15m
         labels:
           severity: warning
         annotations:
-          summary: "Slow reconciliation detected"
+          summary: "Slow reconciliation detected (P99 > 30 s)"
+
+      - alert: FiveSpotEmergencyDrainTimeoutRising
+        expr: |
+          sum(rate(fivespot_emergency_drain_duration_seconds_count{outcome="timeout"}[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Emergency-reclaim drains hitting the 60 s timeout ceiling"
+          description: |
+            One or more emergency-reclaim drains failed to evict all pods within
+            EMERGENCY_DRAIN_TIMEOUT_SECS (60 s). Cross-reference with
+            fivespot_pod_evictions_total{result="failure"} to identify the
+            offending workloads.
+
+      - alert: FiveSpotRapidReReclaim
+        expr: |
+          sum by (namespace, name) (rate(fivespot_rapid_re_reclaims_total[15m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ScheduledMachine {{ $labels.namespace }}/{{ $labels.name }} is in a rapid re-reclaim loop"
+          description: |
+            ≥3 emergency-reclaim events fired within 10 minutes for the same SM —
+            the user is re-enabling the schedule without first stopping the
+            conflicting process. See troubleshooting.md "Rapid re-reclaim loop"
+            runbook.
+
+      - alert: FiveSpotFinalizerCleanupTimeouts
+        expr: rate(fivespot_finalizer_cleanup_timeouts_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Finalizers being force-removed; possible orphan CAPI resources"
 ```
 
 ## Related

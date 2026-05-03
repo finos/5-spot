@@ -9,6 +9,213 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-05-02 23:30] - Emergency-reclaim roadmap closeout: drain stopwatch + loop protection + integration tests
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/loop_protection.rs` (~75 LOC) + `src/loop_protection_tests.rs`
+  (14 pure-helper tests). Module exposes `prune_old_reclaim_events`,
+  `record_emergency_reclaim_event`, and `should_warn_rapid_re_reclaim`
+  — all operate on `&mut VecDeque<DateTime<Utc>>` so the tests drive
+  every branch with no clock or controller. Threshold + window come
+  from new constants in `src/constants.rs`
+  (`RAPID_RE_RECLAIM_THRESHOLD = 3`,
+  `RAPID_RE_RECLAIM_WINDOW_SECS = 600`,
+  `RAPID_RE_RECLAIM_MAX_TRACKED = 10`,
+  `REASON_RAPID_RE_RECLAIM = "RapidReReclaim"`).
+- `Context.recent_reclaims:
+  Arc<Mutex<HashMap<String, VecDeque<DateTime<Utc>>>>>` — in-memory
+  per-SM tracker, keyed by `"namespace/name"`. Documented choice:
+  no CRD schema bump, no status-patch round trip; controller restart
+  resets the count, which the metric still captures on a trend basis.
+- `src/metrics.rs`: three new metrics with helpers —
+  `fivespot_emergency_drain_duration_seconds` (HistogramVec,
+  outcome={success|timeout|error}, buckets sized for the 60 s drain
+  ceiling), `fivespot_emergency_reclaims_total` (CounterVec by
+  namespace+name), `fivespot_rapid_re_reclaims_total` (CounterVec by
+  namespace+name). Helpers `record_emergency_drain`,
+  `record_emergency_reclaim`, `record_rapid_re_reclaim` plus
+  `EmergencyDrainOutcome` enum. 4 new tests in `metrics_tests.rs`.
+- `src/reconcilers/helpers.rs`: drain call in `handle_emergency_remove`
+  is now wrapped in an `Instant::now()` stopwatch; outcome classified
+  by error message (timeout substring → Timeout, other Err → Error,
+  Ok → Success). Per-SM emergency-reclaim counter bumped once per
+  flow (the idempotent recovery handler short-circuits before this
+  point on restart). Loop-protection check fires after the bump:
+  appends timestamp, prunes old entries, emits `RapidReReclaim`
+  Warning Event + bumps the new metric when threshold crosses. New
+  pure helper `build_rapid_re_reclaim_event(name)`.
+- `tests/integration_netlink_proc.rs` — Linux-only (`#![cfg(target_os
+  = "linux")]`) runtime test for the netlink subscriber. Two
+  `#[ignore]` cases: one targets a spawned `/bin/true` child and
+  asserts <100 ms detection latency per issue #40 acceptance
+  criterion; one is a quieter "subscriber sees *some* event"
+  smoke test.
+- `tests/integration_emergency_reclaim.rs` — kind-cluster annotation
+  contract test (graceful-skip if no cluster, `#[ignore]`). Two cases:
+  agent's `build_patch_body` round-trips through the controller's
+  `node_reclaim_request` parser; partial annotations (reason set,
+  requested=true absent) parse to `None`. Plus one always-on
+  constants-pinning test.
+
+### Changed
+- `src/reconcilers/mod.rs`: re-export `build_clear_reclaim_patch`,
+  `node_reclaim_request`, and `ReclaimRequest` from `helpers` so the
+  kind-cluster test can use the published API surface.
+- Roadmap `~/dev/roadmaps/5spot-emergency-reclaim-by-process-match.md`
+  → renamed `completed-5spot-emergency-reclaim-by-process-match.md`
+  (per the user-memory rule "rename completed roadmaps with
+  `completed-` prefix when every phase is done"). Status header
+  rewritten to ✅ Complete; Phase 2.c rung 2 section flipped from
+  "deferred to issue #40" to fully shipped; deferred-items section
+  rewritten as "Closed follow-ups" with the four checkboxes ticked.
+
+### Why
+Closes the four open items the rung 2 implementation called out as
+explicit follow-ups:
+
+1. **Drain stopwatch** — operators now have a Prometheus histogram of
+   actual emergency-drain duration sliced by outcome, so SLO dashboards
+   can compute success-only P95 vs timeout-rate side by side.
+2. **Re-enable loop protection** — when a user re-enables a SM whose
+   conflicting process is still running, the third reclaim within
+   10 minutes now triggers a `RapidReReclaim` Warning Event telling the
+   operator to stop the conflicting process before re-enabling. The
+   loop is no longer silent.
+3. **Linux netlink runtime test** — issue #40 acceptance criterion
+   "JVM launch produces a match within <100 ms" is now verifiable via
+   `cargo test --test integration_netlink_proc -- --ignored` on a real
+   Linux node with `CAP_NET_ADMIN`.
+4. **Kind-cluster integration test** — proves the agent → controller
+   annotation contract round-trips through a real API server. Catches
+   the entire class of "agent writes annotations the controller can't
+   parse" regressions that no unit test would surface.
+
+With these closed, every phase of the
+`5spot-emergency-reclaim-by-process-match.md` roadmap is shipped and
+the file moves to `completed-` prefix.
+
+### Impact
+- [ ] Breaking change (no API surface change; new metrics + new event
+      reason are additive)
+- [x] Requires cluster rollout (binary changes; CRD unchanged so no
+      `kubectl apply` of the CRD YAML needed)
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- `cargo build`: clean.
+- `cargo test`: **450 unit tests + 3 always-on integration tests pass**;
+  4 `#[ignore]` integration tests (2 emergency-reclaim, 2 netlink) gated
+  on a real cluster / Linux + CAP_NET_ADMIN respectively.
+- `cargo fmt --check`: clean.
+- `cargo clippy --all-targets -- -D warnings`: clean.
+
+---
+
+## [2026-05-02 23:00] - Reclaim-agent rung 2: netlink proc connector subscriber
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/netlink_proc.rs` (~280 LOC) — new module exposing `ProcEvent`,
+  `NetlinkError`, portable parsers (`parse_cn_msg`, `parse_proc_event`),
+  and `Subscriber`. Linux impl opens an `AF_NETLINK` /
+  `NETLINK_CONNECTOR` socket, binds to the `CN_IDX_PROC` multicast
+  group, sends the `PROC_CN_MCAST_LISTEN` control message, and yields
+  one `ProcEvent` per kernel `exec(2)`. Non-Linux: `Subscriber::new()`
+  immediately returns `NetlinkError::Unsupported` so the binary still
+  links cleanly on macOS / Windows builds.
+- `src/netlink_proc_tests.rs` — 14 byte-level parser tests + 1
+  non-Linux stub contract test = **15 new tests, all running on macOS
+  CI** without needing a kernel: exec / fork / exit classification,
+  truncated buffers, wrong connector id, zero-length payload,
+  cn_msg→proc_event round-trip, non-Linux `Subscriber::new` returns
+  `Unsupported`.
+- `src/bin/reclaim_agent.rs`: new `--detector={auto|netlink|poll}`
+  flag (env `RECLAIM_DETECTOR`, default `auto`). `auto` selects
+  `netlink` on Linux and `poll` elsewhere. New `run_netlink_scanner`
+  loop runs alongside the existing `run_scanner`; selection happens
+  once after host-id verification, before either loop starts. The
+  netlink loop opens the subscriber only when armed by a non-empty
+  ConfigMap and tears it down on config-clear, so an idle agent holds
+  no kernel resources. The `recv(2)` syscall runs on a `spawn_blocking`
+  thread; `tokio::select!` cancels via the existing config watch
+  channel.
+- `Cargo.toml`: `target.'cfg(target_os = "linux")'.dependencies.nix =
+  { version = "0.30", default-features = false, features = ["socket",
+  "net", "uio"] }`. Linux-only — non-Linux builds pull in nothing new.
+- `deploy/node-agent/daemonset.yaml`: container `securityContext`
+  gains `capabilities.add: [NET_ADMIN]`. The pod-level comment block
+  rewritten to reflect that this is no longer "future work."
+- `.trivyignore`: new `AVD-KSV-0022` entry justifying the
+  `CAP_NET_ADMIN` add against the existing architectural-necessity
+  rationale pattern (matches the KSV-0010 / KSV-0012 / KSV-0023 etc.
+  blocks already in the file).
+- `docs/src/concepts/emergency-reclaim.md`: new "Detector — rung 1
+  vs rung 2" subsection with the comparison table, selection flags,
+  the heavy-exec-storm tradeoff, and a note on why the cap is granted
+  pod-level rather than per-detector.
+
+### Changed
+- `src/reclaim_agent.rs`: `match_pid` visibility raised from `fn` to
+  `pub fn` so the rung 2 netlink subscriber can resolve a kernel-pushed
+  pid through the same match logic rung 1 uses. Body and behaviour
+  unchanged. Existing 46 tests stay green.
+- `src/lib.rs`: `pub mod netlink_proc` added; module list comment
+  block extended.
+- `docs/src/concepts/emergency-reclaim.md` status header updated:
+  rung 2 is shipped, no longer "follow-up work."
+
+### Why
+Closes the deferred Phase 2 rung 2 of
+`~/dev/roadmaps/5spot-emergency-reclaim-by-process-match.md` and
+GitHub issue #40. Rung 1 already meets the <5 s SLA, so this is
+optimisation, not correctness — payoff is detection latency dropping
+from up to 250 ms (worst-case poll phase) to <10 ms (kernel push)
+and idle CPU dropping to zero on quiet nodes. The detector is opt-in
+via `--detector=netlink`; `auto` (the default) picks netlink on Linux
+and poll elsewhere. Operators on heavy-exec workloads can pin
+`--detector=poll` to avoid the per-exec cost.
+
+The netlink ABI is identical across Linux x86_64 and aarch64; both
+build targets in `.github/workflows/build.yaml` get rung 2 with no
+per-arch code. Windows is out of scope (no netlink ABI; would need an
+ETW-based sibling impl behind the same trait, separate effort).
+
+### Impact
+- [ ] Breaking change (new flag is opt-in via `auto` default; existing
+      operators with `RECLAIM_DETECTOR` unset continue on the
+      platform-appropriate default; rung 1 stays available as `poll`)
+- [x] Requires cluster rollout (DaemonSet manifest changes —
+      `kubectl apply -k deploy/node-agent/` to pick up `CAP_NET_ADMIN`
+      and the new env var support)
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- `cargo build --bin 5spot-reclaim-agent`: clean.
+- `cargo test --lib netlink_proc`: 15/15 pass on macOS aarch64.
+- `cargo test --lib reclaim_agent`: 46/46 pass (unchanged from
+  pre-change baseline).
+- `cargo fmt --check` + `cargo clippy --all-targets -- -D warnings`:
+  clean.
+- Linux runtime verification deferred to CI (kind cluster) and to
+  hardware testing — same gating as rung 1's integration test scope.
+  The macOS dev loop uses `--detector=poll` and exercises the bin
+  end-to-end without netlink.
+
+### Trust model (unchanged)
+The netlink socket is opened with `CAP_NET_ADMIN` granted at the
+container level. The node-scoped credentials posture is unchanged —
+the agent still binds only to the proc-event multicast group and
+cannot send control messages to other netlink subsystems. The
+host-identity cross-check (Phase 4 of the 2026-04-25 security audit)
+still gates every PATCH regardless of detector choice.
+
+---
+
 ## [2026-05-02 10:00] - Symbol-import auto-VEX (roadmap Phase 3, scope-revised)
 
 **Author:** Erick Bourgeois

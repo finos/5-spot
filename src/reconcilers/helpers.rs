@@ -51,7 +51,10 @@ use crate::constants::{
     REASON_RECONCILE_SUCCEEDED, RESERVED_LABEL_PREFIXES, TIMER_REQUEUE_SECS,
 };
 use crate::crd::{Condition, NodeRef, ScheduledMachine, ScheduledMachineStatus};
-use crate::metrics::{record_node_drain, record_pod_eviction};
+use crate::metrics::{
+    record_emergency_drain, record_emergency_reclaim, record_node_drain, record_pod_eviction,
+    EmergencyDrainOutcome,
+};
 
 // ============================================================================
 // Resource processing and consistent hashing
@@ -2180,6 +2183,31 @@ pub fn build_emergency_disable_schedule_event() -> KubeEvent {
     }
 }
 
+/// Build the `Warning`-type Kubernetes Event published on the
+/// `ScheduledMachine` when the controller observes ≥
+/// [`crate::constants::RAPID_RE_RECLAIM_THRESHOLD`] reclaim events for
+/// the same SM within the configured window. The event tells the
+/// operator their re-enable likely failed because the conflicting
+/// process is still running — they should stop it before re-enabling
+/// again, otherwise the loop will continue.
+#[must_use]
+pub fn build_rapid_re_reclaim_event(name: &str) -> KubeEvent {
+    KubeEvent {
+        type_: EventType::Warning,
+        reason: crate::constants::REASON_RAPID_RE_RECLAIM.to_string(),
+        note: Some(format!(
+            "ScheduledMachine {name} has been emergency-reclaimed {} or more times within \
+             {} seconds. The conflicting process is likely still running on the node — \
+             stop it before re-enabling spec.schedule.enabled, or the agent will fire again \
+             on the next reconcile.",
+            crate::constants::RAPID_RE_RECLAIM_THRESHOLD,
+            crate::constants::RAPID_RE_RECLAIM_WINDOW_SECS,
+        )),
+        action: "RapidReReclaim".to_string(),
+        secondary: None,
+    }
+}
+
 /// Format the human-readable message for the status condition recorded
 /// when the `ScheduledMachine` enters `Phase::EmergencyRemove`.
 ///
@@ -2301,16 +2329,58 @@ pub async fn handle_emergency_remove(
     )
     .await?;
 
+    // Per-SM emergency-reclaim counter. Bumped once per *flow* (the
+    // idempotent recovery handler short-circuits before this point on
+    // restart) so a controller crash mid-flow does not double-count.
+    record_emergency_reclaim(&namespace, &name);
+
+    // Loop-protection: append this reclaim's timestamp to the per-SM
+    // deque in Context, prune entries outside the window, and if the
+    // post-append count crosses the threshold, emit a RapidReReclaim
+    // Warning event + bump the metric. The tracker is in-memory only
+    // (see crate::loop_protection module rustdoc for rationale).
+    let breach = {
+        let key = format!("{namespace}/{name}");
+        let now_ts = chrono::Utc::now();
+        let mut lock = ctx.recent_reclaims.lock().expect("recent_reclaims mutex");
+        let deque = lock.entry(key).or_default();
+        crate::loop_protection::record_emergency_reclaim_event(deque, now_ts)
+    };
+    if breach {
+        warn!(
+            resource = %name,
+            namespace = %namespace,
+            "Rapid-re-reclaim threshold crossed — emitting RapidReReclaim Warning Event"
+        );
+        crate::metrics::record_rapid_re_reclaim(&namespace, &name);
+        publish_best_effort(
+            &ctx,
+            &sm_object_ref,
+            build_rapid_re_reclaim_event(&name),
+            "RapidReReclaim",
+        )
+        .await;
+    }
+
     // Step 3: drain with short emergency timeout. Best-effort — we do
     // NOT block Machine deletion on a failed drain, because the agent
-    // has already decided the node must leave.
-    if let Err(e) = drain_node_with_timeout(
+    // has already decided the node must leave. The stopwatch is
+    // observed regardless of outcome so operators can compute success
+    // P95 vs timeout-rate side by side.
+    let drain_start = std::time::Instant::now();
+    let drain_result = drain_node_with_timeout(
         &ctx.client,
         node_name,
         Duration::from_secs(EMERGENCY_DRAIN_TIMEOUT_SECS),
     )
-    .await
-    {
+    .await;
+    let drain_outcome = match &drain_result {
+        Ok(()) => EmergencyDrainOutcome::Success,
+        Err(e) if e.to_string().contains("timeout") => EmergencyDrainOutcome::Timeout,
+        Err(_) => EmergencyDrainOutcome::Error,
+    };
+    record_emergency_drain(drain_start.elapsed().as_secs_f64(), drain_outcome);
+    if let Err(e) = drain_result {
         warn!(
             resource = %name,
             node = %node_name,

@@ -40,9 +40,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context as _, Result};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+use five_spot::netlink_proc::{NetlinkError, ProcEvent, Subscriber as NetlinkSubscriber};
 use five_spot::reclaim_agent::{
-    already_requested, build_patch_body, compare_machine_ids, configmap_to_config,
+    already_requested, build_patch_body, compare_machine_ids, configmap_to_config, match_pid,
     read_host_machine_id, scan_proc, Config, Match,
 };
 use futures::StreamExt;
@@ -75,6 +76,44 @@ const FIELD_MANAGER: &str = "5spot-reclaim-agent";
 /// agent exerts essentially zero CPU.
 const IDLE_WAKEUP_SECS: u64 = 30;
 
+/// CLI value for `--detector`. Resolved to a [`Detector`] via
+/// [`DetectorFlag::resolve`] so `auto` is platform-aware.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum DetectorFlag {
+    /// Pick `netlink` on Linux, `poll` elsewhere.
+    Auto,
+    /// Subscribe to the netlink proc connector (Linux only).
+    Netlink,
+    /// Walk `/proc` every `poll_interval_ms` (rung-1 fallback).
+    Poll,
+}
+
+impl DetectorFlag {
+    /// Resolve `auto` to a concrete detector based on the build target.
+    fn resolve(self) -> Detector {
+        match self {
+            DetectorFlag::Netlink => Detector::Netlink,
+            DetectorFlag::Poll => Detector::Poll,
+            DetectorFlag::Auto => {
+                if cfg!(target_os = "linux") {
+                    Detector::Netlink
+                } else {
+                    Detector::Poll
+                }
+            }
+        }
+    }
+}
+
+/// Resolved detector choice — what the scanner loop actually runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Detector {
+    /// Netlink proc connector.
+    Netlink,
+    /// `/proc` poll.
+    Poll,
+}
+
 #[derive(Parser, Debug)]
 #[clap(
     name = "5spot-reclaim-agent",
@@ -101,6 +140,21 @@ struct Cli {
     /// tests / sandboxes where the file lives elsewhere.
     #[clap(long, env = "MACHINE_ID_PATH", default_value = DEFAULT_MACHINE_ID_PATH)]
     machine_id_path: PathBuf,
+
+    /// Process-event source. `netlink` (default on Linux) subscribes
+    /// to the kernel's proc connector for sub-10 ms detection. `poll`
+    /// (the rung-1 fallback, default on non-Linux) walks `/proc` every
+    /// `poll_interval_ms`. `auto` picks `netlink` on Linux and `poll`
+    /// elsewhere.
+    ///
+    /// Tradeoffs: `netlink` requires `CAP_NET_ADMIN` on the agent pod
+    /// but has lower idle CPU and tighter latency. Under heavy-exec
+    /// workloads (`make -j32`, compile farms) it can be more expensive
+    /// than `poll`, which only sees processes that survive a tick.
+    /// See `docs/src/concepts/emergency-reclaim.md` for the full
+    /// comparison.
+    #[clap(long, env = "RECLAIM_DETECTOR", default_value = "auto", value_enum)]
+    detector: DetectorFlag,
 
     /// Skip the host-identity cross-check before patching the Node.
     ///
@@ -185,15 +239,37 @@ async fn main() -> Result<()> {
     // resubscribe inside `kube::runtime::watcher`.
     let watcher_handle = tokio::spawn(run_config_watcher(client, cm_name, tx));
 
-    let scanner_result = run_scanner(
-        &nodes,
-        &cli.node_name,
-        &cli.proc_root,
-        rx,
-        cli.oneshot,
-        host_machine_id.as_deref(),
-    )
-    .await;
+    let detector = cli.detector.resolve();
+    info!(
+        detector = ?detector,
+        cli_value = ?cli.detector,
+        "detector selected",
+    );
+
+    let scanner_result = match detector {
+        Detector::Poll => {
+            run_scanner(
+                &nodes,
+                &cli.node_name,
+                &cli.proc_root,
+                rx,
+                cli.oneshot,
+                host_machine_id.as_deref(),
+            )
+            .await
+        }
+        Detector::Netlink => {
+            run_netlink_scanner(
+                &nodes,
+                &cli.node_name,
+                &cli.proc_root,
+                rx,
+                cli.oneshot,
+                host_machine_id.as_deref(),
+            )
+            .await
+        }
+    };
     watcher_handle.abort();
     scanner_result
 }
@@ -341,6 +417,151 @@ async fn run_scanner(
                     return Err(e.into());
                 }
             },
+        }
+    }
+}
+
+/// Netlink-driven detection loop (rung 2).
+///
+/// Subscribes once to the kernel proc connector and blocks on the
+/// socket for every `exec(2)`. The socket is opened *only* when the
+/// shared config transitions to `Some` (no point holding kernel
+/// resources while idle); a config-clear closes the subscriber and we
+/// return to waiting for arming.
+///
+/// On every `ProcEvent::Exec` we resolve the pid via the existing
+/// rung-1 [`match_pid`] helper — this is the architectural promise of
+/// the two-rung ladder: only the *event source* changes between rungs,
+/// match logic and Node-PATCH path are shared.
+///
+/// Falls back to `Err` immediately on subscriber-construction failure
+/// (e.g. running on macOS, missing `CAP_NET_ADMIN`, or kernel built
+/// without `CONFIG_PROC_EVENTS`). The bin's `main` then propagates the
+/// error so the operator sees it; rung-1 fallback is selected via
+/// `--detector=poll`, not via silent in-process degradation.
+#[allow(clippy::too_many_lines)]
+async fn run_netlink_scanner(
+    nodes: &Api<Node>,
+    node_name: &str,
+    proc_root: &Path,
+    mut rx: tokio::sync::watch::Receiver<Option<Config>>,
+    oneshot: bool,
+    host_machine_id: Option<&str>,
+) -> Result<()> {
+    loop {
+        // Wait until the per-node ConfigMap arms us (or exit if
+        // oneshot and nothing is armed).
+        let cfg = rx.borrow().clone();
+        let Some(cfg) = cfg else {
+            if oneshot {
+                warn!("oneshot mode + netlink: no config present — exiting non-zero");
+                return Err(anyhow!("no configmap observed during oneshot run"));
+            }
+            tokio::select! {
+                res = rx.changed() => {
+                    if res.is_err() {
+                        info!("config channel closed — exiting");
+                        return Ok(());
+                    }
+                    continue;
+                }
+                () = tokio::time::sleep(Duration::from_secs(IDLE_WAKEUP_SECS)) => continue,
+            }
+        };
+
+        // Open the subscriber. Surface platform / capability errors at
+        // this boundary so the operator sees them in the agent's first
+        // log lines after arming.
+        let mut sub = match NetlinkSubscriber::new() {
+            Ok(s) => s,
+            Err(NetlinkError::Unsupported) => {
+                bail!(
+                    "netlink detector requested but the netlink proc connector is not \
+                     supported on this platform — pass --detector=poll to use the /proc \
+                     fallback or run on Linux"
+                );
+            }
+            Err(e) => {
+                error!(error = %e, "failed to open netlink subscriber");
+                bail!(
+                    "open netlink proc-connector subscriber (CAP_NET_ADMIN required and \
+                     CONFIG_PROC_EVENTS=y in kernel): {e}"
+                );
+            }
+        };
+        info!(
+            commands = ?cfg.match_commands,
+            substrings = ?cfg.match_argv_substrings,
+            "netlink subscriber armed — waiting for kernel exec events",
+        );
+
+        let proc_root = proc_root.to_path_buf();
+        let cfg_arc = Arc::new(cfg);
+
+        // The recv loop must run on a blocking thread — `recv(2)` on the
+        // netlink socket is synchronous and would otherwise pin the
+        // tokio worker. We spawn it and await its result on the
+        // current task; cancellation is via the channel `rx.changed()`
+        // arm of the select below.
+        let recv_handle = tokio::task::spawn_blocking({
+            let proc_root = proc_root.clone();
+            let cfg_arc = cfg_arc.clone();
+            move || -> Result<Option<Match>> {
+                loop {
+                    match sub.next_event() {
+                        Ok(Some(ProcEvent::Exec { pid, tgid: _ })) => {
+                            if let Some(m) = match_pid(&proc_root, pid, &cfg_arc) {
+                                return Ok(Some(m));
+                            }
+                        }
+                        Ok(Some(ProcEvent::Other { what })) => {
+                            tracing::trace!(what = format_args!("{what:#x}"), "ignored proc_event");
+                        }
+                        Ok(None) => {
+                            // Frame parsed-and-dropped (already logged).
+                            continue;
+                        }
+                        Err(e) => return Err(anyhow!("netlink recv: {e}")),
+                    }
+                }
+            }
+        });
+
+        let outcome: Result<Option<Match>> = tokio::select! {
+            joined = recv_handle => match joined {
+                Ok(res) => res,
+                Err(join_err) => Err(anyhow!("netlink recv task panicked: {join_err}")),
+            },
+            res = rx.changed() => {
+                if res.is_err() {
+                    info!("config channel closed — exiting");
+                    return Ok(());
+                }
+                // Config changed (likely cleared). Drop the subscriber
+                // by returning Ok(None); the outer loop will re-evaluate.
+                Ok(None)
+            }
+        };
+
+        match outcome {
+            Ok(Some(m)) => {
+                info!(
+                    pid = m.pid,
+                    pattern = %m.matched_pattern,
+                    "netlink match → annotating node",
+                );
+                annotate_node(nodes, node_name, &m, host_machine_id).await?;
+                return Ok(());
+            }
+            Ok(None) => {
+                if oneshot {
+                    warn!("oneshot mode + netlink: config cleared before any match — exiting non-zero");
+                    return Err(anyhow!("config cleared during oneshot run"));
+                }
+                // Loop: re-evaluate the (possibly new) config.
+                continue;
+            }
+            Err(e) => return Err(e),
         }
     }
 }

@@ -172,7 +172,13 @@ pub fn scan_proc(proc_root: &Path, config: &Config) -> Result<Option<Match>, io:
     Ok(None)
 }
 
-fn match_pid(proc_root: &Path, pid: u32, config: &Config) -> Option<Match> {
+/// Test a single pid against the config and return a [`Match`] if its
+/// `comm` or `cmdline` matches. Used by [`scan_proc`] (rung 1, walks
+/// every pid) and by the rung 2 netlink subscriber (resolves a single
+/// pid pushed by the kernel). Returns `None` if no match, the pid no
+/// longer exists, or its `/proc` files cannot be read.
+#[must_use]
+pub fn match_pid(proc_root: &Path, pid: u32, config: &Config) -> Option<Match> {
     let pid_dir = proc_root.join(pid.to_string());
 
     if let Ok(comm_raw) = fs::read_to_string(pid_dir.join("comm")) {

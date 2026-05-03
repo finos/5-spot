@@ -129,12 +129,16 @@ spec:
             # - name: SKIP_HOST_ID_CHECK
             #   value: "true"
           # Reading every `/proc/<pid>/comm` + `cmdline` requires root;
-          # CAP_SYS_PTRACE is not strictly required for rung 1 but is kept
-          # dropped. CAP_NET_ADMIN will be re-added for rung 2 (netlink
-          # proc connector) as a separate change. See the pod-level
-          # securityContext comment block and `.trivyignore` (KSV-0012 /
-          # KSV-0116 / KSV-0118 / KSV-0105) for the runAsNonRoot=false
-          # rationale.
+          # CAP_SYS_PTRACE is not strictly required and is kept dropped.
+          # CAP_NET_ADMIN is added for rung 2: subscribing to the
+          # netlink proc connector (`NETLINK_CONNECTOR` socket family)
+          # requires it. Drop ALL first, then add only the one cap we
+          # need. See `.trivyignore` (KSV-0012 / KSV-0116 / KSV-0118 /
+          # KSV-0105 for runAsNonRoot=false; KSV-0102 for the
+          # CAP_NET_ADMIN add) for the architectural-necessity
+          # rationale. Operators who pin `--detector=poll` do not
+          # exercise the cap; it is granted at the pod level so the
+          # binary never has to fail open at runtime.
           securityContext:
             runAsUser: 0
             runAsGroup: 0
@@ -145,6 +149,8 @@ spec:
             capabilities:
               drop:
                 - ALL
+              add:
+                - NET_ADMIN
             seccompProfile:
               type: RuntimeDefault
           resources:

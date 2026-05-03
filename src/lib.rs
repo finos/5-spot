@@ -11,7 +11,12 @@
 //! - [`crd`] — `ScheduledMachine` CRD type definitions (source of truth for YAML generation)
 //! - [`health`] — HTTP health and readiness server
 //! - [`labels`] — standard Kubernetes label helpers
+//! - [`loop_protection`] — rapid-re-reclaim detection helpers (pure;
+//!   used by the reconciler to throttle warning events)
 //! - [`metrics`] — Prometheus metric definitions and recording helpers
+//! - [`netlink_proc`] — Linux netlink proc connector subscriber (rung 2 of
+//!   the reclaim-agent detection ladder; portable byte parsers, Linux-only
+//!   socket impl)
 //! - [`reconcilers`] — reconciliation logic and controller context
 
 pub mod auto_vex_presence;
@@ -20,7 +25,9 @@ pub mod constants;
 pub mod crd;
 pub mod health;
 pub mod labels;
+pub mod loop_protection;
 pub mod metrics;
+pub mod netlink_proc;
 pub mod reclaim_agent;
 pub mod reconcilers;
 

@@ -148,6 +148,36 @@ pub const REASON_EMERGENCY_RECLAIM_DISABLED_SCHEDULE: &str = "EmergencyReclaimDi
 /// when the Machine is deleted.
 pub const EMERGENCY_DRAIN_TIMEOUT_SECS: u64 = 60;
 
+/// Number of recent reclaim events that constitute a "rapid" loop.
+///
+/// When `≥ RAPID_RE_RECLAIM_THRESHOLD` reclaims fire on the same SM
+/// within [`RAPID_RE_RECLAIM_WINDOW_SECS`], the controller emits a
+/// `RapidReReclaim` Warning Event recommending the operator stop the
+/// conflicting process before re-enabling.
+///
+/// Threshold of 3 catches the canonical "user re-enables a SM whose
+/// JVM is still running, gets ejected, re-enables, gets ejected again"
+/// trio without flagging legitimate re-enables that just happen to
+/// land near a prior reclaim.
+pub const RAPID_RE_RECLAIM_THRESHOLD: usize = 3;
+
+/// Sliding-window length (10 minutes) for rapid-re-reclaim detection.
+/// Reclaims older than this drop off the tracked list and no longer
+/// count toward the threshold.
+pub const RAPID_RE_RECLAIM_WINDOW_SECS: i64 = 600;
+
+/// Cap on how many reclaim timestamps we hold in memory per SM, to
+/// bound the worst-case allocation. Larger than
+/// [`RAPID_RE_RECLAIM_THRESHOLD`] so a brief storm above the threshold
+/// is still observable in logs without resizing.
+pub const RAPID_RE_RECLAIM_MAX_TRACKED: usize = 10;
+
+/// Kubernetes Event reason emitted on the `ScheduledMachine` when the
+/// rapid-re-reclaim threshold is crossed. Operators see this in
+/// `kubectl describe scheduledmachine` and on the `RapidReReclaim`
+/// metric.
+pub const REASON_RAPID_RE_RECLAIM: &str = "RapidReReclaim";
+
 // ============================================================================
 // Timing Constants (in seconds)
 // ============================================================================

@@ -26,6 +26,9 @@
 //! | `fivespot_errors_total` | Counter | Errors by type |
 //! | `fivespot_node_drains_total` | Counter | Node drain attempts by outcome |
 //! | `fivespot_pod_evictions_total` | Counter | Pod eviction attempts by outcome |
+//! | `fivespot_emergency_drain_duration_seconds` | Histogram | Emergency-reclaim drain wall-clock by outcome |
+//! | `fivespot_emergency_reclaims_total` | Counter | Emergency-reclaim events per SM (namespace, name) |
+//! | `fivespot_rapid_re_reclaims_total` | Counter | RapidReReclaim warnings per SM (namespace, name) |
 
 use std::sync::LazyLock;
 
@@ -270,6 +273,79 @@ pub static NODE_DRAINS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
     })
 });
 
+/// Duration of emergency-reclaim drain operations in seconds.
+///
+/// Histogram observed once per `EmergencyRemove` flow, labelled by
+/// outcome (`success` / `timeout` / `error`). Buckets are sized for the
+/// `EMERGENCY_DRAIN_TIMEOUT_SECS = 60` ceiling — anything past 60 s is a
+/// flow-killing timeout that the controller force-deletes through anyway.
+///
+/// Operator SLO: P95 of `outcome="success"` should sit well below 30 s on
+/// a healthy fleet. A growing P95 signals workloads with bad
+/// `terminationGracePeriodSeconds` defaults or PodDisruptionBudgets that
+/// are clipping the drain. A non-zero `outcome="timeout"` rate means the
+/// 60 s ceiling is biting — investigate the workloads on the affected
+/// nodes via the `fivespot_pod_evictions_total{result="failure"}` metric
+/// alongside.
+pub static EMERGENCY_DRAIN_DURATION_SECONDS: LazyLock<HistogramVec> = LazyLock::new(|| {
+    register_histogram_vec!(
+        "fivespot_emergency_drain_duration_seconds",
+        "Wall-clock duration of emergency-reclaim node drains, by outcome",
+        &["outcome"],
+        vec![0.5, 1.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0, 45.0, 60.0, 90.0]
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_emergency_drain_duration_seconds: {e}");
+        fallback_histogram_vec(
+            "fivespot_emergency_drain_duration_seconds",
+            "Wall-clock duration of emergency-reclaim node drains, by outcome",
+            &["outcome"],
+            vec![0.5, 1.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0, 45.0, 60.0, 90.0],
+        )
+    })
+});
+
+/// Total emergency-reclaim events recorded per ScheduledMachine,
+/// labelled by namespace + name. Used by the loop-protection logic to
+/// detect rapid re-fires (a user re-enabling a SM whose conflicting
+/// process is still running) — alert when the rate per SM exceeds the
+/// `RAPID_RE_RECLAIM_THRESHOLD` constant within a 10-minute window.
+pub static EMERGENCY_RECLAIMS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
+    register_counter_vec!(
+        "fivespot_emergency_reclaims_total",
+        "Total emergency-reclaim events fired per ScheduledMachine",
+        &["namespace", "name"]
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_emergency_reclaims_total: {e}");
+        fallback_counter_vec(
+            "fivespot_emergency_reclaims_total",
+            "Total emergency-reclaim events fired per ScheduledMachine",
+            &["namespace", "name"],
+        )
+    })
+});
+
+/// Total rapid re-reclaim warnings emitted, labelled by namespace +
+/// name. Operator-actionable signal — every increment corresponds to a
+/// `RapidReReclaim` Warning Event on the SM whose user has re-enabled
+/// the schedule without first stopping the conflicting process.
+pub static RAPID_RE_RECLAIMS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
+    register_counter_vec!(
+        "fivespot_rapid_re_reclaims_total",
+        "Total RapidReReclaim warnings emitted per ScheduledMachine",
+        &["namespace", "name"]
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_rapid_re_reclaims_total: {e}");
+        fallback_counter_vec(
+            "fivespot_rapid_re_reclaims_total",
+            "Total RapidReReclaim warnings emitted per ScheduledMachine",
+            &["namespace", "name"],
+        )
+    })
+});
+
 /// Pod evictions during node drain
 pub static POD_EVICTIONS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
     register_counter_vec!(
@@ -362,6 +438,59 @@ pub fn record_node_drain(success: bool) {
 pub fn record_pod_eviction(success: bool) {
     let result = if success { "success" } else { "failure" };
     POD_EVICTIONS_TOTAL.with_label_values(&[result]).inc();
+}
+
+/// Outcome label for [`record_emergency_drain`]. Stable strings —
+/// changing them is a Prometheus-dashboard breaking change.
+#[derive(Clone, Copy, Debug)]
+pub enum EmergencyDrainOutcome {
+    /// Drain returned cleanly within the timeout.
+    Success,
+    /// Drain hit `EMERGENCY_DRAIN_TIMEOUT_SECS` and was force-completed
+    /// without all pods evicting.
+    Timeout,
+    /// Drain returned an error other than timeout (apiserver 5xx, etc.).
+    Error,
+}
+
+impl EmergencyDrainOutcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            EmergencyDrainOutcome::Success => "success",
+            EmergencyDrainOutcome::Timeout => "timeout",
+            EmergencyDrainOutcome::Error => "error",
+        }
+    }
+}
+
+/// Observe one emergency-drain duration sample. Called once per
+/// `EmergencyRemove` flow regardless of outcome — operators slice by
+/// the `outcome` label to compute success-only P95 vs timeout rate
+/// separately.
+pub fn record_emergency_drain(duration_secs: f64, outcome: EmergencyDrainOutcome) {
+    EMERGENCY_DRAIN_DURATION_SECONDS
+        .with_label_values(&[outcome.as_str()])
+        .observe(duration_secs);
+}
+
+/// Increment the per-SM emergency-reclaim counter. Called once per
+/// successful entry into the `EmergencyRemove` flow (after the
+/// idempotent recovery handler short-circuits, so a controller restart
+/// mid-flow does not double-count).
+pub fn record_emergency_reclaim(namespace: &str, name: &str) {
+    EMERGENCY_RECLAIMS_TOTAL
+        .with_label_values(&[namespace, name])
+        .inc();
+}
+
+/// Increment the per-SM rapid-re-reclaim warning counter. Called when
+/// the loop-protection logic detects ≥`RAPID_RE_RECLAIM_THRESHOLD`
+/// reclaims for the same SM within `RAPID_RE_RECLAIM_WINDOW_SECS` and
+/// emits a `RapidReReclaim` Warning Event.
+pub fn record_rapid_re_reclaim(namespace: &str, name: &str) {
+    RAPID_RE_RECLAIMS_TOTAL
+        .with_label_values(&[namespace, name])
+        .inc();
 }
 
 /// Record a finalizer-cleanup timeout (force-remove path).
