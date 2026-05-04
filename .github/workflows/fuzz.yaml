@@ -66,7 +66,15 @@ jobs:
           toolchain: nightly
 
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        # `--locked` would honour cargo-fuzz's bundled Cargo.lock, which
+        # currently pins `rustix 0.36.5` — that version uses
+        # `rustc_layout_scalar_valid_range_*` attributes that nightly
+        # rejected as of 2026-05 (upstream cargo-fuzz hasn't refreshed
+        # its lockfile). Resolve fresh deps so we pull a rustix release
+        # that builds cleanly. Reproducibility cost is acceptable:
+        # this only affects how the tool itself is built; the actual
+        # fuzz run pins via `fuzz/Cargo.lock`.
+        run: cargo install cargo-fuzz
 
       - name: Cache cargo dependencies
         uses: firestoned/github-actions/rust/cache-cargo@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6

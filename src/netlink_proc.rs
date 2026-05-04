@@ -540,8 +540,9 @@ mod linux_impl {
             // - `errno` is read via `Error::last_os_error()` only on
             //   the error branch and only on the same thread that
             //   made the syscall, so the value is well-defined.
-            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+            // nosemgrep
             let raw_fd = unsafe {
+                // nosemgrep
                 nix::libc::socket(
                     nix::libc::AF_NETLINK,
                     nix::libc::SOCK_DGRAM | nix::libc::SOCK_CLOEXEC,
@@ -563,8 +564,7 @@ mod linux_impl {
             //   raw fd is never used again as an integer after this
             //   line. The `OwnedFd` will `close(2)` it on `Drop`,
             //   satisfying the close-exactly-once invariant.
-            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-            let fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+            let fd = unsafe { OwnedFd::from_raw_fd(raw_fd) }; // nosemgrep
 
             // pid=0 lets the kernel pick our netlink address;
             // groups=CN_IDX_PROC subscribes to the proc-event multicast
