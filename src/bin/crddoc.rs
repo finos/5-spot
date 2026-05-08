@@ -248,6 +248,14 @@ fn main() {
     println!();
     println!("(boolean) Whether the machine is currently within its scheduled time window.");
     println!();
+    println!("#### ready");
+    println!();
+    println!(
+        "(boolean) `True` only when `phase` is `Active`. Surfaced as the `Ready` printer column"
+    );
+    println!("for fast operator triage — any other phase (`Pending`, `ShuttingDown`, `Inactive`,");
+    println!("`Disabled`, `Terminated`, `Error`) is reported as `False`.");
+    println!();
     println!("#### message");
     println!();
     println!("(string) Human-readable message describing the current state.");

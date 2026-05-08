@@ -33,6 +33,7 @@ use std::collections::{BTreeMap, HashSet};
     shortname = "sm",
     status = "ScheduledMachineStatus",
     printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#,
+    printcolumn = r#"{"name":"Ready","type":"boolean","jsonPath":".status.ready"}"#,
     printcolumn = r#"{"name":"InSchedule","type":"boolean","jsonPath":".status.inSchedule"}"#,
     printcolumn = r#"{"name":"Enabled","type":"boolean","jsonPath":".spec.schedule.enabled"}"#,
     printcolumn = r#"{"name":"Schedule Days","type":"string","jsonPath":".spec.schedule.daysOfWeek"}"#,
@@ -486,6 +487,13 @@ pub struct ScheduledMachineStatus {
     /// Whether machine is currently in scheduled window
     #[serde(default)]
     pub in_schedule: bool,
+
+    /// True only when the machine has reached the `Active` phase. Surfaced as
+    /// the `Ready` printer column for fast operator triage; any other phase
+    /// (Pending, ShuttingDown, Inactive, Disabled, Terminated, Error) is
+    /// reported as `False`.
+    #[serde(default)]
+    pub ready: bool,
 
     /// Next scheduled activation time (RFC3339 format)
     #[serde(skip_serializing_if = "Option::is_none")]

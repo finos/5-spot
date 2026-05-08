@@ -305,13 +305,35 @@ async fn reconcile_guarded(
         return Ok(Action::await_change());
     }
 
+    let observed_phase = resource
+        .status
+        .as_ref()
+        .and_then(|s| s.phase.as_deref())
+        .unwrap_or("(none)");
+    let generation = resource.metadata.generation.unwrap_or(0);
+    let deleting = resource.meta().deletion_timestamp.is_some();
     info!(
         resource = %name,
         namespace = %namespace,
         reconcile_id = %reconcile_id,
         priority = resource.spec.priority,
+        phase = %observed_phase,
+        generation = generation,
+        deleting = deleting,
+        kill_switch = resource.spec.kill_switch,
         "Starting reconciliation"
     );
+
+    // First-observation marker: a fresh CR has no status sub-resource yet, so
+    // operators staring at the log expect a clear "I saw this thing get
+    // created" line — not just the generic reconcile header.
+    if resource.status.is_none() {
+        info!(
+            resource = %name,
+            namespace = %namespace,
+            "ScheduledMachine observed for the first time (creation)"
+        );
+    }
 
     // Check if this instance should process this resource
     if !should_process_resource(
@@ -441,7 +463,9 @@ async fn reconcile_inner(
         info!(
             resource = %name,
             namespace = %namespace,
-            "Kill switch activated - removing machine immediately"
+            phase = ?current_phase,
+            cause = "kill_switch",
+            "KILL: kill switch active — removing machine immediately"
         );
         KILL_SWITCH_ACTIVATIONS_TOTAL.inc();
         return handle_kill_switch(resource, ctx).await;
@@ -460,12 +484,18 @@ async fn reconcile_inner(
     // Record schedule evaluation metric
     record_schedule_evaluation(should_be_active);
 
-    debug!(
+    // Emitted on every reconcile (timer-driven or event-driven) so operators
+    // can confirm the controller is awake and tracking the schedule for each
+    // SM. Demoting this back to debug hides 60-second timer fires from
+    // routine `kubectl logs` triage.
+    info!(
         resource = %name,
         namespace = %namespace,
         should_be_active = should_be_active,
         enabled = resource.spec.schedule.enabled,
-        "Schedule evaluation"
+        phase = ?current_phase,
+        timezone = %resource.spec.schedule.timezone,
+        "Schedule evaluated"
     );
 
     // Handle state transitions based on current phase and schedule
@@ -536,7 +566,8 @@ async fn check_emergency_reclaim(
         resource = %resource.name_any(),
         node = %node_name,
         reason = request.reason.as_deref().unwrap_or("(none)"),
-        "Reclaim annotation observed — engaging emergency remove"
+        cause = "kill_if_commands",
+        "KILL: reclaim annotation observed (kill_if_commands triggered) — engaging emergency remove"
     );
     let action = super::helpers::handle_emergency_remove(
         Arc::clone(resource),
@@ -734,8 +765,7 @@ async fn handle_active_phase(
     // to the underlying VM and Node without manual cross-referencing.
     // Best-effort: if the fetch or patch fails, log and continue — status
     // enrichment must never block the reconcile.
-    let machine_name = format!("{name}-machine");
-    match fetch_capi_machine(&ctx.client, &namespace, &machine_name).await {
+    match fetch_capi_machine(&ctx.client, &namespace, &name).await {
         Ok(Some(machine)) => {
             let (provider_id, node_ref) = extract_machine_refs(&machine);
             if let Err(e) = patch_machine_refs_status(
@@ -962,10 +992,7 @@ async fn handle_shutting_down_phase(
         info!(resource = %name, namespace = %namespace, "Grace period elapsed - draining node and removing machine");
 
         // Step 1: Drain the node if it exists
-        let machine_name = format!("{name}-machine");
-        if let Some(node_name) =
-            get_node_from_machine(&ctx.client, &namespace, &machine_name).await?
-        {
+        if let Some(node_name) = get_node_from_machine(&ctx.client, &namespace, &name).await? {
             info!(
                 resource = %name,
                 namespace = %namespace,

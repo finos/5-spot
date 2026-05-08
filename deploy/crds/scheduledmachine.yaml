@@ -1,3 +1,5 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running `target/debug/crdgen`
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -17,6 +19,9 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .status.ready
+      name: Ready
+      type: boolean
     - jsonPath: .status.inSchedule
       name: InSchedule
       type: boolean
@@ -446,6 +451,14 @@ spec:
                   unique across the cluster.
                 nullable: true
                 type: string
+              ready:
+                default: false
+                description: |-
+                  True only when the machine has reached the `Active` phase. Surfaced as
+                  the `Ready` printer column for fast operator triage; any other phase
+                  (Pending, ShuttingDown, Inactive, Disabled, Terminated, Error) is
+                  reported as `False`.
+                type: boolean
             type: object
         required:
         - spec

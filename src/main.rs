@@ -347,10 +347,11 @@ async fn main() -> Result<()> {
         .run(reconcile_scheduled_machine, error_policy, context)
         .for_each(|res| async move {
             match res {
-                Ok(o) => {
+                Ok((obj_ref, action)) => {
                     info!(
-                        resource = o.0.name,
-                        namespace = ?o.0.namespace,
+                        resource = %obj_ref.name,
+                        namespace = ?obj_ref.namespace,
+                        next_action = ?action,
                         "Reconciliation completed"
                     );
                 }

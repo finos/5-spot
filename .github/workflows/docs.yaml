@@ -4,6 +4,9 @@
 name: Documentation
 
 on:
+  # Build-only triggers — exercise the docs pipeline so breakage is
+  # caught at PR / merge time, but do NOT publish to GitHub Pages.
+  # Deployment is gated on the `release` event below.
   push:
     branches:
       - main
@@ -16,6 +19,12 @@ on:
       - 'docs/**'
       - 'src/**/*.rs'
       - '.github/workflows/docs.yaml'
+  # Deploy trigger — fires when an operator publishes a GitHub Release.
+  # The docs site published to Pages is what end users see, so we tie
+  # publish cadence to the release cadence: every release ships matching
+  # docs, and intermediate main commits don't churn the live site.
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -23,11 +32,15 @@ permissions:
   pages: write
   id-token: write
 
-# Allow one concurrent deployment; cancel any in-progress run on the same
-# branch so a rapid series of pushes never leaves a stale deploy running.
+# Build runs on every PR / push and can race with itself — cancel
+# in-progress to keep CI from queuing redundant builds. Release deploys
+# happen at most once per release tag and must NEVER be cancelled by a
+# subsequent push (operators rely on the published release deploying);
+# the `cancel-in-progress` expression below disables cancellation only
+# for the release event.
 concurrency:
-  group: "pages"
-  cancel-in-progress: true
+  group: pages-${{ github.event_name == 'release' && github.event.release.tag_name || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -160,19 +173,26 @@ jobs:
           npm install -g "linkinator@${LINKINATOR_VERSION}"
           linkinator docs/site/ --recurse --skip "rustdoc/.*" --verbosity error
 
+      # Pages setup + artifact upload only happen when the trigger is a
+      # release publication. PR / push runs build the site (proving it
+      # compiles cleanly) but never produce a deploy artifact.
       - name: Setup Pages
-        if: github.ref == 'refs/heads/main'
+        if: github.event_name == 'release'
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       - name: Upload Pages artifact
-        if: github.ref == 'refs/heads/main'
+        if: github.event_name == 'release'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: docs/site
 
   deploy:
     name: 🚀 Deploy to GitHub Pages
-    if: github.ref == 'refs/heads/main'
+    # Gated on the `release: published` event — a main push or PR build
+    # validates the docs but does NOT publish them. The published site
+    # tracks release cadence so end users see a stable, versioned doc
+    # set rather than every intermediate main commit.
+    if: github.event_name == 'release'
     needs: build
     runs-on: ubuntu-latest
     environment:

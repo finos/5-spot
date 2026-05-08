@@ -327,17 +327,19 @@ pub async fn handle_deletion(
         ReconcilerError::InvalidConfig("ScheduledMachine must be namespaced".to_string())
     })?;
     let name = resource.name_any();
+    let current_phase = resource.status.as_ref().and_then(|s| s.phase.as_deref());
 
     info!(
         resource = %name,
         namespace = %namespace,
-        "Handling deletion"
+        phase = current_phase.unwrap_or("(none)"),
+        deletion_timestamp = ?resource.meta().deletion_timestamp,
+        "DELETE: ScheduledMachine deletion requested — running finalizer cleanup"
     );
 
     // Wrap machine removal in a hard timeout so a hung removal cannot block
     // namespace deletion or cluster upgrades indefinitely.
     let cleanup_timeout = Duration::from_secs(FINALIZER_CLEANUP_TIMEOUT_SECS);
-    let current_phase = resource.status.as_ref().and_then(|s| s.phase.as_deref());
 
     if let Some(phase) = current_phase {
         if matches!(phase, PHASE_ACTIVE | PHASE_SHUTTING_DOWN) {
@@ -435,7 +437,7 @@ pub async fn handle_deletion(
     info!(
         resource = %name,
         namespace = %namespace,
-        "Finalizer removed, resource will be deleted"
+        "DELETE: finalizer removed — Kubernetes will now delete the ScheduledMachine"
     );
 
     Ok(Action::await_change())
@@ -482,10 +484,18 @@ pub async fn handle_kill_switch(
             info!(
                 resource = %name,
                 namespace = %namespace,
-                "Kill switch active - removing machine immediately"
+                phase = %phase,
+                "KILL: removing CAPI Machine due to kill switch"
             );
 
             remove_machine_from_cluster(&resource, &ctx.client, &namespace).await?;
+        } else {
+            info!(
+                resource = %name,
+                namespace = %namespace,
+                phase = %phase,
+                "KILL: kill switch set but machine not running — recording Terminated phase only"
+            );
         }
     }
 
@@ -735,6 +745,7 @@ pub async fn update_phase(
         message: Some(resolved_message.to_string()),
         conditions: vec![condition],
         in_schedule,
+        ready: phase == PHASE_ACTIVE,
         ..Default::default()
     };
 
@@ -808,6 +819,7 @@ pub async fn update_phase_with_last_schedule(
         conditions: vec![condition],
         last_scheduled_time: Some(Utc::now().to_rfc3339()),
         in_schedule,
+        ready: phase == PHASE_ACTIVE,
         ..Default::default()
     };
 
@@ -880,6 +892,7 @@ pub async fn update_phase_with_grace_period(
         message: Some(resolved_message.to_string()),
         conditions: vec![condition],
         in_schedule,
+        ready: phase == PHASE_ACTIVE,
         ..Default::default()
     };
 

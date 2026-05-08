@@ -854,6 +854,155 @@ mod tests {
         srv.await.unwrap();
     }
 
+    // ---- ready-field projection on status patch ----
+
+    #[tokio::test]
+    async fn test_update_phase_active_sets_ready_true() {
+        let (client, handle) = mock_client_pair();
+        let ctx = make_test_context(client);
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("events call");
+            send.send_response(
+                Response::builder()
+                    .status(201)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_event_response_body()))
+                    .unwrap(),
+            );
+            let (req, send) = h.next_request().await.expect("patch_status call");
+            let body = collect_json_body(req.into_body()).await;
+            assert_eq!(body["status"]["phase"], "Active");
+            assert_eq!(
+                body["status"]["ready"], true,
+                "ready must be True when phase is Active"
+            );
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(sm_response_body("test-sm", "default", "Active")))
+                    .unwrap(),
+            );
+        });
+
+        update_phase(
+            &ctx,
+            "default",
+            "test-sm",
+            Some("Pending"),
+            "Active",
+            None,
+            None,
+            true,
+        )
+        .await
+        .expect("update_phase should succeed");
+
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_update_phase_inactive_sets_ready_false() {
+        let (client, handle) = mock_client_pair();
+        let ctx = make_test_context(client);
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("events call");
+            send.send_response(
+                Response::builder()
+                    .status(201)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_event_response_body()))
+                    .unwrap(),
+            );
+            let (req, send) = h.next_request().await.expect("patch_status call");
+            let body = collect_json_body(req.into_body()).await;
+            assert_eq!(body["status"]["phase"], "Inactive");
+            assert_eq!(
+                body["status"]["ready"], false,
+                "ready must be False for any non-Active phase"
+            );
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(sm_response_body(
+                        "test-sm", "default", "Inactive",
+                    )))
+                    .unwrap(),
+            );
+        });
+
+        update_phase(
+            &ctx,
+            "default",
+            "test-sm",
+            Some("Active"),
+            "Inactive",
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("update_phase should succeed");
+
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_update_phase_with_grace_period_shutting_down_sets_ready_false() {
+        let (client, handle) = mock_client_pair();
+        let ctx = make_test_context(client);
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("events call");
+            send.send_response(
+                Response::builder()
+                    .status(201)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_event_response_body()))
+                    .unwrap(),
+            );
+            let (req, send) = h.next_request().await.expect("patch_status call");
+            let body = collect_json_body(req.into_body()).await;
+            assert_eq!(body["status"]["phase"], "ShuttingDown");
+            assert_eq!(
+                body["status"]["ready"], false,
+                "ready must be False during ShuttingDown"
+            );
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(sm_response_body(
+                        "test-sm",
+                        "default",
+                        "ShuttingDown",
+                    )))
+                    .unwrap(),
+            );
+        });
+
+        update_phase_with_grace_period(
+            &ctx,
+            "default",
+            "test-sm",
+            Some("Active"),
+            "ShuttingDown",
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("grace period update should succeed");
+
+        srv.await.unwrap();
+    }
+
     // ---- Context::new — unit tests ----
 
     #[tokio::test]

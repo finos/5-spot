@@ -196,6 +196,12 @@ Array of condition objects with the following fields:
 
 (boolean) Whether the machine is currently within its scheduled time window.
 
+#### ready
+
+(boolean) `True` only when `phase` is `Active`. Surfaced as the `Ready` printer column
+for fast operator triage — any other phase (`Pending`, `ShuttingDown`, `Inactive`,
+`Disabled`, `Terminated`, `Error`) is reported as `False`.
+
 #### message
 
 (string) Human-readable message describing the current state.
