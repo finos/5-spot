@@ -995,7 +995,7 @@ jobs:
           trivyignores: ./.trivyignore
 
       - name: Upload Trivy IaC SARIF to Code Scanning
-        uses: github/codeql-action/upload-sarif@e46ed2cbd01164d986452f91f178727624ae40d7 # v4.35.3
+        uses: github/codeql-action/upload-sarif@68bde559dea0fdcac2102bfdf6230c5f70eb485e # v4.35.4
         with:
           sarif_file: trivy-iac.sarif
           category: trivy-iac
@@ -1119,7 +1119,7 @@ jobs:
 
       - name: Upload Grype SARIF to Code Scanning
         if: always()
-        uses: github/codeql-action/upload-sarif@e46ed2cbd01164d986452f91f178727624ae40d7 # v4.35.3
+        uses: github/codeql-action/upload-sarif@68bde559dea0fdcac2102bfdf6230c5f70eb485e # v4.35.4
         with:
           sarif_file: grype-${{ github.event_name }}-${{ matrix.variant.name }}.sarif
           category: grype-${{ github.event_name }}-${{ matrix.variant.name }}
