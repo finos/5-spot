@@ -66,7 +66,7 @@ toml = "1.1"
 # dance does. Non-Linux builds compile the module's `Subscriber::new` to
 # a stub that returns `NetlinkError::Unsupported`.
 [target.'cfg(target_os = "linux")'.dependencies]
-nix = { version = "0.30", default-features = false, features = ["socket", "net", "uio"] }
+nix = { version = "0.31", default-features = false, features = ["socket", "net", "uio"] }
 
 [[bin]]
 name = "5spot-reclaim-agent"
