@@ -14,10 +14,16 @@
 //! The most commonly used symbols are re-exported at this level so callers only
 //! need `use crate::reconcilers::{…}`.
 
+pub mod child_client;
+pub mod child_watch;
 mod helpers;
 pub mod scheduled_machine;
 
 // Re-export main types and functions
+pub use child_client::{
+    CacheKey, ChildClientCache, ChildWatchHook, ResolvedClient, DEFAULT_KUBECONFIG_SECRET_KEY,
+};
+pub use child_watch::ChildNodeWatchManager;
 #[allow(deprecated)] // re-export of legacy node_to_scheduled_machines for one release
 pub use helpers::{
     build_clear_reclaim_patch, error_policy, evaluate_schedule, machine_to_scheduled_machine,

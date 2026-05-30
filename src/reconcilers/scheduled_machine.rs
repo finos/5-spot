@@ -121,6 +121,15 @@ pub struct Context {
     /// keeping the finalizer in place. Use only when an external sweep is in
     /// place to garbage-collect stuck SMs.
     pub force_finalizer_on_timeout: bool,
+    /// Cache of per-`(namespace, secret_name)` child-cluster `kube::Client`s
+    /// built from kubeconfig Secrets referenced by `ScheduledMachine`s.
+    ///
+    /// See [`crate::reconcilers::child_client`] for resolution order,
+    /// cache invalidation semantics (Secret `resourceVersion`-keyed), and
+    /// the bounded-LRU eviction policy. Cheaply clonable — the underlying
+    /// state is `Arc`-wrapped — so the cache is shared across every reconcile
+    /// (including future per-child Node watchers in Phase 1.9).
+    pub child_clients: Arc<crate::reconcilers::child_client::ChildClientCache>,
 }
 
 impl Context {
@@ -149,6 +158,9 @@ impl Context {
             // Default-true: prefer unblocking namespace deletion over
             // strict-cleanup. See field rustdoc for the trade-off.
             force_finalizer_on_timeout: true,
+            // Empty cache — populated lazily on the first reconcile that
+            // resolves a kubeconfigSecretRef or an auto-discovered Secret.
+            child_clients: Arc::new(crate::reconcilers::child_client::ChildClientCache::new()),
         }
     }
 
@@ -206,9 +218,64 @@ pub enum ReconcilerError {
     #[error("Security validation failed: {0}")]
     ValidationError(String),
 
+    /// The controller's service account lacks RBAC permission to `create` a
+    /// required embedded resource (bootstrap, infrastructure, or the CAPI
+    /// `Machine`).
+    ///
+    /// Surfaced by a pre-flight [`SelfSubjectAccessReview`] in
+    /// [`crate::reconcilers::helpers::ensure_can_create`] so the failure is a
+    /// clear, actionable error naming the denied resource type rather than an
+    /// opaque 403 raised partway through resource creation. Pairs with the
+    /// admission-time `authorizer` checks in the ValidatingAdmissionPolicy,
+    /// which enforce the same permission on the *creating user* to prevent
+    /// privilege escalation through the controller.
+    ///
+    /// [`SelfSubjectAccessReview`]: k8s_openapi::api::authorization::v1::SelfSubjectAccessReview
+    #[error("Permission denied: {0}")]
+    PermissionDenied(String),
+
     /// An async operation exceeded its configured deadline (e.g. finalizer cleanup).
     #[error("Operation timed out: {0}")]
     TimeoutError(String),
+
+    /// A kubeconfig Secret was found but lacks the expected data key.
+    ///
+    /// Returned when [`crate::reconcilers::child_client::ChildClientCache`]
+    /// resolves an explicit `spec.kubeconfigSecretRef` (or an auto-discovered
+    /// `<clusterName>-kubeconfig` Secret) and the requested `data[key]` entry
+    /// is absent. Auto-discovery may surface this when the Secret exists but
+    /// stores the kubeconfig under a non-default key.
+    #[error("Kubeconfig Secret {namespace}/{name} is missing data key {key}")]
+    KubeconfigSecretMissingKey {
+        namespace: String,
+        name: String,
+        key: String,
+    },
+
+    /// A kubeconfig Secret was found but its contents cannot be parsed as a
+    /// valid kubeconfig (bad YAML, missing clusters/users/contexts, etc.) or a
+    /// `kube::Client` cannot be built from it.
+    #[error("Kubeconfig in Secret {namespace}/{name} is invalid: {reason}")]
+    KubeconfigInvalid {
+        namespace: String,
+        name: String,
+        reason: String,
+    },
+
+    /// The child cluster could not be reached via the resolved kubeconfig.
+    /// Distinct from [`Self::KubeError`] so it gets its own Prometheus error
+    /// label and a dedicated `ChildClusterReachable=False` condition (Phase 2).
+    ///
+    /// Includes the explicit-ref 404 case: when
+    /// `spec.kubeconfigSecretRef` is set and the named Secret does not exist,
+    /// the controller fails closed rather than silently falling back to the
+    /// management client (would route Node operations to the wrong cluster).
+    #[error("Child cluster {namespace}/{name} unreachable: {reason}")]
+    ChildClusterUnreachable {
+        namespace: String,
+        name: String,
+        reason: String,
+    },
 
     /// Catch-all for unexpected errors from third-party libraries.
     #[error(transparent)]
@@ -410,7 +477,17 @@ fn record_reconciliation_result(
                     record_error("reference_validation");
                 }
                 ReconcilerError::ValidationError(_) => record_error("validation"),
+                ReconcilerError::PermissionDenied(_) => record_error("permission_denied"),
                 ReconcilerError::TimeoutError(_) => record_error("timeout"),
+                ReconcilerError::KubeconfigSecretMissingKey { .. } => {
+                    record_error("kubeconfig_secret_missing_key");
+                }
+                ReconcilerError::KubeconfigInvalid { .. } => {
+                    record_error("kubeconfig_invalid");
+                }
+                ReconcilerError::ChildClusterUnreachable { .. } => {
+                    record_error("child_cluster_unreachable");
+                }
                 ReconcilerError::Other(_) => record_error("other"),
             }
         }
@@ -824,8 +901,28 @@ async fn provision_reclaim_agent_best_effort(
         return;
     }
     let commands = resource.spec.kill_if_commands.as_deref().unwrap_or(&[]);
+    // Resolve the child-cluster client for the Node + ConfigMap operations.
+    // The DaemonSet that consumes the ConfigMap runs on workload-cluster
+    // Nodes, so both the per-node label patch and the ConfigMap apply must
+    // hit the workload kube-apiserver — not the management one. Best-effort:
+    // a resolution failure logs and skips reclaim-agent projection rather
+    // than falling back to management (which would project the ConfigMap
+    // into a cluster where no consumer DaemonSet exists).
+    let resolved = match ctx.child_clients.resolve(&ctx.client, resource).await {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(
+                resource = %resource.name_any(),
+                node = %node_name,
+                error = %e,
+                "Failed to resolve child-cluster client for reclaim-agent projection (non-fatal)"
+            );
+            return;
+        }
+    };
     if let Err(e) =
-        super::helpers::reconcile_reclaim_agent_provision(&ctx.client, node_name, commands).await
+        super::helpers::reconcile_reclaim_agent_provision(resolved.client(), node_name, commands)
+            .await
     {
         warn!(
             resource = %resource.name_any(),
@@ -893,7 +990,22 @@ async fn reconcile_node_taints_best_effort(
         desired,
         previously_applied,
     };
-    let outcome = match super::helpers::reconcile_node_taints(&ctx.client, input).await {
+    // Taints land on the child cluster's Node objects (they live there, not on
+    // the management cluster). Resolve once at the top; best-effort, so a
+    // resolver failure logs + skips rather than escalating to Error.
+    let resolved = match ctx.child_clients.resolve(&ctx.client, resource).await {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(
+                resource = %resource.name_any(),
+                node = %node_name,
+                error = %e,
+                "Failed to resolve child-cluster client for node-taint reconcile (non-fatal)"
+            );
+            return;
+        }
+    };
+    let outcome = match super::helpers::reconcile_node_taints(resolved.client(), input).await {
         Ok(o) => o,
         Err(e) => {
             warn!(
@@ -991,7 +1103,15 @@ async fn handle_shutting_down_phase(
     if grace_period_elapsed {
         info!(resource = %name, namespace = %namespace, "Grace period elapsed - draining node and removing machine");
 
-        // Step 1: Drain the node if it exists
+        // Step 1: Drain the node if it exists.
+        //
+        // `get_node_from_machine` reads the CAPI Machine on the management
+        // cluster (where Machine objects live) to extract the nodeRef, so it
+        // stays on the management client. The drain itself, however, hits
+        // the Node + Pod APIs on the workload cluster — resolve the child
+        // client and pass it down. Resolution failure here is fail-closed:
+        // a misconfigured kubeconfigSecretRef must NOT silently drain Pods
+        // on the management cluster.
         if let Some(node_name) = get_node_from_machine(&ctx.client, &namespace, &name).await? {
             info!(
                 resource = %name,
@@ -1003,8 +1123,10 @@ async fn handle_shutting_down_phase(
             // Parse drain timeout
             let drain_timeout = parse_duration(&resource.spec.node_drain_timeout)?;
 
+            let drain_client = ctx.child_clients.resolve(&ctx.client, &resource).await?;
+
             // Attempt to drain the node
-            match drain_node_with_timeout(&ctx.client, &node_name, drain_timeout).await {
+            match drain_node_with_timeout(drain_client.client(), &node_name, drain_timeout).await {
                 Ok(()) => {
                     info!(
                         resource = %name,

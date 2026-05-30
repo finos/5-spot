@@ -164,7 +164,7 @@ flowchart LR
 #### Tampering
 | ID | Threat | Likelihood | Impact | Status |
 |---|---|---|---|---|
-| T1 | **Cross-namespace resource creation** — user sets `bootstrapSpec.namespace` to `kube-system` | High | Critical | **Mitigated (2026-04-08)** — `namespace` field removed from `EmbeddedResource`; controller always uses SM's own namespace |
+| T1 | **Cross-namespace resource creation** — user sets `bootstrapSpec.metadata.namespace` to `kube-system` | High | Critical | **Mitigated (2026-04-08, hardened 2026-05-30)** — controller always uses the SM's own namespace; `metadata.namespace`/`metadata.name` are now **loudly rejected** at admission (VAP rules 13c–13f) and at reconcile (`validate_embedded_metadata()`). Only `metadata.labels`/`metadata.annotations` are accepted, reserved-prefix-checked |
 | T2 | **Label injection** — user sets `machineTemplate.labels["cluster.x-k8s.io/cluster-name"]` to redirect machine to attacker-controlled cluster | High | Critical | **Mitigated (2026-04-08)** — `validate_labels()` blocks reserved prefixes |
 | T3 | **Annotation injection** — user injects `kubectl.kubernetes.io/restartedAt` to trigger rolling restarts | Medium | Medium | **Mitigated (2026-04-08)** — same prefix allowlist |
 | T4 | **apiVersion/kind injection** — user sets `bootstrapSpec.kind: ClusterRole` to create RBAC resources | High | High | **Mitigated (2026-04-08)** — `validate_api_group()` enforces allowlist |
@@ -198,6 +198,7 @@ flowchart LR
 | ID | Threat | Likelihood | Impact | Status |
 |---|---|---|---|---|
 | E1 | Attacker uses `apiVersion: rbac.authorization.k8s.io/v1, kind: ClusterRole` to create RBAC resources via controller | High | Critical | **Mitigated (2026-04-08)** — API group allowlist |
+| E1a | **Escalation through the controller** — user who can create a `ScheduledMachine` but **not** the embedded bootstrap/infrastructure resource has the broadly-permissioned controller create it on their behalf | High | High | **Mitigated (2026-05-29)** — VAP `authorizer` rules (13a/13b) require the *requesting user* to hold `create` on the embedded GVKs; controller's own SA independently gated at reconcile by `ensure_can_create()` (`SelfSubjectAccessReview`) |
 | E2 | **Compromised controller pod** gains cluster-wide node cordon/drain, CAPI write access | Medium | Critical | **Partially mitigated** — k0smotron.io RBAC narrowed; bootstrap/infra still use wildcards (provider-agnostic requirement) |
 | E3 | Controller service account token stolen from pod filesystem | Low | Critical | **Mitigated** — read-only root filesystem; token mounted at standard path (Kubernetes default); no projected service account with long lifetime |
 

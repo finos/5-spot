@@ -1944,6 +1944,7 @@ mod tests {
                 kill_switch: false,
                 node_taints: vec![],
                 kill_if_commands: None,
+                kubeconfig_secret_ref: None,
             },
             status: None,
         };
@@ -3525,6 +3526,7 @@ mod tests {
                 kill_switch: false,
                 node_taints: vec![],
                 kill_if_commands: None,
+                kubeconfig_secret_ref: None,
             },
             status: Some(crate::crd::ScheduledMachineStatus {
                 phase: Some("ShuttingDown".to_string()),
@@ -4045,5 +4047,356 @@ mod tests {
         )];
         let refs = node_to_scheduled_machines_via_machine(&node, machines.iter());
         assert!(refs.is_empty());
+    }
+
+    // ========================================================================
+    // resource_plural — pure unit tests
+    // ========================================================================
+
+    #[test]
+    fn test_resource_plural_bootstrap_kind() {
+        // K0sWorkerConfig is registered as the plural "k0sworkerconfigs".
+        assert_eq!(
+            super::super::resource_plural("K0sWorkerConfig"),
+            "k0sworkerconfigs"
+        );
+    }
+
+    #[test]
+    fn test_resource_plural_infrastructure_kind() {
+        // RemoteMachine is registered as the plural "remotemachines".
+        assert_eq!(
+            super::super::resource_plural("RemoteMachine"),
+            "remotemachines"
+        );
+    }
+
+    #[test]
+    fn test_resource_plural_machine_matches_capi_constant() {
+        // The derived plural for the CAPI Machine must match the constant used
+        // when the controller actually deletes it — otherwise the SSAR check
+        // and the create/delete call would target different RBAC resources.
+        assert_eq!(
+            super::super::resource_plural("Machine"),
+            crate::constants::CAPI_RESOURCE_MACHINES
+        );
+    }
+
+    #[test]
+    fn test_resource_plural_already_lowercase() {
+        // Idempotent on an already-lowercase single-word kind.
+        assert_eq!(super::super::resource_plural("machine"), "machines");
+    }
+
+    // ========================================================================
+    // ensure_can_create — SelfSubjectAccessReview mock API tests (TDD)
+    // ========================================================================
+
+    /// SelfSubjectAccessReview response body with the given decision.
+    fn ssar_response_body(allowed: bool, reason: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "apiVersion": "authorization.k8s.io/v1",
+            "kind": "SelfSubjectAccessReview",
+            "metadata": {},
+            "spec": { "resourceAttributes": {} },
+            "status": { "allowed": allowed, "reason": reason }
+        }))
+        .unwrap()
+    }
+
+    // ---- Positive: allowed=true returns Ok ----
+
+    #[tokio::test]
+    async fn test_ensure_can_create_allowed_returns_ok() {
+        let (client, handle) = mock_client_pair();
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (req, send) = h.next_request().await.expect("expected SSAR POST");
+            assert_eq!(req.method(), http::Method::POST);
+            assert!(
+                req.uri().path().contains("selfsubjectaccessreviews"),
+                "should POST a SelfSubjectAccessReview, got: {}",
+                req.uri().path()
+            );
+            send.send_response(
+                Response::builder()
+                    .status(201)
+                    .header("content-type", "application/json")
+                    .body(Body::from(ssar_response_body(true, "")))
+                    .unwrap(),
+            );
+        });
+
+        super::super::ensure_can_create(
+            &client,
+            "default",
+            "bootstrap.cluster.x-k8s.io/v1beta1",
+            "K0sWorkerConfig",
+            "bootstrap",
+        )
+        .await
+        .expect("allowed=true should return Ok");
+
+        srv.await.unwrap();
+    }
+
+    // ---- Negative: allowed=false returns PermissionDenied ----
+
+    #[tokio::test]
+    async fn test_ensure_can_create_denied_returns_permission_denied() {
+        let (client, handle) = mock_client_pair();
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("expected SSAR POST");
+            send.send_response(
+                Response::builder()
+                    .status(201)
+                    .header("content-type", "application/json")
+                    .body(Body::from(ssar_response_body(
+                        false,
+                        "RBAC: no rules grant create on remotemachines",
+                    )))
+                    .unwrap(),
+            );
+        });
+
+        let err = super::super::ensure_can_create(
+            &client,
+            "default",
+            "infrastructure.cluster.x-k8s.io/v1beta1",
+            "RemoteMachine",
+            "infrastructure",
+        )
+        .await
+        .expect_err("allowed=false should return an error");
+
+        match err {
+            ReconcilerError::PermissionDenied(msg) => {
+                assert!(
+                    msg.contains("infrastructure") && msg.contains("remotemachines"),
+                    "error should name the resource type, got: {msg}"
+                );
+                assert!(
+                    msg.contains("RBAC: no rules grant create"),
+                    "error should include the API server reason, got: {msg}"
+                );
+            }
+            other => panic!("expected PermissionDenied, got: {other:?}"),
+        }
+
+        srv.await.unwrap();
+    }
+
+    // ---- Negative: allowed=false with no reason still denies cleanly ----
+
+    #[tokio::test]
+    async fn test_ensure_can_create_denied_without_reason() {
+        let (client, handle) = mock_client_pair();
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("expected SSAR POST");
+            send.send_response(
+                Response::builder()
+                    .status(201)
+                    .header("content-type", "application/json")
+                    .body(Body::from(ssar_response_body(false, "")))
+                    .unwrap(),
+            );
+        });
+
+        let err = super::super::ensure_can_create(
+            &client,
+            "default",
+            "bootstrap.cluster.x-k8s.io/v1beta1",
+            "K0sWorkerConfig",
+            "bootstrap",
+        )
+        .await
+        .expect_err("allowed=false should return an error");
+
+        match err {
+            ReconcilerError::PermissionDenied(msg) => {
+                assert!(
+                    msg.contains("no reason provided"),
+                    "empty reason should fall back to a placeholder, got: {msg}"
+                );
+            }
+            other => panic!("expected PermissionDenied, got: {other:?}"),
+        }
+
+        srv.await.unwrap();
+    }
+
+    // ---- Error path: SSAR API call itself fails (5xx) ----
+
+    #[tokio::test]
+    async fn test_ensure_can_create_api_error_propagates_kube_error() {
+        let (client, handle) = mock_client_pair();
+
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("expected SSAR POST");
+            send.send_response(
+                Response::builder()
+                    .status(500)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_error_body(500, "internal server error")))
+                    .unwrap(),
+            );
+        });
+
+        let err = super::super::ensure_can_create(
+            &client,
+            "default",
+            "bootstrap.cluster.x-k8s.io/v1beta1",
+            "K0sWorkerConfig",
+            "bootstrap",
+        )
+        .await
+        .expect_err("a 5xx from the API should surface as an error");
+
+        assert!(
+            matches!(err, ReconcilerError::KubeError(_)),
+            "API failure should map to KubeError, got: {err:?}"
+        );
+
+        srv.await.unwrap();
+    }
+
+    // ========================================================================
+    // validate_embedded_metadata — unit tests
+    // ========================================================================
+
+    use crate::crd::EmbeddedResource;
+
+    fn embedded(value: serde_json::Value) -> EmbeddedResource {
+        EmbeddedResource(value)
+    }
+
+    #[test]
+    fn test_validate_embedded_metadata_rejects_namespace() {
+        let e = embedded(serde_json::json!({
+            "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
+            "kind": "K0sWorkerConfig",
+            "metadata": { "namespace": "kube-system" },
+            "spec": {}
+        }));
+        let err = super::super::validate_embedded_metadata(&e, "spec.bootstrapSpec")
+            .expect_err("metadata.namespace must be rejected");
+        match err {
+            ReconcilerError::ValidationError(msg) => {
+                assert!(
+                    msg.contains("metadata.namespace") && msg.contains("spec.bootstrapSpec"),
+                    "error must name the offending field, got: {msg}"
+                );
+            }
+            other => panic!("expected ValidationError, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_validate_embedded_metadata_rejects_name() {
+        let e = embedded(serde_json::json!({
+            "kind": "RemoteMachine",
+            "metadata": { "name": "attacker-chosen" },
+            "spec": {}
+        }));
+        let err = super::super::validate_embedded_metadata(&e, "spec.infrastructureSpec")
+            .expect_err("metadata.name must be rejected");
+        assert!(matches!(err, ReconcilerError::ValidationError(m) if m.contains("metadata.name")));
+    }
+
+    #[test]
+    fn test_validate_embedded_metadata_rejects_reserved_label_prefix() {
+        // A user trying to forge the cluster-name label (threat T2) via the
+        // embedded resource's labels must be rejected.
+        let e = embedded(serde_json::json!({
+            "kind": "K0sWorkerConfig",
+            "metadata": { "labels": { "cluster.x-k8s.io/cluster-name": "other-cluster" } },
+            "spec": {}
+        }));
+        let err = super::super::validate_embedded_metadata(&e, "spec.bootstrapSpec")
+            .expect_err("reserved-prefix label must be rejected");
+        assert!(
+            matches!(err, ReconcilerError::ValidationError(m) if m.contains("reserved prefix")),
+            "must reject reserved label prefix"
+        );
+    }
+
+    #[test]
+    fn test_validate_embedded_metadata_rejects_reserved_annotation_prefix() {
+        let e = embedded(serde_json::json!({
+            "kind": "K0sWorkerConfig",
+            "metadata": { "annotations": { "5spot.finos.org/foo": "bar" } },
+            "spec": {}
+        }));
+        assert!(super::super::validate_embedded_metadata(&e, "spec.bootstrapSpec").is_err());
+    }
+
+    #[test]
+    fn test_validate_embedded_metadata_accepts_clean_labels_and_annotations() {
+        let e = embedded(serde_json::json!({
+            "kind": "K0sWorkerConfig",
+            "metadata": {
+                "labels": { "team": "payments" },
+                "annotations": { "example.com/owner": "alice" }
+            },
+            "spec": {}
+        }));
+        super::super::validate_embedded_metadata(&e, "spec.bootstrapSpec")
+            .expect("clean labels/annotations must be accepted");
+    }
+
+    #[test]
+    fn test_validate_embedded_metadata_accepts_no_metadata() {
+        let e = embedded(serde_json::json!({ "kind": "K0sWorkerConfig", "spec": {} }));
+        super::super::validate_embedded_metadata(&e, "spec.bootstrapSpec")
+            .expect("absent metadata must be accepted");
+    }
+
+    // ========================================================================
+    // merge_owned_labels — unit tests
+    // ========================================================================
+
+    #[test]
+    fn test_merge_owned_labels_stamps_controller_labels() {
+        let mut user = BTreeMap::new();
+        user.insert("team".to_string(), "payments".to_string());
+        let merged = super::super::merge_owned_labels(user, "my-sm", "my-cluster");
+        assert_eq!(merged.get("team").map(String::as_str), Some("payments"));
+        assert_eq!(
+            merged
+                .get("5spot.finos.org/scheduled-machine")
+                .map(String::as_str),
+            Some("my-sm")
+        );
+        assert_eq!(
+            merged
+                .get("cluster.x-k8s.io/cluster-name")
+                .map(String::as_str),
+            Some("my-cluster")
+        );
+    }
+
+    #[test]
+    fn test_merge_owned_labels_controller_labels_win() {
+        // Even if a user value somehow reaches here for a reserved key, the
+        // controller-owned value must take precedence (inserted last).
+        let mut user = BTreeMap::new();
+        user.insert(
+            "cluster.x-k8s.io/cluster-name".to_string(),
+            "attacker".to_string(),
+        );
+        let merged = super::super::merge_owned_labels(user, "my-sm", "real-cluster");
+        assert_eq!(
+            merged
+                .get("cluster.x-k8s.io/cluster-name")
+                .map(String::as_str),
+            Some("real-cluster"),
+            "controller-owned label must win over any user value"
+        );
     }
 }

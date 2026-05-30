@@ -39,6 +39,7 @@ mod tests {
             kill_switch: false,
             node_taints: vec![],
             kill_if_commands: None,
+            kubeconfig_secret_ref: None,
         }
     }
 

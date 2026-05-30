@@ -93,6 +93,16 @@ This is a fully unstructured object that must contain:
 
 The controller validates that the apiVersion belongs to an allowed bootstrap API group.
 
+It may also include an optional `metadata` block:
+
+- **metadata.labels** (optional, map of string to string): merged onto the created bootstrap resource
+- **metadata.annotations** (optional, map of string to string): merged onto the created bootstrap resource
+
+`metadata.name` and `metadata.namespace` are **not** permitted — the controller
+names the resource after the ScheduledMachine and creates it in the SM's own
+namespace. Labels/annotations using reserved prefixes (`5spot.finos.org/`,
+`cluster.x-k8s.io/`, `kubernetes.io/`, `k8s.io/`) are rejected.
+
 #### infrastructureSpec
 
 (required, object) Inline infrastructure configuration that will be created when the schedule is active.
@@ -103,6 +113,16 @@ This is a fully unstructured object that must contain:
 - **spec** (required, object): Provider-specific configuration for the infrastructure resource
 
 The controller validates that the apiVersion belongs to an allowed infrastructure API group.
+
+It may also include an optional `metadata` block:
+
+- **metadata.labels** (optional, map of string to string): merged onto the created infrastructure resource
+- **metadata.annotations** (optional, map of string to string): merged onto the created infrastructure resource
+
+`metadata.name` and `metadata.namespace` are **not** permitted — the controller
+names the resource after the ScheduledMachine and creates it in the SM's own
+namespace. Labels/annotations using reserved prefixes (`5spot.finos.org/`,
+`cluster.x-k8s.io/`, `kubernetes.io/`, `k8s.io/`) are rejected.
 
 #### machineTemplate
 

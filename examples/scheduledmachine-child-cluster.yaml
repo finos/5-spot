@@ -1,0 +1,70 @@
+# Example ScheduledMachine targeting a CAPI / k0smotron child cluster.
+#
+# The ScheduledMachine, the CAPI Machine, the K0sWorkerConfig, and the
+# RemoteMachine all live on the *management* cluster. The Node and Pod
+# objects the controller manages on behalf of this resource live inside
+# the *workload* (child) cluster.
+#
+# spec.kubeconfigSecretRef points 5-Spot at the workload cluster's
+# kubeconfig — stored as a Secret in this same namespace, in the format
+# CAPI's control-plane provider writes by default (`<clusterName>-kubeconfig`,
+# with the kubeconfig YAML under `data.value`).
+#
+# Required child-cluster RBAC (must be granted to whoever the kubeconfig
+# authenticates as):
+#   nodes:   get, list, watch, patch
+#   pods:    get, list, delete
+#   configmaps (in `5spot-system`): get, create, patch, delete
+#     — only when spec.killIfCommands is also set
+#
+# See docs/src/concepts/child-cluster-kubeconfig.md for the full
+# resolution order, threat model, and limitations.
+
+apiVersion: 5spot.finos.org/v1alpha1
+kind: ScheduledMachine
+metadata:
+  name: gpu-worker
+  namespace: hosted-cluster-alpha
+spec:
+  clusterName: alpha
+
+  # Explicit ref. Could be omitted: 5-Spot would then auto-discover
+  # the Secret `<clusterName>-kubeconfig` (`alpha-kubeconfig`) in this
+  # namespace. The explicit form is documented here for clarity.
+  kubeconfigSecretRef:
+    name: alpha-kubeconfig
+    key: value             # default; CAPI convention
+
+  schedule:
+    daysOfWeek:
+      - mon-fri
+    hoursOfDay:
+      - "9-17"
+    timezone: America/Toronto
+    enabled: true
+
+  bootstrapSpec:
+    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    kind: K0sWorkerConfig
+    spec:
+      version: v1.30.0+k0s.0
+
+  infrastructureSpec:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: RemoteMachine
+    spec:
+      address: 10.0.0.1
+      port: 22
+      user: admin
+
+  machineTemplate:
+    labels:
+      node-role.kubernetes.io/worker: ""
+      5spot.finos.org/target-cluster: alpha
+    annotations:
+      5spot.finos.org/scheduled-by: gpu-worker
+
+  priority: 50
+  gracefulShutdownTimeout: 5m
+  nodeDrainTimeout: 5m
+  killSwitch: false

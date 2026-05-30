@@ -133,6 +133,16 @@ fn main() {
         "The controller validates that the apiVersion belongs to an allowed bootstrap API group."
     );
     println!();
+    println!("It may also include an optional `metadata` block:");
+    println!();
+    println!("- **metadata.labels** (optional, map of string to string): merged onto the created bootstrap resource");
+    println!("- **metadata.annotations** (optional, map of string to string): merged onto the created bootstrap resource");
+    println!();
+    println!("`metadata.name` and `metadata.namespace` are **not** permitted — the controller");
+    println!("names the resource after the ScheduledMachine and creates it in the SM's own");
+    println!("namespace. Labels/annotations using reserved prefixes (`5spot.finos.org/`,");
+    println!("`cluster.x-k8s.io/`, `kubernetes.io/`, `k8s.io/`) are rejected.");
+    println!();
     println!("#### infrastructureSpec");
     println!();
     println!("(required, object) Inline infrastructure configuration that will be created when the schedule is active.");
@@ -143,6 +153,16 @@ fn main() {
     println!("- **spec** (required, object): Provider-specific configuration for the infrastructure resource");
     println!();
     println!("The controller validates that the apiVersion belongs to an allowed infrastructure API group.");
+    println!();
+    println!("It may also include an optional `metadata` block:");
+    println!();
+    println!("- **metadata.labels** (optional, map of string to string): merged onto the created infrastructure resource");
+    println!("- **metadata.annotations** (optional, map of string to string): merged onto the created infrastructure resource");
+    println!();
+    println!("`metadata.name` and `metadata.namespace` are **not** permitted — the controller");
+    println!("names the resource after the ScheduledMachine and creates it in the SM's own");
+    println!("namespace. Labels/annotations using reserved prefixes (`5spot.finos.org/`,");
+    println!("`cluster.x-k8s.io/`, `kubernetes.io/`, `k8s.io/`) are rejected.");
     println!();
     println!("#### machineTemplate");
     println!();

@@ -390,6 +390,61 @@ pub static FINALIZER_CLEANUP_TIMEOUTS_TOTAL: LazyLock<Counter> = LazyLock::new(|
     })
 });
 
+/// Total number of child-cluster kubeconfig resolutions, labelled by
+/// outcome. Label values:
+///
+/// - `management` — neither an explicit ref nor an auto-discovered
+///   Secret was present; the controller used the management client.
+/// - `child_explicit` — built a child client from
+///   `spec.kubeconfigSecretRef`.
+/// - `child_auto` — built a child client from the auto-discovered
+///   `<clusterName>-kubeconfig` Secret.
+/// - `cache_hit` — same `resourceVersion`, returned the cached client.
+/// - `rebuild` — `resourceVersion` changed, rebuilt the child client.
+/// - `error` — resolution failed (see
+///   `fivespot_child_kubeconfig_errors_total` for the breakdown).
+pub static CHILD_KUBECONFIG_RESOLUTIONS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
+    register_counter_vec!(
+        "fivespot_child_kubeconfig_resolutions_total",
+        "Total number of child-cluster kubeconfig resolutions by outcome",
+        &["result"]
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_child_kubeconfig_resolutions_total: {e}");
+        fallback_counter_vec(
+            "fivespot_child_kubeconfig_resolutions_total",
+            "Total number of child-cluster kubeconfig resolutions by outcome",
+            &["result"],
+        )
+    })
+});
+
+/// Total number of child-cluster kubeconfig resolution errors, labelled
+/// by reason:
+/// - `secret_missing_key` — Secret exists but lacks `data[key]`
+/// - `invalid_yaml`       — kubeconfig YAML parse failed
+/// - `unreachable`        — explicit ref 404 / Secret GET network error
+/// - `non_404_kube_error` — non-404 kube::Error during auto-discovery GET
+///
+/// Operators should alert on a non-trivial rate of any reason: every
+/// error here means at least one `ScheduledMachine` is silently failing
+/// its Node/Pod operations on the workload cluster.
+pub static CHILD_KUBECONFIG_ERRORS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
+    register_counter_vec!(
+        "fivespot_child_kubeconfig_errors_total",
+        "Total number of child-cluster kubeconfig resolution errors by reason",
+        &["reason"]
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_child_kubeconfig_errors_total: {e}");
+        fallback_counter_vec(
+            "fivespot_child_kubeconfig_errors_total",
+            "Total number of child-cluster kubeconfig resolution errors by reason",
+            &["reason"],
+        )
+    })
+});
+
 /// Record a successful reconciliation
 pub fn record_reconciliation_success(phase: &str, duration_secs: f64) {
     RECONCILIATIONS_TOTAL
@@ -498,6 +553,24 @@ pub fn record_rapid_re_reclaim(namespace: &str, name: &str) {
 /// Operators should treat any non-zero rate as a signal that orphan CAPI
 /// Machine / bootstrap / infrastructure resources may exist and need
 /// manual reconciliation.
+/// Record one child-cluster kubeconfig resolution. `result` must be one
+/// of the documented outcomes on
+/// [`CHILD_KUBECONFIG_RESOLUTIONS_TOTAL`].
+pub fn record_child_kubeconfig_resolution(result: &str) {
+    CHILD_KUBECONFIG_RESOLUTIONS_TOTAL
+        .with_label_values(&[result])
+        .inc();
+}
+
+/// Record one child-cluster kubeconfig resolution error. `reason` must
+/// be one of the documented categories on
+/// [`CHILD_KUBECONFIG_ERRORS_TOTAL`].
+pub fn record_child_kubeconfig_error(reason: &str) {
+    CHILD_KUBECONFIG_ERRORS_TOTAL
+        .with_label_values(&[reason])
+        .inc();
+}
+
 pub fn record_finalizer_cleanup_timeout() {
     FINALIZER_CLEANUP_TIMEOUTS_TOTAL.inc();
 }

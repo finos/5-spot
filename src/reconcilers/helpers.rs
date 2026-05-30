@@ -26,6 +26,9 @@ use std::time::Duration;
 
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use chrono_tz::Tz;
+use k8s_openapi::api::authorization::v1::{
+    ResourceAttributes, SelfSubjectAccessReview, SelfSubjectAccessReviewSpec,
+};
 use k8s_openapi::api::core::v1::ObjectReference;
 use kube::{
     api::{Api, Patch, PatchParams},
@@ -47,8 +50,9 @@ use crate::constants::{
     FINALIZER_SCHEDULED_MACHINE, MAX_BACKOFF_SECS, MAX_CLUSTER_NAME_LEN, MAX_DURATION_SECS,
     MAX_KILL_IF_COMMANDS_COUNT, MAX_KILL_IF_COMMAND_LEN, MAX_RECONCILE_RETRIES, PHASE_ACTIVE,
     PHASE_ERROR, PHASE_INACTIVE, PHASE_SHUTTING_DOWN, PHASE_TERMINATED,
-    POD_EVICTION_GRACE_PERIOD_SECS, REASON_GRACE_PERIOD, REASON_KILL_SWITCH,
-    REASON_RECONCILE_SUCCEEDED, RESERVED_LABEL_PREFIXES, TIMER_REQUEUE_SECS,
+    POD_EVICTION_GRACE_PERIOD_SECS, RBAC_VERB_CREATE, REASON_GRACE_PERIOD, REASON_KILL_SWITCH,
+    REASON_RECONCILE_SUCCEEDED, RESERVED_LABEL_PREFIXES, SCHEDULED_MACHINE_LABEL,
+    TIMER_REQUEUE_SECS,
 };
 use crate::crd::{Condition, NodeRef, ScheduledMachine, ScheduledMachineStatus};
 use crate::metrics::{
@@ -910,6 +914,75 @@ pub async fn update_phase_with_grace_period(
 // Security validation helpers
 // ============================================================================
 
+/// Validate the optional `metadata` block of an embedded bootstrap /
+/// infrastructure resource.
+///
+/// The controller owns the created resource's **identity**:
+/// - `metadata.namespace` — always the `ScheduledMachine`'s own namespace
+///   (cross-namespace creation is forbidden, threat T1).
+/// - `metadata.name` — always the `ScheduledMachine` name (deletion in
+///   [`remove_machine_from_cluster`] relies on this).
+///
+/// Both are therefore **rejected** if set, rather than silently overridden, so
+/// a user gets clear feedback. Only `metadata.labels` and `metadata.annotations`
+/// are user-settable, and they are run through [`validate_labels`] so a user
+/// cannot forge reserved-prefix keys (e.g. `cluster.x-k8s.io/cluster-name`,
+/// which would redirect the machine to another cluster — threat T2).
+///
+/// This is the runtime (reconcile-time) half of a two-layer guard; the
+/// admission-time half lives in the `ValidatingAdmissionPolicy`.
+///
+/// # Errors
+/// [`ReconcilerError::ValidationError`] if `metadata.name`/`metadata.namespace`
+/// is set, or a label/annotation key uses a reserved prefix.
+pub fn validate_embedded_metadata(
+    embedded: &crate::crd::EmbeddedResource,
+    field: &str,
+) -> Result<(), ReconcilerError> {
+    if embedded.metadata_namespace().is_some() {
+        return Err(ReconcilerError::ValidationError(format!(
+            "{field}.metadata.namespace is not permitted — the controller always creates \
+             the resource in the ScheduledMachine's own namespace"
+        )));
+    }
+    if embedded.metadata_name().is_some() {
+        return Err(ReconcilerError::ValidationError(format!(
+            "{field}.metadata.name is not permitted — the controller names the resource \
+             after the ScheduledMachine"
+        )));
+    }
+
+    validate_labels(
+        &embedded.metadata_labels(),
+        &format!("{field}.metadata.labels"),
+    )?;
+    validate_labels(
+        &embedded.metadata_annotations(),
+        &format!("{field}.metadata.annotations"),
+    )?;
+    Ok(())
+}
+
+/// Merge the controller-owned tracking labels onto a user-supplied label map.
+///
+/// The two reserved labels ([`SCHEDULED_MACHINE_LABEL`] and
+/// [`CAPI_CLUSTER_NAME_LABEL`]) are inserted **last** so they always take
+/// precedence over any user-provided entry. Users cannot legitimately set these
+/// keys anyway — [`validate_embedded_metadata`] rejects reserved prefixes — so
+/// this is a defensive guarantee rather than a conflict resolver.
+fn merge_owned_labels(
+    mut labels: BTreeMap<String, String>,
+    sm_name: &str,
+    cluster_name: &str,
+) -> BTreeMap<String, String> {
+    labels.insert(SCHEDULED_MACHINE_LABEL.to_string(), sm_name.to_string());
+    labels.insert(
+        CAPI_CLUSTER_NAME_LABEL.to_string(),
+        cluster_name.to_string(),
+    );
+    labels
+}
+
 /// Reject label/annotation maps that contain reserved key prefixes.
 ///
 /// Users must not be able to override system labels such as
@@ -1145,11 +1218,51 @@ pub async fn add_machine_to_cluster(
         "infrastructure",
     )?;
 
+    // RBAC pre-flight: confirm the controller's service account may create every
+    // resource type up front, before creating any of them. This fails fast with
+    // a clear PermissionDenied error (naming the resource) instead of an opaque
+    // 403 surfacing partway through — which could leave a bootstrap resource
+    // orphaned because the infrastructure create was denied. The matching
+    // permission check on the *creating user* (privilege-escalation guard) runs
+    // at admission via the ValidatingAdmissionPolicy `authorizer` rules.
+    ensure_can_create(
+        client,
+        namespace,
+        bootstrap_api_version,
+        bootstrap_kind,
+        "bootstrap",
+    )
+    .await?;
+    ensure_can_create(
+        client,
+        namespace,
+        infra_api_version,
+        infra_kind,
+        "infrastructure",
+    )
+    .await?;
+    ensure_can_create(
+        client,
+        namespace,
+        CAPI_MACHINE_API_VERSION_FULL,
+        "Machine",
+        "machine",
+    )
+    .await?;
+
     // Validate user-supplied labels and annotations do not use reserved prefixes
     if let Some(template) = &resource.spec.machine_template {
         validate_labels(&template.labels, "machineTemplate.labels")?;
         validate_labels(&template.annotations, "machineTemplate.annotations")?;
     }
+
+    // Validate the embedded bootstrap/infra metadata: reject controller-owned
+    // identity fields (name/namespace) and reserved-prefix labels/annotations.
+    validate_embedded_metadata(&resource.spec.bootstrap_spec, "spec.bootstrapSpec")?;
+    validate_embedded_metadata(
+        &resource.spec.infrastructure_spec,
+        "spec.infrastructureSpec",
+    )?;
 
     let owner_ref = json!({
         "apiVersion": API_VERSION_FULL,
@@ -1171,16 +1284,25 @@ pub async fn add_machine_to_cluster(
     // NOTE: No ownerReferences here - the bootstrap controller (e.g., k0smotron) needs to
     // process this resource. We use labels for tracking instead, and the CAPI Machine's
     // bootstrap.configRef provides the logical relationship.
+    //
+    // User-supplied metadata.labels/annotations are merged in first; the
+    // controller-owned tracking labels are inserted last so they always win
+    // (users cannot set reserved prefixes anyway — validate_embedded_metadata
+    // rejects those above).
+    let bootstrap_labels = merge_owned_labels(
+        resource.spec.bootstrap_spec.metadata_labels(),
+        &name,
+        cluster_name,
+    );
+    let bootstrap_annotations = resource.spec.bootstrap_spec.metadata_annotations();
     let bootstrap_obj = json!({
         "apiVersion": bootstrap_api_version,
         "kind": bootstrap_kind,
         "metadata": {
             "name": name,
             "namespace": bootstrap_ns,
-            "labels": {
-                "5spot.finos.org/scheduled-machine": name,
-                CAPI_CLUSTER_NAME_LABEL: cluster_name,
-            },
+            "labels": bootstrap_labels,
+            "annotations": bootstrap_annotations,
         },
         "spec": bootstrap_spec_inner,
     });
@@ -1201,16 +1323,20 @@ pub async fn add_machine_to_cluster(
     // NOTE: No ownerReferences here - the infrastructure controller (e.g., CAPM3, CAPA) needs to
     // process this resource. We use labels for tracking instead, and the CAPI Machine's
     // infrastructureRef provides the logical relationship.
+    let infra_labels = merge_owned_labels(
+        resource.spec.infrastructure_spec.metadata_labels(),
+        &name,
+        cluster_name,
+    );
+    let infra_annotations = resource.spec.infrastructure_spec.metadata_annotations();
     let infra_obj = json!({
         "apiVersion": infra_api_version,
         "kind": infra_kind,
         "metadata": {
             "name": name,
             "namespace": infra_ns,
-            "labels": {
-                "5spot.finos.org/scheduled-machine": name,
-                CAPI_CLUSTER_NAME_LABEL: cluster_name,
-            },
+            "labels": infra_labels,
+            "annotations": infra_annotations,
         },
         "spec": infra_spec_inner,
     });
@@ -1223,20 +1349,16 @@ pub async fn add_machine_to_cluster(
 
     info!(kind = %infra_kind, "Infrastructure resource created");
 
-    // 3. Create CAPI Machine referencing both
-    let mut machine_labels = std::collections::BTreeMap::new();
-    machine_labels.insert(CAPI_CLUSTER_NAME_LABEL.to_string(), cluster_name.clone());
-    machine_labels.insert(
-        "5spot.finos.org/scheduled-machine".to_string(),
-        name.clone(),
-    );
-
-    // Merge in user-provided labels
+    // 3. Create CAPI Machine referencing both.
+    // Start from user-provided machineTemplate labels, then stamp the
+    // controller-owned tracking labels last so they always win.
+    let mut machine_labels = BTreeMap::new();
     if let Some(template) = &resource.spec.machine_template {
         for (k, v) in &template.labels {
             machine_labels.insert(k.clone(), v.clone());
         }
     }
+    let machine_labels = merge_owned_labels(machine_labels, &name, cluster_name);
 
     let mut machine_annotations = std::collections::BTreeMap::new();
     // Merge in user-provided annotations
@@ -1292,6 +1414,99 @@ pub async fn add_machine_to_cluster(
 
 /// Post a generic Kubernetes resource via the dynamic API client.
 ///
+/// Derive the lowercase plural resource name from a Kubernetes `kind`.
+///
+/// Uses the naive `lowercase(kind) + "s"` rule (e.g. `K0sWorkerConfig` →
+/// `k0sworkerconfigs`, `RemoteMachine` → `remotemachines`). This matches the
+/// plural CAPI/k0smotron providers register for their CRDs, so the value is
+/// safe to use both when POSTing the dynamic resource and when naming the
+/// resource in a [`SelfSubjectAccessReview`].
+///
+/// Keeping the plural derivation in one place guarantees the
+/// `SelfSubjectAccessReview` checks (see [`ensure_can_create`]) and the actual
+/// create call ([`create_dynamic_resource`]) always agree on the resource name
+/// — a mismatch would make the access review check the wrong RBAC rule.
+fn resource_plural(kind: &str) -> String {
+    format!("{}s", kind.to_lowercase())
+}
+
+/// Verify the controller's service account is permitted to `create` the given
+/// resource type in `namespace` via a [`SelfSubjectAccessReview`] (SSAR).
+///
+/// This is a fail-fast pre-flight check run before any embedded bootstrap /
+/// infrastructure resource or the CAPI `Machine` is created. Without it, an
+/// RBAC gap would only surface as an opaque `403` partway through
+/// [`add_machine_to_cluster`], potentially after some resources were already
+/// created. By checking first, the controller reports a clear
+/// [`ReconcilerError::PermissionDenied`] naming the resource type and never
+/// performs a partial creation.
+///
+/// The check targets the controller's *own* identity (`SelfSubjectAccessReview`).
+/// The equivalent check on the *creating user* — preventing privilege
+/// escalation through the broadly-permissioned controller — is enforced at
+/// admission time by the `authorizer` rules in the ValidatingAdmissionPolicy.
+///
+/// `resource_label` is a short human label (`"bootstrap"`, `"infrastructure"`,
+/// `"machine"`) used only in the error message.
+///
+/// # Errors
+/// - [`ReconcilerError::PermissionDenied`] — the SSAR returned `allowed = false`.
+/// - [`ReconcilerError::KubeError`] — the SSAR API call itself failed.
+async fn ensure_can_create(
+    client: &Client,
+    namespace: &str,
+    api_version: &str,
+    kind: &str,
+    resource_label: &str,
+) -> Result<(), ReconcilerError> {
+    let (group, version) = parse_api_version(api_version);
+    let plural = resource_plural(kind);
+
+    let review = SelfSubjectAccessReview {
+        spec: SelfSubjectAccessReviewSpec {
+            resource_attributes: Some(ResourceAttributes {
+                verb: Some(RBAC_VERB_CREATE.to_string()),
+                group: Some(group.clone()),
+                version: Some(version),
+                resource: Some(plural.clone()),
+                namespace: Some(namespace.to_string()),
+                ..ResourceAttributes::default()
+            }),
+            ..SelfSubjectAccessReviewSpec::default()
+        },
+        ..SelfSubjectAccessReview::default()
+    };
+
+    // SelfSubjectAccessReview is a cluster-scoped virtual resource: the API
+    // evaluates the request against the caller's identity and echoes back the
+    // decision in `.status`.
+    let api: Api<SelfSubjectAccessReview> = Api::all(client.clone());
+    let result = api
+        .create(&kube::api::PostParams::default(), &review)
+        .await?;
+
+    let status = result.status.unwrap_or_default();
+    if status.allowed {
+        debug!(
+            resource = %resource_label,
+            group = %group,
+            plural = %plural,
+            "Controller is permitted to create resource type"
+        );
+        return Ok(());
+    }
+
+    let reason = status
+        .reason
+        .filter(|r| !r.is_empty())
+        .unwrap_or_else(|| "no reason provided by the API server".to_string());
+
+    Err(ReconcilerError::PermissionDenied(format!(
+        "controller service account is not permitted to create {resource_label} resource \
+         '{plural}' in API group '{group}' (namespace '{namespace}'): {reason}"
+    )))
+}
+
 /// Converts `api_version` and `kind` into a [`kube::api::ApiResource`] and
 /// issues a `POST` to the namespaced resource endpoint.  The function is used
 /// to create CAPI bootstrap, infrastructure, and `Machine` objects whose types
@@ -1307,7 +1522,7 @@ async fn create_dynamic_resource(
     obj: serde_json::Value,
 ) -> Result<(), kube::Error> {
     let (group, version) = parse_api_version(api_version);
-    let plural = format!("{}s", kind.to_lowercase());
+    let plural = resource_plural(kind);
 
     let ar = kube::api::ApiResource::from_gvk_with_plural(
         &kube::api::GroupVersionKind::gvk(&group, &version, kind),
@@ -1358,7 +1573,7 @@ async fn delete_dynamic_resource(
     name: &str,
 ) -> Result<(), ReconcilerError> {
     let (group, version) = parse_api_version(api_version);
-    let plural = format!("{}s", kind.to_lowercase());
+    let plural = resource_plural(kind);
 
     let ar = kube::api::ApiResource::from_gvk_with_plural(
         &kube::api::GroupVersionKind::gvk(&group, &version, kind),
@@ -2375,6 +2590,15 @@ pub async fn handle_emergency_remove(
         .await;
     }
 
+    // Resolve the child-cluster client for the Node + Pod operations in
+    // this flow (drain + clear-reclaim-annotations). The CAPI Machine
+    // delete and the schedule-disable patch still go through the
+    // management client below — they live on the management cluster.
+    // Fail-closed: an unresolvable kubeconfig surfaces as a regular
+    // reconcile error and back-offs, rather than silently routing
+    // emergency drain to the management cluster.
+    let child_for_node = ctx.child_clients.resolve(&ctx.client, &resource).await?;
+
     // Step 3: drain with short emergency timeout. Best-effort — we do
     // NOT block Machine deletion on a failed drain, because the agent
     // has already decided the node must leave. The stopwatch is
@@ -2382,7 +2606,7 @@ pub async fn handle_emergency_remove(
     // P95 vs timeout-rate side by side.
     let drain_start = std::time::Instant::now();
     let drain_result = drain_node_with_timeout(
-        &ctx.client,
+        child_for_node.client(),
         node_name,
         Duration::from_secs(EMERGENCY_DRAIN_TIMEOUT_SECS),
     )
@@ -2419,8 +2643,10 @@ pub async fn handle_emergency_remove(
     .await;
 
     // Step 6: clear reclaim annotations. Best-effort — failure only
-    // triggers an idempotent replay on the next reconcile.
-    clear_reclaim_annotations_best_effort(&ctx.client, node_name).await;
+    // triggers an idempotent replay on the next reconcile. Reaches into
+    // the child cluster's Node, so we reuse the resolved client built
+    // for the drain in step 3.
+    clear_reclaim_annotations_best_effort(child_for_node.client(), node_name).await;
 
     // Step 7: finalise state machine transition to Disabled.
     update_phase(

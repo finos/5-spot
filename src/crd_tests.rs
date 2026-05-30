@@ -314,6 +314,7 @@ mod tests {
             kill_switch: false,
             node_taints: vec![],
             kill_if_commands: None,
+            kubeconfig_secret_ref: None,
         };
 
         // Test that it serializes without errors
@@ -321,6 +322,11 @@ mod tests {
         assert!(json_output.contains("mon-fri"));
         assert!(json_output.contains("192.168.1.100"));
         assert!(json_output.contains("bootstrap"));
+        // skip_serializing_if = Option::is_none must elide the field entirely.
+        assert!(
+            !json_output.contains("kubeconfigSecretRef"),
+            "kubeconfigSecretRef must be omitted when None to preserve clean YAML for single-cluster SMs"
+        );
     }
 
     #[test]
@@ -530,6 +536,7 @@ mod tests {
             kill_switch: false,
             node_taints: vec![],
             kill_if_commands: None,
+            kubeconfig_secret_ref: None,
         }
     }
 
@@ -1072,6 +1079,297 @@ mod tests {
         assert!(
             err.contains("reserved") || err.contains("machineTemplate"),
             "error should explain: {err}"
+        );
+    }
+
+    // ========================================================================
+    // KubeconfigSecretRef — child-cluster kubeconfig reference tests (TDD)
+    //
+    // These tests pin the contract for the new optional field that points a
+    // ScheduledMachine at a child-cluster kubeconfig Secret in its own
+    // namespace. The CRD type is the source of truth; YAML schema bounds and
+    // serde defaults are asserted here so a regression flips a test.
+    // ========================================================================
+
+    #[test]
+    fn test_kubeconfig_secret_ref_default_key_is_value() {
+        // Posit: when `key` is omitted in JSON, serde fills in the CAPI
+        // convention default ("value"). This keeps the common case zero-config.
+        let json = serde_json::json!({ "name": "alpha-kubeconfig" });
+        let parsed: KubeconfigSecretRef = serde_json::from_value(json)
+            .expect("KubeconfigSecretRef must accept a JSON object with only `name`");
+        assert_eq!(parsed.name, "alpha-kubeconfig");
+        assert_eq!(
+            parsed.key, "value",
+            "default key must be `value` per CAPI's <clusterName>-kubeconfig convention"
+        );
+    }
+
+    #[test]
+    fn test_kubeconfig_secret_ref_explicit_key_round_trips() {
+        let original = KubeconfigSecretRef {
+            name: "team-a-kubeconfig".to_string(),
+            key: "kubeconfig".to_string(),
+        };
+        let serialized = serde_json::to_value(&original).expect("must serialize");
+        let parsed: KubeconfigSecretRef =
+            serde_json::from_value(serialized.clone()).expect("must round-trip");
+        assert_eq!(parsed.name, "team-a-kubeconfig");
+        assert_eq!(parsed.key, "kubeconfig");
+        // camelCase JSON field names are required for kube-rs / OpenAPI conformance.
+        let s = serialized.to_string();
+        assert!(s.contains("\"name\""), "expected camelCase `name`: {s}");
+        assert!(s.contains("\"key\""), "expected camelCase `key`: {s}");
+    }
+
+    #[test]
+    fn test_kubeconfig_secret_ref_rejects_unknown_fields() {
+        // `deny_unknown_fields` prevents typo-driven silent failures, e.g.
+        // `nameSpace` (capital S) or `Name` (capital N) being ignored.
+        let json = serde_json::json!({
+            "name": "alpha-kubeconfig",
+            "key": "value",
+            "namespace": "team-a"   // not allowed — cross-namespace refs are forbidden
+        });
+        let result: Result<KubeconfigSecretRef, _> = serde_json::from_value(json);
+        assert!(
+            result.is_err(),
+            "KubeconfigSecretRef must reject unknown fields (no cross-namespace, no typos)"
+        );
+    }
+
+    #[test]
+    fn test_kubeconfig_secret_ref_name_required() {
+        // `name` has no default — omitting it must error.
+        let json = serde_json::json!({ "key": "value" });
+        let result: Result<KubeconfigSecretRef, _> = serde_json::from_value(json);
+        assert!(
+            result.is_err(),
+            "KubeconfigSecretRef must require `name` (no default)"
+        );
+    }
+
+    #[test]
+    fn test_spec_with_kubeconfig_secret_ref_round_trips() {
+        use serde_json::json;
+
+        let spec = ScheduledMachineSpec {
+            schedule: ScheduleSpec {
+                days_of_week: vec!["mon-fri".to_string()],
+                hours_of_day: vec!["9-17".to_string()],
+                timezone: "UTC".to_string(),
+                enabled: true,
+            },
+            cluster_name: "alpha".to_string(),
+            bootstrap_spec: EmbeddedResource(json!({
+                "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
+                "kind": "K0sWorkerConfig",
+                "spec": {}
+            })),
+            infrastructure_spec: EmbeddedResource(json!({
+                "apiVersion": "infrastructure.cluster.x-k8s.io/v1beta1",
+                "kind": "RemoteMachine",
+                "spec": {"address": "10.0.0.1", "port": 22}
+            })),
+            machine_template: None,
+            priority: 50,
+            graceful_shutdown_timeout: "5m".to_string(),
+            node_drain_timeout: "5m".to_string(),
+            kill_switch: false,
+            node_taints: vec![],
+            kill_if_commands: None,
+            kubeconfig_secret_ref: Some(KubeconfigSecretRef {
+                name: "alpha-kubeconfig".to_string(),
+                key: "value".to_string(),
+            }),
+        };
+        let s = serde_json::to_string(&spec).expect("must serialize");
+        assert!(s.contains("kubeconfigSecretRef"));
+        assert!(s.contains("alpha-kubeconfig"));
+        let parsed: ScheduledMachineSpec =
+            serde_json::from_str(&s).expect("must round-trip with kubeconfigSecretRef");
+        let r = parsed
+            .kubeconfig_secret_ref
+            .expect("ref must survive round-trip");
+        assert_eq!(r.name, "alpha-kubeconfig");
+        assert_eq!(r.key, "value");
+    }
+
+    // ---- Schema-bound assertions ----
+
+    #[test]
+    fn test_kubeconfig_secret_ref_name_schema_is_bounded() {
+        // Schema must enforce RFC-1123 DNS subdomain bounds on `name` so a
+        // malicious / typo'd CR can't trigger an unbounded Secret GET.
+        let schema = serde_json::to_value(schemars::schema_for!(KubeconfigSecretRef))
+            .expect("schema serializes");
+        let name_schema = schema
+            .pointer("/properties/name")
+            .or_else(|| schema.pointer("/definitions/KubeconfigSecretRef/properties/name"))
+            .expect("KubeconfigSecretRef.name property must exist in schema");
+        assert!(
+            name_schema.get("maxLength").is_some(),
+            "name must have maxLength bound (RFC-1123 DNS subdomain = 253): {name_schema}"
+        );
+        assert!(
+            name_schema.get("pattern").is_some(),
+            "name must constrain charset via pattern: {name_schema}"
+        );
+    }
+
+    #[test]
+    fn test_kubeconfig_secret_ref_key_schema_is_bounded() {
+        let schema = serde_json::to_value(schemars::schema_for!(KubeconfigSecretRef))
+            .expect("schema serializes");
+        let key_schema = schema
+            .pointer("/properties/key")
+            .or_else(|| schema.pointer("/definitions/KubeconfigSecretRef/properties/key"))
+            .expect("KubeconfigSecretRef.key property must exist in schema");
+        assert!(
+            key_schema.get("maxLength").is_some(),
+            "key must have maxLength bound: {key_schema}"
+        );
+        assert!(
+            key_schema.get("minLength").is_some(),
+            "key must have minLength bound to forbid empty-string keys: {key_schema}"
+        );
+    }
+
+    #[test]
+    fn test_spec_kubeconfig_secret_ref_is_optional_in_schema() {
+        // Backward compat: the new field must NOT be in the `required` list.
+        let schema =
+            serde_json::to_value(schemars::schema_for!(ScheduledMachineSpec)).expect("serializes");
+        let required = schema
+            .pointer("/required")
+            .or_else(|| schema.pointer("/definitions/ScheduledMachineSpec/required"))
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            !required.iter().any(|v| v == "kubeconfigSecretRef"),
+            "kubeconfigSecretRef MUST be optional to preserve backward compatibility with existing SMs: required={required:?}"
+        );
+    }
+
+    // ========================================================================
+    // EmbeddedResource — metadata accessors
+    // ========================================================================
+
+    #[test]
+    fn test_embedded_metadata_namespace_present() {
+        use serde_json::json;
+        let e = EmbeddedResource(json!({
+            "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
+            "kind": "K0sWorkerConfig",
+            "metadata": { "namespace": "kube-system" },
+            "spec": {}
+        }));
+        assert_eq!(e.metadata_namespace(), Some("kube-system"));
+    }
+
+    #[test]
+    fn test_embedded_metadata_namespace_absent() {
+        use serde_json::json;
+        let e = EmbeddedResource(json!({
+            "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
+            "kind": "K0sWorkerConfig",
+            "spec": {}
+        }));
+        assert_eq!(e.metadata_namespace(), None);
+    }
+
+    #[test]
+    fn test_embedded_metadata_name_present() {
+        use serde_json::json;
+        let e = EmbeddedResource(json!({
+            "kind": "K0sWorkerConfig",
+            "metadata": { "name": "evil-name" },
+            "spec": {}
+        }));
+        assert_eq!(e.metadata_name(), Some("evil-name"));
+    }
+
+    #[test]
+    fn test_embedded_metadata_labels_extracted() {
+        use serde_json::json;
+        let e = EmbeddedResource(json!({
+            "kind": "K0sWorkerConfig",
+            "metadata": { "labels": { "team": "payments", "env": "prod" } },
+            "spec": {}
+        }));
+        let labels = e.metadata_labels();
+        assert_eq!(labels.get("team").map(String::as_str), Some("payments"));
+        assert_eq!(labels.get("env").map(String::as_str), Some("prod"));
+        assert_eq!(labels.len(), 2);
+    }
+
+    #[test]
+    fn test_embedded_metadata_labels_skips_non_string_values() {
+        use serde_json::json;
+        // Defensive: non-string values are narrowed out rather than panicking.
+        let e = EmbeddedResource(json!({
+            "kind": "K0sWorkerConfig",
+            "metadata": { "labels": { "ok": "yes", "bad": 7 } },
+            "spec": {}
+        }));
+        let labels = e.metadata_labels();
+        assert_eq!(labels.get("ok").map(String::as_str), Some("yes"));
+        assert!(
+            !labels.contains_key("bad"),
+            "non-string value must be skipped"
+        );
+    }
+
+    #[test]
+    fn test_embedded_metadata_annotations_empty_when_absent() {
+        use serde_json::json;
+        let e = EmbeddedResource(json!({ "kind": "K0sWorkerConfig", "spec": {} }));
+        assert!(e.metadata_annotations().is_empty());
+    }
+
+    // ========================================================================
+    // EmbeddedResource — schema shape (metadata labels/annotations only)
+    // ========================================================================
+
+    fn embedded_schema_json() -> serde_json::Value {
+        let schema = embedded_resource_schema(&mut schemars::SchemaGenerator::default());
+        serde_json::to_value(schema).expect("schema should serialise")
+    }
+
+    #[test]
+    fn test_embedded_schema_metadata_allows_labels_and_annotations() {
+        let schema = embedded_schema_json();
+        let meta_props = schema
+            .pointer("/properties/metadata/properties")
+            .and_then(|v| v.as_object())
+            .expect("metadata must declare typed properties");
+        assert!(
+            meta_props.contains_key("labels"),
+            "metadata.labels must be allowed"
+        );
+        assert!(
+            meta_props.contains_key("annotations"),
+            "metadata.annotations must be allowed"
+        );
+        // name/namespace are intentionally NOT declared — they are rejected at
+        // admission/runtime, not silently accepted.
+        assert!(!meta_props.contains_key("namespace"));
+        assert!(!meta_props.contains_key("name"));
+    }
+
+    #[test]
+    fn test_embedded_schema_metadata_preserves_unknown_fields() {
+        // preserve-unknown is REQUIRED so the API server does not prune an
+        // unknown metadata.namespace before admission policies can reject it.
+        let schema = embedded_schema_json();
+        let preserve = schema
+            .pointer("/properties/metadata/x-kubernetes-preserve-unknown-fields")
+            .and_then(serde_json::Value::as_bool);
+        assert_eq!(
+            preserve,
+            Some(true),
+            "metadata must preserve unknown fields so namespace/name can be rejected, not pruned"
         );
     }
 }

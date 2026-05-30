@@ -206,6 +206,28 @@ pub const MAX_BACKOFF_SECS: u64 = 300;
 /// Maximum number of per-resource reconciliation retries before capping at [`MAX_BACKOFF_SECS`]
 pub const MAX_RECONCILE_RETRIES: u32 = 10;
 
+/// Buffer size for the mpsc channel that carries
+/// `ObjectRef<ScheduledMachine>` from per-child-cluster Node watchers
+/// into the management cluster's `Controller::reconcile_on` stream.
+///
+/// One channel is shared across every child watcher. Bursts at watcher
+/// init time (full Node list) plus sporadic per-event sends afterwards
+/// fit comfortably under 1024 even with dozens of child clusters and
+/// large Node counts; the bound exists to apply back-pressure if a
+/// pathological burst (or a stuck controller) ever surfaces, not as a
+/// steady-state ceiling.
+pub const CHILD_NODE_EVENT_CHANNEL_CAP: usize = 1024;
+
+/// Maximum number of cached child-cluster `kube::Client` instances kept in
+/// memory by [`crate::reconcilers::child_client::ChildClientCache`].
+///
+/// One entry per unique `(namespace, secret_name)`. 256 is well above any
+/// realistic per-controller workload — a single management cluster hosting
+/// hundreds of CAPI-managed workload clusters still fits. Above the cap,
+/// the least-recently-used entry is evicted; the next reconcile referencing
+/// the evicted Secret simply rebuilds, paying one kubeconfig-parse round.
+pub const CHILD_CLIENT_CACHE_CAP: usize = 256;
+
 // ============================================================================
 // Leader Election Constants
 // ============================================================================
@@ -248,6 +270,17 @@ pub const CONDITION_TYPE_REFERENCES_VALID: &str = "ReferencesValid";
 /// `NodeTainted` condition type — tracks user-declared Node taint application.
 /// See `~/dev/roadmaps/completed-5spot-user-defined-node-taints.md` Phase 2.
 pub const CONDITION_TYPE_NODE_TAINTED: &str = "NodeTainted";
+
+/// `ChildClusterReachable` condition type — tracks whether the
+/// child-cluster kubeconfig (`spec.kubeconfigSecretRef` or
+/// auto-discovered `<clusterName>-kubeconfig`) resolved into a usable
+/// `kube::Client`. `True` after a successful resolve; `False` after
+/// any [`crate::reconcilers::ReconcilerError::KubeconfigSecretMissingKey`],
+/// [`crate::reconcilers::ReconcilerError::KubeconfigInvalid`], or
+/// [`crate::reconcilers::ReconcilerError::ChildClusterUnreachable`].
+/// Single-cluster (management-fallback) SMs may omit the condition or
+/// set it to `Unknown`.
+pub const CONDITION_TYPE_CHILD_CLUSTER_REACHABLE: &str = "ChildClusterReachable";
 
 // ============================================================================
 // Condition Statuses
@@ -442,6 +475,13 @@ pub const CAPI_MACHINE_API_VERSION_FULL: &str = "cluster.x-k8s.io/v1beta1";
 /// CAPI cluster name label
 pub const CAPI_CLUSTER_NAME_LABEL: &str = "cluster.x-k8s.io/cluster-name";
 
+/// Label stamped by the controller on every derived resource (bootstrap,
+/// infrastructure, CAPI `Machine`) linking it back to its owning
+/// `ScheduledMachine`. Uses the reserved `5spot.finos.org/` prefix so users
+/// cannot set or override it via embedded `metadata.labels` (blocked by
+/// [`RESERVED_LABEL_PREFIXES`]).
+pub const SCHEDULED_MACHINE_LABEL: &str = "5spot.finos.org/scheduled-machine";
+
 /// CAPI Machine resource plural name
 pub const CAPI_RESOURCE_MACHINES: &str = "machines";
 
@@ -561,3 +601,10 @@ pub const ALLOWED_BOOTSTRAP_API_GROUPS: &[&str] = &["bootstrap.cluster.x-k8s.io"
 /// Allowed API groups for infrastructure embedded resources
 pub const ALLOWED_INFRASTRUCTURE_API_GROUPS: &[&str] =
     &["infrastructure.cluster.x-k8s.io", "k0smotron.io"];
+
+/// RBAC verb used for pre-flight `SelfSubjectAccessReview` checks issued before
+/// the controller creates an embedded bootstrap/infrastructure resource or the
+/// CAPI `Machine`. The controller verifies its own service account is permitted
+/// to `create` each resource type so an RBAC gap surfaces as a clear
+/// `PermissionDenied` error instead of an opaque 403 mid-creation.
+pub const RBAC_VERB_CREATE: &str = "create";

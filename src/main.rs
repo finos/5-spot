@@ -18,10 +18,10 @@ use std::sync::Arc;
 use anyhow::Result;
 use clap::Parser;
 use five_spot::constants::{
-    CAPI_GROUP, CAPI_MACHINE_API_VERSION, CAPI_RESOURCE_MACHINES, DEFAULT_LEASE_DURATION_SECS,
-    DEFAULT_LEASE_GRACE_SECS, DEFAULT_LEASE_NAME, DEFAULT_LEASE_NAMESPACE,
-    DEFAULT_LEASE_RENEW_DEADLINE_SECS, DEFAULT_LEASE_RETRY_PERIOD_SECS, HEALTH_PORT,
-    K8S_API_TIMEOUT_SECS, METRICS_PORT,
+    CAPI_GROUP, CAPI_MACHINE_API_VERSION, CAPI_RESOURCE_MACHINES, CHILD_NODE_EVENT_CHANNEL_CAP,
+    DEFAULT_LEASE_DURATION_SECS, DEFAULT_LEASE_GRACE_SECS, DEFAULT_LEASE_NAME,
+    DEFAULT_LEASE_NAMESPACE, DEFAULT_LEASE_RENEW_DEADLINE_SECS, DEFAULT_LEASE_RETRY_PERIOD_SECS,
+    HEALTH_PORT, K8S_API_TIMEOUT_SECS, METRICS_PORT,
 };
 use five_spot::crd::ScheduledMachine;
 use five_spot::health::{start_health_server, HealthState};
@@ -29,7 +29,7 @@ use five_spot::labels::LABEL_SCHEDULED_MACHINE;
 use five_spot::metrics::init_controller_info;
 use five_spot::reconcilers::{
     error_policy, machine_to_scheduled_machine, node_to_scheduled_machines_via_machine,
-    reconcile_scheduled_machine, Context,
+    reconcile_scheduled_machine, ChildNodeWatchManager, Context,
 };
 use futures::{StreamExt, TryStreamExt};
 use k8s_openapi::api::core::v1::Node;
@@ -324,6 +324,27 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Child-cluster Node-watch plumbing.
+    //
+    // Per-child-cluster Node events (cordon, NotReady, taint drift) must
+    // trigger a reconcile of the owning ScheduledMachine. We build one
+    // `ChildNodeWatchManager` shared across all child clusters; the
+    // cache (`Context.child_clients`) drives it via the `ChildWatchHook`
+    // trait, spawning one Tokio task per `CacheKey`. Mapped
+    // `ObjectRef<ScheduledMachine>`s flow over this mpsc into the
+    // Controller's `reconcile_on` stream.
+    //
+    // The buffer size (`CHILD_NODE_EVENT_CHANNEL_CAP`) is sized for
+    // burst tolerance, not steady-state. See the constant's rustdoc.
+    let (child_node_tx, child_node_rx) = tokio::sync::mpsc::channel(CHILD_NODE_EVENT_CHANNEL_CAP);
+    let child_watch_manager = ChildNodeWatchManager::new(child_node_tx, machine_store.clone());
+    // Install the manager on the cache *after* `Context::new` so the
+    // first `resolve()` call from any reconcile already sees a live
+    // hook. Cheap clone — only the inner `Arc` is moved.
+    context
+        .child_clients
+        .set_hook(Arc::new(child_watch_manager));
+
     let controller = Controller::new(scheduled_machines, Config::default());
 
     controller
@@ -343,6 +364,7 @@ async fn main() -> Result<()> {
                 machines_snapshot.iter().map(std::convert::AsRef::as_ref),
             )
         })
+        .reconcile_on(tokio_stream::wrappers::ReceiverStream::new(child_node_rx))
         .shutdown_on_signal()
         .run(reconcile_scheduled_machine, error_policy, context)
         .for_each(|res| async move {

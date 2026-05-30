@@ -29,10 +29,19 @@ name = "auto-vex-reachability"
 path = "src/bin/auto_vex_reachability.rs"
 
 [dependencies]
-kube = { version = "3.1", features = ["runtime", "derive", "client", "ws"] }
+# `unstable-runtime` is opt-in for `Controller::reconcile_on`, which we
+# use in main.rs to feed per-child-cluster Node-watch events into the
+# Controller. The feature is "unstable" in the SemVer sense (the API
+# may change between minor kube-runtime versions) but is the canonical
+# way to push external triggers into the controller loop.
+kube = { version = "3.1", features = ["runtime", "derive", "client", "ws", "unstable-runtime"] }
 kube-lease-manager = "0.11"
 k8s-openapi = { version = "0.27", features = ["latest", "schemars"] }
 tokio = { version = "1", features = ["full"] }
+# `ReceiverStream` adapter so an `mpsc::Receiver<ObjectRef<…>>` can be
+# fed into `Controller::reconcile_on`. Used by main.rs to plumb
+# child-cluster Node-watch events back into the controller.
+tokio-stream = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
@@ -79,6 +88,10 @@ test-log = "0.2"
 tempfile = "3"
 tower-test = "0.4"
 http = "1"
+# Used by src/reconcilers/child_client_tests.rs to build base64-encoded
+# Secret payloads for the tower-test mock server. base64 0.22 is already
+# in the dependency graph transitively (kube / k8s-openapi pull it).
+base64 = "0.22"
 
 [profile.release]
 opt-level = 3

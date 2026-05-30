@@ -9,6 +9,428 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-05-30 12:00] - Revert docs deploy trigger to release:published (CodeQL: pwn-request + cache poisoning)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/docs.yaml`: reverted the docs **deploy trigger** from
+  `workflow_run` (Build completion) back to the trusted `release: published`
+  event, removing the `ref: github.event.workflow_run.head_sha` checkout. The
+  file now matches `main`'s known-clean version (trusted trigger, no
+  event-derived checkout ref, plain `actions/cache`).
+
+### Why
+PR #71 had switched the docs deploy trigger to `workflow_run` to gate deploy on
+Build success. That introduced 7 CodeQL alerts — 5 critical "Checkout of
+untrusted code in a privileged context" and 2 high "Cache Poisoning":
+`workflow_run` is a privileged trigger (default-branch context, secrets, write
+perms) that fired for every Build completion (incl. fork PRs), then checked out
+`head_sha` and ran build steps. A first attempt to *harden* the workflow_run
+path (job-level release-only `if` gate + cache restore/save split + least-
+privilege id-token) did **not** clear the alerts — CodeQL's queries key
+syntactically on the untrusted `head_sha` checkout under a privileged trigger,
+regardless of guards. The only root-cause fix is to stop checking out the
+untrusted ref, so the trigger was reverted to `release: published`. For a
+release, `github.ref` is the tag, so docs still build from the exact released
+commit. Trade-off accepted: docs deploy on release publication even if the
+binary/image Build job failed (the prior, vulnerable, behaviour gated on it).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] CI / security (workflow only)
+
+## [2026-05-30 00:00] - Embedded metadata: reject name/namespace, support labels/annotations
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/crd.rs`: `embedded_resource_schema` now declares an optional `metadata`
+  block with typed `labels`/`annotations` (string maps) and
+  `x-kubernetes-preserve-unknown-fields: true` (so `metadata.namespace`/`name`
+  are retained for rejection rather than pruned). Added `EmbeddedResource`
+  accessors `metadata_namespace()`, `metadata_name()`, `metadata_labels()`,
+  `metadata_annotations()` + `embedded_string_map()` helper.
+- `src/reconcilers/helpers.rs`: New `validate_embedded_metadata()` — rejects
+  controller-owned `metadata.name`/`metadata.namespace` and reserved-prefix
+  labels/annotations; called for both specs in `add_machine_to_cluster()`. New
+  `merge_owned_labels()` merges user labels with controller-owned tracking
+  labels (controller wins). Bootstrap/infra resources now carry user-supplied
+  `metadata.labels`/`annotations`.
+- `src/constants.rs`: Added `SCHEDULED_MACHINE_LABEL` (promotes a 3×-repeated
+  literal to a constant).
+- `deploy/admission/validatingadmissionpolicy.yaml`: Added rules 13c–13f
+  rejecting `metadata.namespace`/`metadata.name` on both embedded specs.
+- `src/bin/crddoc.rs` + `docs/src/reference/api.md`: Documented embedded
+  `metadata.labels`/`annotations` and the name/namespace rejection.
+- `deploy/crds/scheduledmachine.yaml`: Regenerated (crdgen).
+- `docs/src/security/admission-validation.md`, `docs/src/security/threat-model.md`:
+  Documented rules 13c–13f and hardened threat T1.
+- `src/crd_tests.rs`, `src/reconcilers/helpers_tests.rs`: Added 14 tests
+  (metadata accessors, schema shape, validate_embedded_metadata paths,
+  merge_owned_labels precedence).
+
+### Why
+A user could set `bootstrapSpec.metadata.namespace`/`name`; the API server
+silently *pruned* it (no error), and the controller ignored it. The user
+requested a loud rejection. Pruning happens before admission policies run and
+`additionalProperties: false` is a no-op for CRDs, so the embedded `metadata`
+subtree is now `x-kubernetes-preserve-unknown-fields` to let both the VAP and a
+runtime check reject the field explicitly. Per follow-up, `metadata.labels`/
+`annotations` are now supported (safe: run through the reserved-prefix allowlist
+so `cluster.x-k8s.io/*`/`5spot.finos.org/*` cannot be forged — threat T2).
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+> **Note:** Re-apply `deploy/crds/scheduledmachine.yaml` and
+> `deploy/admission/validatingadmissionpolicy.yaml`. Existing specs without an
+> embedded `metadata` block are unaffected.
+
+## [2026-05-29 00:00] - RBAC validation for bootstrapSpec & infrastructureSpec
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/helpers.rs`: Added `ensure_can_create()` — a pre-flight
+  `SelfSubjectAccessReview` confirming the controller's service account may
+  `create` the embedded bootstrap, infrastructure, and CAPI `Machine` resource
+  types before any are created in `add_machine_to_cluster()`. Extracted
+  `resource_plural()` helper (dedupes the two plural-derivation sites) so the
+  access review and the create/delete calls always target the same RBAC
+  resource.
+- `src/reconcilers/scheduled_machine.rs`: New `ReconcilerError::PermissionDenied`
+  variant + `record_error("permission_denied")` metric mapping.
+- `src/constants.rs`: Added `RBAC_VERB_CREATE`.
+- `src/reconcilers/helpers_tests.rs`: Added 8 tests — `resource_plural` cases
+  and `ensure_can_create` allowed / denied / denied-no-reason / API-error paths
+  (tower mock).
+- `deploy/admission/validatingadmissionpolicy.yaml`: Added `spec.variables`
+  (group + plural derivation) and two `authorizer.check('create')` validations
+  (rules 13a/13b) requiring the *creating user* to hold `create` on the embedded
+  bootstrap/infrastructure GVKs — privilege-escalation guard at admission.
+- `docs/src/security/admission-validation.md`: Documented rules 13a/13b and the
+  two-layer (user @ admission, controller SA @ reconcile) design.
+- `docs/src/security/threat-model.md`: Added mitigated threat E1a (escalation
+  through the controller).
+
+### Why
+A user able to create a `ScheduledMachine` but not the embedded bootstrap/
+infrastructure resource could otherwise have the broadly-permissioned controller
+create it on their behalf — a privilege escalation through the controller. The
+admission `authorizer` checks gate the requesting user; the controller's own SA
+is independently gated at reconcile so an RBAC gap surfaces as a clear
+`PermissionDenied` instead of an opaque 403 mid-creation.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+> **Note:** Re-apply `deploy/admission/validatingadmissionpolicy.yaml`. The
+> controller's RBAC is unchanged, but users creating `ScheduledMachine`
+> resources now additionally need `create` RBAC on the embedded bootstrap/
+> infrastructure resource types in their namespace.
+
+## [2026-05-11 10:00] - Child-cluster Node-watch multiplexer + Phase 2 metrics
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/reconcilers/child_client.rs`: new `ChildWatchHook` trait
+  (`on_child_resolved` / `on_child_evicted`) that the cache fires when a
+  child `kube::Client` is first built, when a token rotation rebuilds
+  one, or when an entry is evicted (manual or LRU). Defaults to a no-op,
+  so unit tests + degenerate deployments are unaffected. The cache fires
+  the eviction-before-resolved sequence on every RV-driven rebuild so
+  the manager never has two watchers running on the same `CacheKey` with
+  different credentials.
+- `src/reconcilers/child_watch.rs` (~220 LOC) + `_tests.rs` (~270 LOC):
+  new `ChildNodeWatchManager` implementing `ChildWatchHook`. Owns a
+  `HashMap<CacheKey, JoinHandle<()>>` and spawns one `kube::runtime::
+  watcher::watcher` task per active child cluster. Each task maps
+  `Node` events through the existing canonical
+  `node_to_scheduled_machines_via_machine` (using a snapshot of the
+  management cluster's CAPI Machine reflector) and pushes the resulting
+  `ObjectRef<ScheduledMachine>`s on a shared `mpsc::Sender`. 10
+  lifecycle tests cover spawn-on-resolve, abort-on-evict, idempotent
+  back-to-back resolve, double-key independence, and the
+  receiver-dropped graceful path.
+- `src/main.rs`: builds the mpsc channel, constructs the manager from
+  `(tx, machine_store)`, installs it on the cache via
+  `context.child_clients.set_hook(...)`, and feeds the receiver into
+  `Controller::reconcile_on(ReceiverStream::new(rx))`. Closes the
+  event-driven gap left by the Phase 1 resolver work: a child-cluster
+  Node going `NotReady` / being cordoned externally / changing labels
+  now triggers a reconcile of the owning `ScheduledMachine` within
+  watcher latency rather than waiting for the periodic requeue.
+- `src/metrics.rs`: two new Prometheus counters —
+  `fivespot_child_kubeconfig_resolutions_total{result}` (labels:
+  `management`, `child_explicit`, `child_auto`, `cache_hit`, `rebuild`,
+  `error`) and `fivespot_child_kubeconfig_errors_total{reason}` (labels:
+  `secret_missing_key`, `invalid_yaml`, `unreachable`,
+  `non_404_kube_error`). Helper fns `record_child_kubeconfig_resolution`
+  + `record_child_kubeconfig_error` wired into
+  `ChildClientCache::resolve`.
+- `src/constants.rs`: `CHILD_NODE_EVENT_CHANNEL_CAP = 1024` for the
+  shared mpsc buffer; `CONDITION_TYPE_CHILD_CLUSTER_REACHABLE =
+  "ChildClusterReachable"` (constant added now; the writer wiring is
+  deferred — see "Deferred" below).
+- `tests/integration_child_kubeconfig.rs` (~330 LOC): hermetic
+  end-to-end test exercising the full Context → cache → manager wiring
+  via `tower_test::mock`. 5 cases cover:
+  explicit-ref resolve spawns one watcher; auto-discovery 404 falls
+  back to management with no watcher; RV rotation cancels + restarts
+  exactly one watcher; explicit `evict()` cancels; explicit-ref 404
+  fails closed (errors AND spawns no watcher).
+- 5 new resolver tests in `src/reconcilers/child_client_tests.rs` for
+  the hook plumbing: fires-once-on-initial-build, does-not-fire-on-
+  cache-hit-same-RV, fires-evicted-then-resolved-on-RV-change,
+  explicit-evict-fires-once-per-removal, does-not-fire-for-management-
+  fallback.
+
+### Changed
+- `Cargo.toml`:
+  - Added `tokio-stream = "0.1"` (direct dep) for `ReceiverStream` —
+    adapts `mpsc::Receiver` into the `Stream` that
+    `Controller::reconcile_on` expects.
+  - Enabled the `unstable-runtime` feature on the `kube` dep so
+    `Controller::reconcile_on` is callable. The feature is gated as
+    "unstable" by upstream (the API may shift between kube-runtime
+    minor versions), but it is the canonical way to push external
+    triggers into the controller loop and has no replacement in the
+    stable surface area.
+
+### Why
+The Phase 1 work (2026-05-10) routed Node/Pod operations to the child
+cluster correctly but left Node *events* uncovered: a child-cluster
+Node going `NotReady`, getting cordoned by an out-of-band operator, or
+being deleted upstream would not trigger a reconcile until the
+periodic `TIMER_REQUEUE_SECS` requeue (worst case ~60s of latency for
+drain progress / status enrichment). This change closes that gap with
+one watcher per unique kubeconfig Secret, sharing watcher work across
+all SMs that target the same child cluster. The Phase 2 metrics give
+operators visibility into resolution outcomes (hit / rebuild / error)
+without log-grepping.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (controller binary changed; behaviour
+      additive — co-located deployments without `kubeconfigSecretRef`
+      and without an auto-discoverable `<clusterName>-kubeconfig`
+      Secret see no change)
+- [ ] Config change only
+- [ ] Documentation only
+
+Operational notes:
+- Each unique `(namespace, secret_name)` pair backs exactly one
+  watcher task. A deployment with 100 SMs spread across 5 child
+  clusters runs 5 child-cluster Node watchers, not 100.
+- Token / cert rotations driven by CAPI's control-plane provider bump
+  the kubeconfig Secret's `resourceVersion`. The cache detects this on
+  the next `resolve()`, aborts the stale watcher, and starts a fresh
+  one with the rebuilt `Client` — no controller restart required.
+- The mpsc buffer (`CHILD_NODE_EVENT_CHANNEL_CAP = 1024`) is sized for
+  initial-list bursts across all child clusters; a back-pressure
+  scenario (channel full) is logged at debug level and means the
+  controller is shutting down.
+
+### Deferred
+- **`ChildClusterReachable` condition writer.** The condition type
+  constant is in place (`CONDITION_TYPE_CHILD_CLUSTER_REACHABLE`) but
+  the writer wiring (translate each `resolve()` outcome into a status
+  patch on the owning SM) is left for a follow-up — it requires
+  threading the SM ref + the recorder through each call site, which is
+  more invasive than the metrics work that closes the same
+  observability need today.
+- **Real-cluster dual-cluster integration test.** The hermetic
+  integration test under `tests/` exercises the wiring deterministically;
+  a `kind`-based two-cluster test would add HTTP-level coverage and
+  fits the pattern of the existing `integration_node_taints.rs` /
+  `integration_emergency_reclaim.rs` real-cluster tests. Left for the
+  next development-environment standardisation pass.
+
+---
+
+## [2026-05-10 14:00] - Child-cluster kubeconfig support (CRD + resolver + routing)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/crd.rs`: New optional `spec.kubeconfigSecretRef` field on
+  `ScheduledMachineSpec` plus a new `KubeconfigSecretRef { name, key }`
+  struct (with `deny_unknown_fields` to forbid cross-namespace `namespace`
+  fields by design). Two new schema helpers
+  (`kubeconfig_secret_name_schema`, `kubeconfig_secret_key_schema`) bound
+  the name (RFC-1123 DNS subdomain, 253 chars) and the data key. Default
+  for `key` is `"value"` — CAPI's convention.
+- `src/reconcilers/child_client.rs` (~400 LOC) + `_tests.rs` (~470 LOC):
+  new `ChildClientCache` resolver. Public surface: `CacheKey`,
+  `ResolvedClient::{Management, Child}`, `ChildClientCache::resolve`
+  (and `peek` / `evict` helpers for future per-child watch integration).
+  Resolution order: explicit `spec.kubeconfigSecretRef` → auto-discover
+  `<spec.clusterName>-kubeconfig` Secret in the SM namespace →
+  management-client fallback. Cache keyed by `(namespace, secret_name)`
+  and invalidated by Secret `resourceVersion`; bounded-LRU at
+  `CHILD_CLIENT_CACHE_CAP = 256`. Built child `kube::Client` inherits
+  the same `K8S_API_TIMEOUT_SECS` wire timeouts as the management
+  client. 12 new tests cover happy paths, cache hit/miss, RV-rebuild,
+  fail-closed for explicit-ref 404, 403 propagation, missing data key,
+  and invalid YAML.
+- `src/reconcilers/scheduled_machine.rs`: three new `ReconcilerError`
+  variants — `KubeconfigSecretMissingKey`, `KubeconfigInvalid`,
+  `ChildClusterUnreachable` — each mapped to a distinct Prometheus
+  error label via the existing `record_error` switch.
+- `src/constants.rs`: `CHILD_CLIENT_CACHE_CAP = 256`.
+- `Context.child_clients: Arc<ChildClientCache>` field, constructed in
+  `Context::new`. Cheap (`Arc<RwLock<HashMap>>`) so existing
+  single-instance deployments pay nothing.
+- `docs/src/concepts/child-cluster-kubeconfig.md`: full RBAC
+  requirements, resolution order, cache invalidation semantics, and
+  threat model.
+- `examples/scheduledmachine-child-cluster.yaml`: end-to-end example
+  with an explicit `kubeconfigSecretRef`.
+- 9 new CRD round-trip tests in `src/crd_tests.rs` covering: optional
+  field round-trip, default-key, `deny_unknown_fields`, required
+  `name`, schema-bounded name + key, and the new field being absent
+  from the `required` list (backward compat).
+
+### Changed
+- `src/reconcilers/scheduled_machine.rs`:
+  - `provision_reclaim_agent_best_effort` resolves the child client at
+    its top and threads it into `reconcile_reclaim_agent_provision`
+    (the ConfigMap consumed by the reclaim-agent DaemonSet lives on
+    workload nodes; previously this projected to the wrong cluster).
+  - `reconcile_node_taints_best_effort` resolves and threads to
+    `reconcile_node_taints` so user-declared taints land on
+    workload-cluster Nodes.
+  - `handle_shutting_down_phase` resolves and threads to
+    `drain_node_with_timeout`. The CAPI Machine lookup
+    (`get_node_from_machine`) stays on the management client where
+    Machine objects live.
+- `src/reconcilers/helpers.rs::handle_emergency_remove`: resolves the
+  child client once at the top of the flow and threads it to
+  `drain_node_with_timeout` + `clear_reclaim_annotations_best_effort`.
+  Schedule-disable patch + Machine deletion stay on the management
+  client.
+- `deploy/crds/scheduledmachine.yaml`: regenerated via
+  `cargo run --bin crdgen` to surface the new field in the OpenAPI
+  schema (additive — no breaking change to existing CRs).
+- `Cargo.toml`: added `base64 = "0.22"` as a dev-dependency (used by
+  `child_client_tests.rs` to build base64-encoded Secret payloads for
+  the `tower-test` mock server).
+
+### Why
+In a CAPI + k0smotron / k0rdent topology, the `Node` and `Pod` objects
+5-Spot manipulates (cordon, drain, taint, reclaim-agent labels /
+ConfigMaps) live inside the workload (child) cluster, not the
+management cluster. The previous single-client model worked correctly
+only in the degenerate co-located case (management ≡ workload),
+which is the dev/test posture rather than production. This change
+makes 5-Spot multi-cluster-correct: a `ScheduledMachine` carrying a
+`kubeconfigSecretRef` (or sitting in a namespace with a CAPI-convention
+`<clusterName>-kubeconfig` Secret) has its Node/Pod traffic routed
+through the child kubeconfig; everything else (the SM CR, the CAPI
+Machine, bootstrap, infrastructure) stays on the management client.
+
+Fail-closed by design: a misconfigured or unparseable kubeconfig
+surfaces as `ReconcilerError::ChildClusterUnreachable` and back-offs,
+rather than silently falling through to the management client and
+routing operations to the wrong cluster.
+
+### Impact
+- [ ] Breaking change (additive optional field; existing SMs unchanged)
+- [x] Requires cluster rollout (controller binary changed; CRD schema
+      additive but should be re-applied)
+- [ ] Config change only
+- [ ] Documentation only
+
+Operational notes:
+- Existing single-cluster deployments without a
+  `<clusterName>-kubeconfig` Secret in the SM namespace continue to use
+  the management client for Node/Pod operations — zero behavioural
+  change.
+- Operators converting an existing single-cluster SM to a child-cluster
+  SM should create the CAPI-format Secret in the SM's namespace
+  *before* adding the ref, so the first reconcile sees a valid Secret.
+- Token / certificate rotations driven by CAPI's control-plane provider
+  bump the Secret's `resourceVersion`; the next reconcile rebuilds the
+  child client automatically.
+
+### Deferred to follow-up
+- **Per-child-cluster Node watch (Phase 1.9 in
+  `~/.claude/plans/i-have-a-very-swift-treehouse.md`).** The management
+  Node watch in `main.rs` is unchanged, so co-located deployments keep
+  their Node-event-driven responsiveness. Child-cluster Node state
+  changes are picked up via the periodic `TIMER_REQUEUE_SECS` requeue
+  and via CAPI `Machine` status changes. A subsequent change will add
+  lazy per-`(namespace, secret_name)` Node watchers multiplexed into
+  the `Controller::reconcile_on` channel via a `mpsc` receiver, closing
+  the event-driven gap. Tracked separately.
+- **`ChildClusterReachable` status condition + Prometheus counters
+  (Phase 2 in the plan).**
+- **Integration test against two fake clusters (Phase 1.10 in the
+  plan).** Resolver is unit-tested end-to-end against
+  `tower_test::mock`; the full reconcile-with-dual-clusters scenario
+  is the next test to write.
+
+---
+
+## [2026-05-10 12:00] - Gate docs Pages deploy on successful Build workflow completion
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/docs.yaml`: Replaced the `release: published` deploy
+  trigger with `workflow_run` chained to the `Build` workflow's
+  completion. Setup Pages, Upload Pages artifact, and the Deploy job
+  are now gated on
+  `github.event.workflow_run.event == 'release' && ...conclusion == 'success'`. The build job pins
+  `actions/checkout` to `github.event.workflow_run.head_sha` on
+  workflow_run runs (workflow_run executes in the default-branch
+  context, so released docs would otherwise build from `main` rather
+  than the tag commit). Concurrency group now keys on
+  `workflow_run.head_branch`; `cancel-in-progress` is disabled only
+  for release-triggered workflow_run events.
+
+### Why
+A v0.2.1 docs deploy was rejected by the `github-pages` environment
+protection rules and sat unpublished for ~10 hours until re-run.
+Beyond the protection-rule fix, the prior trigger model published
+docs whenever a release was created — independent of whether the
+release's binaries, container images, and Cosign signatures actually
+built cleanly. Chaining the Pages deploy to a successful `Build` run
+means: a release whose artifacts fail to build no longer ships docs
+claiming those artifacts exist, and end users on the published site
+can trust that every visible release tag corresponds to a complete,
+signed artifact set.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+Operational notes:
+- Docs deploy now waits for `Build` to finish on each release
+  (~10–20 min added latency between release publication and Pages
+  going live).
+- `Build` PR / push-to-main completions trigger a docs validation
+  run via `workflow_run` in addition to the existing
+  `pull_request` / `push` triggers — redundant by design (a
+  Build-completion sanity check); short-circuits before deploy.
+- `workflow_run` triggers ignore the `paths:` filter, so every
+  `Build` completion shows up in the Actions log even when no docs
+  sources changed.
+
+---
+
 ## [2026-05-02 23:30] - Emergency-reclaim roadmap closeout: drain stopwatch + loop protection + integration tests
 
 **Author:** Erick Bourgeois

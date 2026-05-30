@@ -120,6 +120,37 @@ pub struct ScheduledMachineSpec {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     #[schemars(schema_with = "kill_if_commands_schema")]
     pub kill_if_commands: Option<Vec<String>>,
+
+    /// Reference to a Secret in this ScheduledMachine's namespace containing
+    /// a kubeconfig for the workload (child) cluster whose Node(s) this
+    /// resource manages.
+    ///
+    /// When set, every Node and Pod API call the controller makes on behalf
+    /// of this resource — cordon, taint, drain (pod list + delete),
+    /// reclaim-agent annotations / labels / ConfigMaps, status enrichment —
+    /// is routed through that kubeconfig. CAPI / bootstrap / infrastructure
+    /// / Machine objects continue to use the management cluster's in-cluster
+    /// client.
+    ///
+    /// When unset (default), the controller first tries to auto-discover a
+    /// Secret named `<spec.clusterName>-kubeconfig` in this same namespace
+    /// (CAPI convention). If that Secret does not exist, the management
+    /// client is used for Node/Pod operations as well — the degenerate
+    /// single-cluster dev/test posture where management ≡ workload cluster.
+    ///
+    /// Cross-namespace Secret references are NOT supported: the Secret MUST
+    /// live in this resource's own namespace. This is a security boundary
+    /// (cross-namespace would let a tenant in one namespace read a kubeconfig
+    /// in another).
+    ///
+    /// The supplied kubeconfig MUST grant: `nodes` get/list/watch/patch and
+    /// `pods` get/list/delete in all namespaces of the child cluster, plus
+    /// `configmaps` get/create/patch/delete in the reclaim-agent namespace
+    /// if `killIfCommands` is also set. See
+    /// `docs/src/concepts/child-cluster-kubeconfig.md` for the full RBAC
+    /// requirements and threat model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kubeconfig_secret_ref: Option<KubeconfigSecretRef>,
 }
 
 fn default_priority() -> u8 {
@@ -250,11 +281,65 @@ impl EmbeddedResource {
         self.0.get("spec")
     }
 
+    /// Get `metadata.namespace` if the user set one.
+    ///
+    /// This is **controller-owned** and must never be honoured — the controller
+    /// always creates the resource in the `ScheduledMachine`'s own namespace.
+    /// Used by `validate_embedded_metadata` to reject the field loudly.
+    #[must_use]
+    pub fn metadata_namespace(&self) -> Option<&str> {
+        self.0
+            .get("metadata")
+            .and_then(|m| m.get("namespace"))
+            .and_then(Value::as_str)
+    }
+
+    /// Get `metadata.name` if the user set one.
+    ///
+    /// Controller-owned: the created resource is always named after the
+    /// `ScheduledMachine` (deletion relies on this), so a user-supplied name is
+    /// rejected rather than silently overridden.
+    #[must_use]
+    pub fn metadata_name(&self) -> Option<&str> {
+        self.0
+            .get("metadata")
+            .and_then(|m| m.get("name"))
+            .and_then(Value::as_str)
+    }
+
+    /// Get `metadata.labels` as a string map (empty if absent or malformed).
+    ///
+    /// Non-string label values are skipped — the CRD schema already constrains
+    /// values to strings, so this is a defensive narrowing for raw input.
+    #[must_use]
+    pub fn metadata_labels(&self) -> BTreeMap<String, String> {
+        embedded_string_map(self.0.get("metadata").and_then(|m| m.get("labels")))
+    }
+
+    /// Get `metadata.annotations` as a string map (empty if absent or malformed).
+    #[must_use]
+    pub fn metadata_annotations(&self) -> BTreeMap<String, String> {
+        embedded_string_map(self.0.get("metadata").and_then(|m| m.get("annotations")))
+    }
+
     /// Get the inner JSON value
     #[must_use]
     pub fn inner(&self) -> &Value {
         &self.0
     }
+}
+
+/// Narrow an optional JSON value to a `BTreeMap<String, String>`, keeping only
+/// string-valued entries. Returns an empty map for `None` or non-object values.
+fn embedded_string_map(value: Option<&Value>) -> BTreeMap<String, String> {
+    value
+        .and_then(Value::as_object)
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Schema for the timezone field — bounded string to prevent log injection
@@ -295,9 +380,61 @@ fn kill_if_commands_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schem
     })
 }
 
+/// Schema for `KubeconfigSecretRef.name` — bounded to RFC-1123 DNS subdomain
+/// length (253 chars) with the Kubernetes-standard charset. Matches the bound
+/// the Kubernetes API server itself enforces on Secret names, so a value that
+/// fits this schema is guaranteed to be a syntactically valid Secret name.
+fn kubeconfig_secret_name_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 253,
+        "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+    })
+}
+
+/// Schema for `KubeconfigSecretRef.key` — bounded to the same 253-char cap as
+/// the name, with the Secret-data key charset (alphanumerics, `.`, `-`, `_`).
+/// The bound prevents pathologically long keys from inflating the Secret GET
+/// path; the charset matches what the Kubernetes API server enforces on Secret
+/// `data` keys.
+fn kubeconfig_secret_key_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 253,
+        "pattern": "^[A-Za-z0-9._-]+$"
+    })
+}
+
+/// Default key for `KubeconfigSecretRef.key` — CAPI convention is to store the
+/// kubeconfig YAML under `data.value` in a Secret named `<clusterName>-kubeconfig`.
+fn default_kubeconfig_secret_key() -> String {
+    "value".to_string()
+}
+
 /// Schema for `EmbeddedResource` — requires apiVersion, kind, and spec fields.
 /// The `spec` field uses `x-kubernetes-preserve-unknown-fields` to allow any
 /// provider-specific fields (`K0sWorkerConfig`, `RemoteMachine`, `AWSMachine`, etc.).
+///
+/// # `metadata` — labels/annotations only; name/namespace are controller-owned
+///
+/// `metadata` accepts **only** `labels` and `annotations` (string maps), which
+/// the controller merges onto the created resource (after applying the
+/// reserved-prefix allowlist, so users cannot forge `cluster.x-k8s.io/*` or
+/// `5spot.finos.org/*` keys). `metadata.name` and `metadata.namespace` are
+/// **not** valid — the controller owns the resource identity, always naming the
+/// resource after the `ScheduledMachine` and creating it in the SM's own
+/// namespace.
+///
+/// `metadata` is marked `x-kubernetes-preserve-unknown-fields: true` **on
+/// purpose**: without it the API server would silently *prune* an unknown
+/// `metadata.namespace`/`metadata.name` before any admission policy runs,
+/// making a loud rejection impossible. Preserving the subtree lets the
+/// `ValidatingAdmissionPolicy` (and the runtime `validate_embedded_metadata`
+/// check) see and explicitly reject those fields. The pruned-vs-rejected
+/// distinction is a documented CRD behaviour — see
+/// <https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#field-pruning>.
 fn embedded_resource_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({
         "type": "object",
@@ -310,6 +447,23 @@ fn embedded_resource_schema(_: &mut schemars::SchemaGenerator) -> schemars::Sche
             "kind": {
                 "type": "string",
                 "description": "Kind of the resource (e.g., 'K0sWorkerConfig', 'RemoteMachine')"
+            },
+            "metadata": {
+                "type": "object",
+                "x-kubernetes-preserve-unknown-fields": true,
+                "description": "Optional labels/annotations to stamp on the created resource. Only 'labels' and 'annotations' are honoured; 'name' and 'namespace' are controller-owned and rejected at admission.",
+                "properties": {
+                    "labels": {
+                        "type": "object",
+                        "additionalProperties": { "type": "string" },
+                        "description": "Labels merged onto the created resource (reserved prefixes are rejected)"
+                    },
+                    "annotations": {
+                        "type": "object",
+                        "additionalProperties": { "type": "string" },
+                        "description": "Annotations merged onto the created resource (reserved prefixes are rejected)"
+                    }
+                }
             },
             "spec": {
                 "type": "object",
@@ -348,6 +502,39 @@ pub struct MachineTemplateSpec {
     /// Annotations to apply to the created Machine
     #[serde(default)]
     pub annotations: BTreeMap<String, String>,
+}
+
+// ============================================================================
+// KubeconfigSecretRef - Reference to a child-cluster kubeconfig Secret
+// ============================================================================
+
+/// Pointer to a Secret in the ScheduledMachine's own namespace whose data
+/// contains a kubeconfig for the workload (child) cluster.
+///
+/// See [`ScheduledMachineSpec::kubeconfig_secret_ref`] for the full semantics,
+/// including resolution order (explicit → auto-discover `<clusterName>-kubeconfig`
+/// → management fallback) and the RBAC requirements on the supplied kubeconfig.
+///
+/// `deny_unknown_fields` is intentional: a typo like `nameSpace` or an attempt
+/// to add a cross-namespace `namespace` field must be a hard error, not a
+/// silent miss. Cross-namespace Secret refs are forbidden by design.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KubeconfigSecretRef {
+    /// Name of the Secret. RFC-1123 DNS subdomain (max 253 chars).
+    /// The Secret MUST live in the same namespace as the ScheduledMachine —
+    /// there is no `namespace` field by design.
+    #[schemars(schema_with = "kubeconfig_secret_name_schema")]
+    pub name: String,
+
+    /// Key within the Secret's `data` map whose value is the kubeconfig YAML
+    /// document. Defaults to `value` — CAPI's convention for
+    /// `<clusterName>-kubeconfig` Secrets generated by the control-plane
+    /// provider. Common overrides: `kubeconfig` (some k0smotron flows),
+    /// `admin.conf` (kubeadm-style).
+    #[serde(default = "default_kubeconfig_secret_key")]
+    #[schemars(schema_with = "kubeconfig_secret_key_schema")]
+    pub key: String,
 }
 
 // ============================================================================

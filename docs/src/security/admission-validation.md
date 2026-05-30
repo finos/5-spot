@@ -55,7 +55,7 @@ sequenceDiagram
     participant etcd
 
     U  ->> API : CREATE / UPDATE ScheduledMachine
-    API ->> VAP : Evaluate 13 CEL rules against object.spec
+    API ->> VAP : Evaluate structural CEL rules + RBAC authorizer checks
     alt All rules pass
         VAP -->> API : Allowed
         API ->>  etcd : Persist resource
@@ -94,6 +94,17 @@ resource) in the order listed.
 | 10 | `spec.infrastructureSpec.apiVersion` | Must contain `/` | `must use a namespaced API group` |
 | 11 | `spec.infrastructureSpec.apiVersion` | Group must be `infrastructure.cluster.x-k8s.io` or `k0smotron.io` | `must be from an allowed group` |
 | 12 | `spec.infrastructureSpec.kind` | Must not be empty | `spec.infrastructureSpec.kind must not be empty` |
+| 13a | `spec.bootstrapSpec` (RBAC) | Requesting **user** must hold `create` on the embedded bootstrap GVK in the target namespace | `user is not permitted to create the spec.bootstrapSpec resource type …` |
+| 13b | `spec.infrastructureSpec` (RBAC) | Requesting **user** must hold `create` on the embedded infrastructure GVK in the target namespace | `user is not permitted to create the spec.infrastructureSpec resource type …` |
+| 13c | `spec.bootstrapSpec.metadata.namespace` | Must not be set — controller-owned | `spec.bootstrapSpec.metadata.namespace is not permitted …` |
+| 13d | `spec.bootstrapSpec.metadata.name` | Must not be set — controller-owned | `spec.bootstrapSpec.metadata.name is not permitted …` |
+| 13e | `spec.infrastructureSpec.metadata.namespace` | Must not be set — controller-owned | `spec.infrastructureSpec.metadata.namespace is not permitted …` |
+| 13f | `spec.infrastructureSpec.metadata.name` | Must not be set — controller-owned | `spec.infrastructureSpec.metadata.name is not permitted …` |
+
+!!! note "nodeTaints rules"
+    The policy also carries structural `spec.nodeTaints` rules (key format,
+    length, reserved-prefix, and duplicate checks). They are omitted from the
+    table above for brevity — see the policy YAML for the authoritative list.
 
 ### Rule details
 
@@ -150,6 +161,82 @@ cannot use them to create arbitrary Kubernetes resources (e.g.,
 To add a new provider, update both the `ValidatingAdmissionPolicy`
 (rules 8 and 11) and the constants in `src/constants.rs`
 (`ALLOWED_BOOTSTRAP_API_GROUPS`, `ALLOWED_INFRASTRUCTURE_API_GROUPS`).
+
+#### Rules 13a–13b — RBAC privilege-escalation guard
+
+The 5Spot controller runs with broad RBAC so it can create the embedded
+bootstrap, infrastructure, and CAPI `Machine` objects on the user's behalf.
+Without a guard, a user who can create a `ScheduledMachine` but **not** the
+embedded resource directly (e.g. a `K0sWorkerConfig`) could have the
+controller create it for them — escalating privileges *through* the
+controller. This is the same class of risk that Cluster API's own webhooks
+address for templated resources.
+
+Rules 13a and 13b close this by requiring the **requesting user** to
+independently hold `create` permission on the embedded bootstrap and
+infrastructure GVKs in the target namespace. The policy derives the RBAC
+resource from the spec using CEL `variables`:
+
+```yaml
+variables:
+  - name: bootstrapGroup
+    expression: "object.spec.bootstrapSpec.apiVersion.split('/')[0]"
+  - name: bootstrapResource
+    expression: "object.spec.bootstrapSpec.kind.lowerAscii() + 's'"
+  # … infraGroup / infraResource analogous …
+```
+
+and then evaluates the request user's permission via the CEL `authorizer`:
+
+```yaml
+- expression: >-
+    authorizer.group(variables.bootstrapGroup)
+      .resource(variables.bootstrapResource)
+      .namespace(object.metadata.namespace)
+      .check('create')
+      .allowed()
+  reason: Forbidden
+```
+
+The `lowerAscii() + 's'` pluralization mirrors `resource_plural()` in
+`src/reconcilers/helpers.rs`, so the permission checked at admission is
+exactly the one the controller exercises when it creates the resource.
+
+!!! info "Two-layer defense"
+    Rules 13a/13b check the **requesting user** at admission. The
+    controller's **own** service account is independently checked at
+    reconcile time by `ensure_can_create()` (a `SelfSubjectAccessReview`)
+    in `src/reconcilers/helpers.rs`, which fails fast with a clear
+    `PermissionDenied` error — naming the denied resource — instead of an
+    opaque `403` surfacing partway through resource creation. The two layers
+    together cover both *who asked* and *who acts*.
+
+#### Rules 13c–13f — Embedded metadata is controller-owned
+
+The controller owns the **identity** of every resource it creates: each
+bootstrap/infrastructure resource is named after the `ScheduledMachine` and
+created in the SM's **own namespace** (cross-namespace creation is forbidden —
+threat T1; deletion in `remove_machine_from_cluster()` relies on the name
+match). Accordingly, a user-supplied `metadata.name` or `metadata.namespace`
+in `bootstrapSpec`/`infrastructureSpec` is **rejected**, not silently ignored.
+
+Only `metadata.labels` and `metadata.annotations` are user-settable; the
+controller merges them onto the created resource after running them through
+the reserved-prefix allowlist (`validate_embedded_metadata()`), so a user
+cannot forge `cluster.x-k8s.io/cluster-name` (threat T2) or `5spot.finos.org/*`
+keys.
+
+!!! warning "Why `metadata` preserves unknown fields"
+    For CRDs, the API server **prunes** unknown fields *before* admission
+    policies run — so a naive schema would silently drop
+    `metadata.namespace` and rules 13c–13f could never see it. To make a
+    *loud* rejection possible, `EmbeddedResource.metadata` is declared
+    `x-kubernetes-preserve-unknown-fields: true` in `src/crd.rs`, which keeps
+    the field around long enough for the policy (and the runtime
+    `validate_embedded_metadata()` backstop) to reject it. A side effect is
+    that other unknown `metadata.*` keys are preserved too — they are simply
+    ignored, since the controller constructs the resource's `metadata` from
+    scratch.
 
 ---
 

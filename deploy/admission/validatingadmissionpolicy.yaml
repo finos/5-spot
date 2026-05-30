@@ -32,6 +32,21 @@ spec:
         resources: ["scheduledmachines"]
         operations: ["CREATE", "UPDATE"]
 
+  # Derived values reused by the RBAC authorizer checks below. The group is the
+  # part of apiVersion before '/'; the resource is the naive lowercase plural of
+  # kind (lowerAscii + 's'). This mirrors resource_plural() in
+  # src/reconcilers/helpers.rs so the permission checked here is exactly the one
+  # the controller will exercise when it creates the resource.
+  variables:
+    - name: bootstrapGroup
+      expression: "object.spec.bootstrapSpec.apiVersion.split('/')[0]"
+    - name: bootstrapResource
+      expression: "object.spec.bootstrapSpec.kind.lowerAscii() + 's'"
+    - name: infraGroup
+      expression: "object.spec.infrastructureSpec.apiVersion.split('/')[0]"
+    - name: infraResource
+      expression: "object.spec.infrastructureSpec.kind.lowerAscii() + 's'"
+
   validations:
 
     # ── 1. clusterName: non-empty ────────────────────────────────────────────
@@ -195,6 +210,82 @@ spec:
     - expression: "object.spec.infrastructureSpec.kind.size() > 0"
       message: "spec.infrastructureSpec.kind must not be empty"
       reason: Invalid
+
+    # ── 13c–13f. Embedded metadata: name/namespace are controller-owned ───────
+    # The controller owns the created resource's identity: it always names the
+    # bootstrap/infrastructure resource after the ScheduledMachine and creates
+    # it in the SM's own namespace (cross-namespace creation is forbidden —
+    # threat T1). A user-supplied metadata.name/metadata.namespace is therefore
+    # rejected, not silently ignored.
+    #
+    # NOTE: this only works because EmbeddedResource's `metadata` is marked
+    # `x-kubernetes-preserve-unknown-fields: true` in src/crd.rs. Without it the
+    # API server PRUNES unknown fields before admission policies run, so the
+    # field would be gone before this rule could see it. The runtime
+    # `validate_embedded_metadata()` in src/reconcilers/helpers.rs enforces the
+    # same rule as defence-in-depth. Only metadata.labels / metadata.annotations
+    # are user-settable (and are reserved-prefix-checked at reconcile time).
+    - expression: "!has(object.spec.bootstrapSpec.metadata) || !has(object.spec.bootstrapSpec.metadata.namespace)"
+      message: >-
+        spec.bootstrapSpec.metadata.namespace is not permitted — the 5Spot
+        controller always creates the bootstrap resource in the
+        ScheduledMachine's own namespace
+      reason: Forbidden
+    - expression: "!has(object.spec.bootstrapSpec.metadata) || !has(object.spec.bootstrapSpec.metadata.name)"
+      message: >-
+        spec.bootstrapSpec.metadata.name is not permitted — the 5Spot controller
+        names the bootstrap resource after the ScheduledMachine
+      reason: Forbidden
+    - expression: "!has(object.spec.infrastructureSpec.metadata) || !has(object.spec.infrastructureSpec.metadata.namespace)"
+      message: >-
+        spec.infrastructureSpec.metadata.namespace is not permitted — the 5Spot
+        controller always creates the infrastructure resource in the
+        ScheduledMachine's own namespace
+      reason: Forbidden
+    - expression: "!has(object.spec.infrastructureSpec.metadata) || !has(object.spec.infrastructureSpec.metadata.name)"
+      message: >-
+        spec.infrastructureSpec.metadata.name is not permitted — the 5Spot
+        controller names the infrastructure resource after the ScheduledMachine
+      reason: Forbidden
+
+    # ── 13a. RBAC: requesting user may create the bootstrapSpec resource ──────
+    # Privilege-escalation guard. The 5Spot controller runs with broad RBAC so
+    # it can create bootstrap/infrastructure/Machine objects on the user's
+    # behalf. Without this check, a user able to create a ScheduledMachine but
+    # NOT a K0sWorkerConfig could have the controller create one for them —
+    # escalating through the controller. We require the *requesting user* to
+    # independently hold `create` on the embedded bootstrap GVK in the target
+    # namespace, mirroring how CAPI's own webhooks gate templated resources.
+    # The controller-side equivalent (its own service account) is enforced at
+    # reconcile time by ensure_can_create() in src/reconcilers/helpers.rs.
+    - expression: >-
+        authorizer.group(variables.bootstrapGroup)
+          .resource(variables.bootstrapResource)
+          .namespace(object.metadata.namespace)
+          .check('create')
+          .allowed()
+      message: >-
+        user is not permitted to create the spec.bootstrapSpec resource type —
+        creating a ScheduledMachine requires 'create' permission on the
+        embedded bootstrap resource (RBAC) to prevent privilege escalation
+        through the 5Spot controller
+      reason: Forbidden
+
+    # ── 13b. RBAC: requesting user may create the infrastructureSpec resource ──
+    # Same privilege-escalation guard as 13a, applied to the embedded
+    # infrastructure GVK (e.g. RemoteMachine).
+    - expression: >-
+        authorizer.group(variables.infraGroup)
+          .resource(variables.infraResource)
+          .namespace(object.metadata.namespace)
+          .check('create')
+          .allowed()
+      message: >-
+        user is not permitted to create the spec.infrastructureSpec resource
+        type — creating a ScheduledMachine requires 'create' permission on the
+        embedded infrastructure resource (RBAC) to prevent privilege escalation
+        through the 5Spot controller
+      reason: Forbidden
 
     # ── 14. nodeTaints: key format (RFC-1123 qualified name) ──────────────────
     # Mirrors validate_taint_key() in src/crd.rs. The optional "<prefix>/" part
