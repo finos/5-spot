@@ -1,0 +1,92 @@
+# Workshop WORKLOAD cluster — plain Cluster API with the Docker provider (CAPD).
+#
+# This defines a 1-node control plane only. It deliberately has NO worker
+# MachineDeployment: the worker capacity is supplied on a time schedule by the
+# 5-Spot `ScheduledMachine` (see scheduledmachine-business-hours.yaml).
+#
+# Everything here is upstream Cluster API — no k0smotron, no k0rdent.
+#
+# NOTE ON API VERSION: the 5-Spot controller currently creates CAPI `Machine`
+# objects under `cluster.x-k8s.io/v1beta1`. Install a Cluster API release that
+# still serves the v1beta1 API (the v1.8 / v1.9 lines do). These manifests use
+# v1beta1 throughout for consistency.
+#
+# NOTE ON THE NODE IMAGE: pin `kindest/node` to a tag that matches your local
+# `kind` version (see the kind release notes). The same tag is reused by the
+# worker in scheduledmachine-business-hours.yaml.
+---
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Cluster
+metadata:
+  name: dev-cluster
+  namespace: default
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks: ["192.168.0.0/16"] # matches the Calico install in the README
+    services:
+      cidrBlocks: ["10.128.0.0/12"]
+    serviceDomain: cluster.local
+  controlPlaneRef:
+    apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+    kind: KubeadmControlPlane
+    name: dev-cluster-control-plane
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: DockerCluster
+    name: dev-cluster
+---
+# CAPD manages a HAProxy load-balancer container in front of the control plane.
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: DockerCluster
+metadata:
+  name: dev-cluster
+  namespace: default
+spec: {}
+---
+# Infrastructure template for the control-plane Machine(s).
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: DockerMachineTemplate
+metadata:
+  name: dev-cluster-control-plane
+  namespace: default
+spec:
+  template:
+    spec:
+      # Pin the image so the workshop is reproducible. Match your kind version.
+      customImage: kindest/node:v1.31.0
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+kind: KubeadmControlPlane
+metadata:
+  name: dev-cluster-control-plane
+  namespace: default
+spec:
+  replicas: 1
+  version: v1.31.0
+  machineTemplate:
+    infrastructureRef:
+      apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+      kind: DockerMachineTemplate
+      name: dev-cluster-control-plane
+  kubeadmConfigSpec:
+    # Standard CAPD control-plane settings (mirrors the clusterctl "docker"
+    # development flavor).
+    clusterConfiguration:
+      apiServer:
+        certSANs: [localhost, 127.0.0.1, 0.0.0.0, host.docker.internal]
+      controllerManager:
+        extraArgs:
+          enable-hostpath-provisioner: "true"
+    initConfiguration:
+      nodeRegistration:
+        criSocket: unix:///var/run/containerd/containerd.sock
+        kubeletExtraArgs:
+          # kind nodes run on a shared host; relax disk-pressure eviction so the
+          # kubelet does not evict everything under normal laptop disk usage.
+          eviction-hard: nodefs.available<0%,nodefs.inodesFree<0%,imagefs.available<0%
+    joinConfiguration:
+      nodeRegistration:
+        criSocket: unix:///var/run/containerd/containerd.sock
+        kubeletExtraArgs:
+          eviction-hard: nodefs.available<0%,nodefs.inodesFree<0%,imagefs.available<0%

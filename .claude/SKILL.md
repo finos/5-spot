@@ -293,6 +293,12 @@ done
 
 **Checklist:**
 
+### If the change is architecturally significant (ADD — do FIRST):
+See `.claude/rules/architecture-driven-development.md`. Applies to new CRDs / CRD-field contract changes, controllers/reconcilers/binaries, CAPI-interaction changes, deploy/admission/GitOps topology, and security/RBAC/scheduling concerns.
+- [ ] ADR written/updated in `docs/adr/NNNN-*.md` (Status/Context/Decision/Consequences) and indexed in `docs/adr/README.md`
+- [ ] CALM model updated, `make calm-validate` + `make calm-diagrams` pass — OR the ADR states "no CALM impact (process-only)"
+- [ ] ADR was written BEFORE the implementation (ADR → CALM → TDD order)
+
 ### If ANY `.rs` file was modified:
 - [ ] Tests updated/added/deleted to match changes (TDD — see `tdd-workflow`)
 - [ ] All new public functions have tests

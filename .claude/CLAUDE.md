@@ -6,11 +6,31 @@
 > **Project Focus**: Time-based scheduling of physical machines in k0smotron clusters. This controller manages machine lifecycle (add/remove from cluster) based on configurable time schedules with timezone support.
 >
 > **CRITICAL Coding Patterns**:
+> - **Architecture Driven Development (ADD)**: For any architecturally significant change, architecture is decided, recorded, and visualized BEFORE code: `ADR → CALM → TDD → implement → docs`, in that order. ADRs (`docs/adr/`) and CALM diagrams are first-class deliverables, equal to code and tests. Full rule: `.claude/rules/architecture-driven-development.md`. ADD wraps TDD below — it does not replace it.
 > - **Test-Driven Development (TDD)**: ALWAYS write tests FIRST before implementing functionality. Write failing tests that define the expected behavior, then implement code to make tests pass. This ensures all code is testable and has comprehensive test coverage from the start.
 > - **Event-Driven Programming**: In Kubernetes controller development, ALWAYS use event-driven programming (e.g., "watch" on kube API) as opposed to polling. Controllers must react to cluster state changes efficiently.
 > - **Early Returns**: Use as few `else` statements as possible. Return from functions as soon as you can to minimize nesting and improve code clarity (see Early Return / Guard Clause Pattern section).
 > - **ALWAYS Run cargo fmt**: At the end of EVERY task or phase involving Rust code, you MUST run the `cargo-quality` skill. This is NON-NEGOTIABLE and MANDATORY.
 > - **ALWAYS Sync Docs**: At the end of EVERY task, you MUST run the `sync-docs` skill to verify documentation matches the code. This is NON-NEGOTIABLE and MANDATORY.
+
+---
+
+## 🏛️ GOVERNING METHODOLOGY: Architecture Driven Development (ADD)
+
+**5-Spot is built ADR-first. Architecture is decided, recorded, and visualized BEFORE code.** For any architecturally significant change, follow this order — full details in `.claude/rules/architecture-driven-development.md`:
+
+```
+ADR  →  CALM  →  TDD  →  implement  →  docs
+```
+
+1. **ADR** — record the decision in `docs/adr/NNNN-title.md` (Status / Context / Decision / Consequences) from `docs/adr/template.md`; update the index in `docs/adr/README.md`.
+2. **CALM** — model it in `docs/architecture/calm/architecture.json`; `make calm-validate` + `make calm-diagrams`. *(Process-only decisions have no CALM impact — say so in the ADR and skip this step.)*
+3. **TDD** — only then write failing tests, then the minimum implementation (`tdd-workflow` skill); `cargo-quality` gate.
+4. **Docs** — CHANGELOG (`**Author:**`) + affected `docs/src/`; `sync-docs`.
+
+ADRs and CALM diagrams are **first-class deliverables, equal to code and tests.** ADD applies to new CRDs / CRD-field contract changes, controllers/reconcilers/binaries, changes to the CAPI interaction (Machine / bootstrap / infrastructure contract, allowed API groups), deploy/admission/GitOps topology, and cross-cutting security / RBAC / scheduling concerns. Typos, isolated bug fixes, and behavior-preserving refactors are **TDD-only**. **When unsure whether a change is architectural, write the ADR.**
+
+> See ADR [0001](../docs/adr/0001-adopt-architecture-driven-development.md) for the adoption decision and rationale.
 
 ---
 

@@ -1,0 +1,20 @@
+# Kind configuration for the 5-Spot WORKSHOP management cluster.
+#
+# This single kind cluster hosts:
+#   - Cluster API core + the kubeadm bootstrap/control-plane providers
+#   - The Cluster API Docker infrastructure provider (CAPD)
+#   - The 5-Spot controller
+#
+# CAPD provisions "machines" as sibling Docker containers, so the kind node
+# needs access to the host Docker socket. That single extraMount is the only
+# special requirement.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: 5spot-mgmt
+nodes:
+  - role: control-plane
+    extraMounts:
+      # CAPD talks to the host Docker daemon to create workload-cluster
+      # containers as siblings of this node.
+      - hostPath: /var/run/docker.sock
+        containerPath: /var/run/docker.sock

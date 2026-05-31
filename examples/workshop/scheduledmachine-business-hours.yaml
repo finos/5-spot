@@ -1,0 +1,74 @@
+# 5-Spot ScheduledMachine — a time-scheduled WORKER for the CAPD dev-cluster.
+#
+# When the schedule window is OPEN, 5-Spot creates three objects on the
+# management cluster, all named after this ScheduledMachine (business-hours-worker):
+#   1. KubeadmConfig  (bootstrap.cluster.x-k8s.io)      — generates the kubeadm join
+#   2. DockerMachine  (infrastructure.cluster.x-k8s.io) — the worker container
+#   3. Machine        (cluster.x-k8s.io)                — ties the two to the Cluster
+# When the window CLOSES (or enabled:false / killSwitch), 5-Spot drains the Node
+# (via the auto-discovered dev-cluster-kubeconfig Secret) and deletes all three.
+apiVersion: 5spot.finos.org/v1alpha1
+kind: ScheduledMachine
+metadata:
+  name: business-hours-worker
+  namespace: default
+spec:
+  # MUST match the CAPI Cluster name in workload-cluster.yaml. 5-Spot also uses
+  # this to auto-discover the `<clusterName>-kubeconfig` Secret that CAPI creates,
+  # which it uses to drain/taint the Node on the workload cluster.
+  clusterName: dev-cluster
+
+  schedule:
+    # ── WORKSHOP setting: always-on, so the worker joins immediately. ─────────
+    daysOfWeek: ["mon-sun"]
+    hoursOfDay: ["0-23"]
+    # ── Real "business hours" setting — uncomment to only run Mon–Fri 9am–5pm: ─
+    # daysOfWeek: ["mon-fri"]
+    # hoursOfDay: ["9-17"]
+    timezone: "UTC"
+    enabled: true
+
+  # Bootstrap: a kubeadm worker join config. 5-Spot creates this as a concrete
+  # KubeadmConfig (not a template) named business-hours-worker.
+  bootstrapSpec:
+    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    kind: KubeadmConfig
+    spec:
+      joinConfiguration:
+        nodeRegistration:
+          criSocket: unix:///var/run/containerd/containerd.sock
+          kubeletExtraArgs:
+            eviction-hard: nodefs.available<0%,nodefs.inodesFree<0%,imagefs.available<0%
+
+  # Infrastructure: a CAPD worker container.
+  #
+  # customImage is REQUIRED here: 5-Spot does not set `Machine.spec.version`, so
+  # CAPD cannot derive the node image from the Kubernetes version — you must pin
+  # it. Use the SAME tag as the control plane in workload-cluster.yaml.
+  infrastructureSpec:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: DockerMachine
+    spec:
+      customImage: kindest/node:v1.31.0
+
+  # Optional labels/annotations stamped on the CAPI Machine (and, separately,
+  # any embedded-resource labels via bootstrapSpec.metadata / infrastructureSpec.metadata).
+  # Reserved prefixes (kubernetes.io/, k8s.io/, cluster.x-k8s.io/, 5spot.finos.org/)
+  # are rejected, so use your own domain.
+  machineTemplate:
+    labels:
+      workshop.example.com/pool: spot
+    annotations:
+      workshop.example.com/owner: platform-team
+
+  # Apply a taint to the scheduled Node once it is Ready, so only workloads that
+  # tolerate "spot" capacity land on it. 5-Spot reconciles only the taints it sets.
+  nodeTaints:
+    - key: workshop.example.com/spot
+      value: "true"
+      effect: NoSchedule
+
+  priority: 50
+  gracefulShutdownTimeout: 5m
+  nodeDrainTimeout: 5m
+  killSwitch: false

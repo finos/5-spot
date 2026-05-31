@@ -9,6 +9,37 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-05-31 00:00] - Adopt Architecture Driven Development (ADD) methodology
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/`: new directory for Architecture Decision Records —
+  `template.md`, `README.md` (conventions + index), and
+  `0001-adopt-architecture-driven-development.md` (Accepted) recording the
+  adoption decision and rationale.
+- `.claude/rules/architecture-driven-development.md`: new rule file defining the
+  ADD methodology (`ADR → CALM → TDD → implement → docs`), adapted to 5-Spot
+  (`src/crd.rs` source of truth, `make crds`/`crddoc`, CALM targets,
+  `cargo-quality`/`sync-docs`, roadmaps external at `~/dev/roadmaps/`).
+- `.claude/CLAUDE.md`: added ADD as the governing methodology (new section + as
+  the first "CRITICAL Coding Pattern"); links to the rule file and ADR-0001.
+- `.claude/SKILL.md`: added an ADD gate to the top of `pre-commit-checklist`
+  (ADR written/indexed; CALM updated or "no CALM impact"; ADR precedes code).
+
+### Why
+5-Spot already had strong TDD and a CALM model, but no first-class, ordered way
+to record *why* an architecturally significant change was made before building
+it. ADD (per the sibling banlieue project) layers ADR + CALM on top of TDD so
+decisions are auditable and traceable — fitting the regulated context — instead
+of reconstructed from diffs and changelog entries. See ADR-0001.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Process / documentation only
+
 ## [2026-05-30 12:00] - Revert docs deploy trigger to release:published (CodeQL: pwn-request + cache poisoning)
 
 **Author:** Erick Bourgeois
