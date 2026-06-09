@@ -134,6 +134,89 @@ spec:
                 - kind
                 - spec
                 type: object
+              kata:
+                description: |-
+                  Optional reference to a `Secret` or `ConfigMap` on the **workload
+                  cluster** holding a Kata containerd drop-in to deliver to the node(s) this
+                  resource owns.
+
+                  When set, the controller resolves the referenced object on the workload
+                  cluster (via the `kubeconfig-<clusterName>` Secret) in `kata.namespace`
+                  (default `5spot-system`). If it is present, the controller stamps the
+                  `5spot.finos.org/kata-config=enabled` opt-in label **and** a reference
+                  annotation on the backing Node; the `5spot-kata-config-agent` DaemonSet —
+                  scheduled onto labelled nodes — reads the object from the workload API,
+                  writes the drop-in to `destPath`, and restarts `restartService` so
+                  containerd reloads it. If the object (or its namespace) is absent, the
+                  controller does **not** label the Node and reports a fail-fast status
+                  condition — 5-Spot never creates the object (it must pre-exist,
+                  Flux-delivered).
+
+                  This is config *delivery*, not a Kata install: the `/opt/kata` binaries
+                  remain `kata-deploy`'s responsibility, and the existing
+                  `katacontainers.io/kata-runtime` opt-in label is unaffected. See ADR 0002
+                  and ADR 0003.
+                nullable: true
+                properties:
+                  destPath:
+                    default: /etc/k0s/container.d/kata-containers.toml
+                    description: |-
+                      Absolute host path the agent writes the drop-in to. Defaults to
+                      `/etc/k0s/container.d/kata-containers.toml` (the k0s containerd drop-in
+                      directory). Configurable because layouts vary (k0s-in-docker, kairos,
+                      vanilla containerd).
+                    maxLength: 4096
+                    minLength: 1
+                    pattern: ^/[^\u0000]*$
+                    type: string
+                  key:
+                    default: kata-containers.toml
+                    description: |-
+                      Key within the source's `data` map whose value is the drop-in content.
+                      Defaults to `kata-containers.toml`.
+                    maxLength: 253
+                    minLength: 1
+                    pattern: ^[A-Za-z0-9._-]+$
+                    type: string
+                  kind:
+                    description: Whether the source is a `ConfigMap` or a `Secret`. Required (no default).
+                    enum:
+                    - ConfigMap
+                    - Secret
+                    type: string
+                  name:
+                    description: |-
+                      Name of the source object on the workload cluster. RFC-1123 DNS subdomain
+                      (max 253 chars).
+                    maxLength: 253
+                    minLength: 1
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                    type: string
+                  namespace:
+                    default: 5spot-system
+                    description: |-
+                      Workload-cluster namespace the agent reads the object from. Defaults to
+                      `5spot-system` (the agent's own namespace, so no cross-namespace agent
+                      RBAC is needed). Override to place config in a per-tenant namespace.
+                    maxLength: 63
+                    minLength: 1
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                    type: string
+                  restartService:
+                    default: k0sworker.service
+                    description: |-
+                      systemd unit the node agent restarts (via `nsenter`) so containerd
+                      reloads the drop-in. Defaults to `k0sworker.service`; override with
+                      `k0scontroller.service` on single-node / controller-runs-workloads
+                      layouts.
+                    maxLength: 255
+                    minLength: 1
+                    pattern: ^[A-Za-z0-9@._-]+\.service$
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
               killIfCommands:
                 description: |-
                   Optional list of process patterns that trigger an emergency node

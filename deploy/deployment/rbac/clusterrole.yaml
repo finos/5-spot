@@ -61,10 +61,42 @@ rules:
     resources: ["events"]
     verbs: ["create", "patch"]
 
-  # Secrets for SSH keys and bootstrap data
+  # Secrets for SSH keys, bootstrap data, and child-cluster kubeconfigs.
+  #
+  # Read-only. Also covers reading a `kata` source Secret on the workload
+  # cluster in the degenerate co-located case (ADR 0002); in true multi-cluster
+  # that read rides the kubeconfig identity. The controller never writes
+  # Secrets, so no create/patch/delete here.
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list", "watch"]
+
+  # ConfigMaps — read-only.
+  #
+  # `get` is the kata source-object existence probe (ADR 0002): the controller
+  # checks that the referenced source ConfigMap exists, then stamps a Node label
+  # + reference annotation. The node-side agent — not the controller — reads the
+  # source and writes the host drop-in, so the controller never writes a kata
+  # ConfigMap.
+  #
+  # The reclaim-agent per-node ConfigMap projection (`reclaim-agent-<node>`) does
+  # write ConfigMaps, but on the workload cluster via the resolved
+  # `kubeconfig-<clusterName>` child-cluster identity — not this controller
+  # token. This matches the posture that shipped with reclaim: before the kata
+  # branch this ClusterRole had no `configmaps` rule at all. Keeping write verbs
+  # off the controller ServiceAccount preserves least privilege and avoids the
+  # Trivy KSV-0049 finding entirely (no suppression needed).
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get"]
+
+  # Namespaces — read-only. The `kata` fail-fast probe distinguishes a missing
+  # source object from a missing target namespace (ADR 0002). In the degenerate
+  # co-located case this uses the controller SA; in multi-cluster it rides the
+  # kubeconfig identity.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get"]
 
   # Nodes for drain operations and reclaim-agent label / taint management.
   #

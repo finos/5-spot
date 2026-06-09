@@ -151,6 +151,29 @@ pub struct ScheduledMachineSpec {
     /// requirements and threat model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kubeconfig_secret_ref: Option<KubeconfigSecretRef>,
+
+    /// Optional reference to a `Secret` or `ConfigMap` on the **workload
+    /// cluster** holding a Kata containerd drop-in to deliver to the node(s) this
+    /// resource owns.
+    ///
+    /// When set, the controller resolves the referenced object on the workload
+    /// cluster (via the `kubeconfig-<clusterName>` Secret) in `kata.namespace`
+    /// (default `5spot-system`). If it is present, the controller stamps the
+    /// `5spot.finos.org/kata-config=enabled` opt-in label **and** a reference
+    /// annotation on the backing Node; the `5spot-kata-config-agent` DaemonSet —
+    /// scheduled onto labelled nodes — reads the object from the workload API,
+    /// writes the drop-in to `destPath`, and restarts `restartService` so
+    /// containerd reloads it. If the object (or its namespace) is absent, the
+    /// controller does **not** label the Node and reports a fail-fast status
+    /// condition — 5-Spot never creates the object (it must pre-exist,
+    /// Flux-delivered).
+    ///
+    /// This is config *delivery*, not a Kata install: the `/opt/kata` binaries
+    /// remain `kata-deploy`'s responsibility, and the existing
+    /// `katacontainers.io/kata-runtime` opt-in label is unaffected. See ADR 0002
+    /// and ADR 0003.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kata: Option<KataConfig>,
 }
 
 fn default_priority() -> u8 {
@@ -413,6 +436,91 @@ fn default_kubeconfig_secret_key() -> String {
     "value".to_string()
 }
 
+/// Schema for `KataConfig.name` — bounded to RFC-1123 DNS subdomain length
+/// (253 chars) with the Kubernetes-standard charset. The same rule governs both
+/// `ConfigMap` and `Secret` names, so one schema covers both source kinds; a
+/// value that fits is guaranteed to be a syntactically valid object name.
+fn kata_config_name_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 253,
+        "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+    })
+}
+
+/// Schema for `KataConfig.key` — the ConfigMap/Secret `data` key holding the
+/// drop-in content. Bounded to the 253-char data-key cap with the charset the
+/// Kubernetes API server enforces on `data` keys.
+fn kata_config_key_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 253,
+        "pattern": "^[A-Za-z0-9._-]+$"
+    })
+}
+
+/// Schema for `KataConfig.destPath` — the absolute host path the agent writes
+/// the drop-in to. Must be absolute (anchored at `/`) and is bounded to the
+/// Linux `PATH_MAX` (4096) so a malicious CR cannot inflate the host write path.
+fn kata_config_dest_path_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096,
+        "pattern": "^/[^\\u0000]*$"
+    })
+}
+
+/// Schema for `KataConfig.restartService` — the systemd unit the agent
+/// restarts via `nsenter`. Constrained to a `*.service` unit name with the
+/// systemd unit charset and bounded to systemd's 255-char unit-name cap.
+fn kata_config_restart_service_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 255,
+        "pattern": "^[A-Za-z0-9@._-]+\\.service$"
+    })
+}
+
+/// Schema for `KataConfig.namespace` — the workload-cluster namespace the agent
+/// reads the source object from. RFC-1123 label (max 63 chars) with the
+/// Kubernetes namespace charset.
+fn kata_config_namespace_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 63,
+        "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+    })
+}
+
+/// Default workload-cluster namespace for `KataConfig.namespace` — the agent's
+/// own namespace, so it reads from its namespace with no cross-namespace RBAC.
+fn default_kata_config_namespace() -> String {
+    crate::constants::KATA_CONFIG_NAMESPACE.to_string()
+}
+
+/// Default `data` key for `KataConfig.key` — the containerd drop-in filename.
+fn default_kata_config_key() -> String {
+    "kata-containers.toml".to_string()
+}
+
+/// Default host path for `KataConfig.destPath` — the k0s containerd drop-in
+/// directory. k0s loads drop-ins from `/etc/k0s/container.d/` on (re)start.
+fn default_kata_config_dest_path() -> String {
+    "/etc/k0s/container.d/kata-containers.toml".to_string()
+}
+
+/// Default systemd unit for `KataConfig.restartService` — the k0s worker
+/// service. Single-node / controller-also-runs-workloads layouts override this
+/// with `k0scontroller.service`.
+fn default_kata_config_restart_service() -> String {
+    "k0sworker.service".to_string()
+}
+
 /// Schema for `EmbeddedResource` — requires apiVersion, kind, and spec fields.
 /// The `spec` field uses `x-kubernetes-preserve-unknown-fields` to allow any
 /// provider-specific fields (`K0sWorkerConfig`, `RemoteMachine`, `AWSMachine`, etc.).
@@ -535,6 +643,76 @@ pub struct KubeconfigSecretRef {
     #[serde(default = "default_kubeconfig_secret_key")]
     #[schemars(schema_with = "kubeconfig_secret_key_schema")]
     pub key: String,
+}
+
+// ============================================================================
+// KataConfig - Reference to a Kata containerd drop-in source on the workload cluster
+// ============================================================================
+
+/// Source kind for a [`KataConfig`] — the drop-in content lives in either a
+/// `ConfigMap` or a `Secret`. Variants serialize verbatim (`ConfigMap`,
+/// `Secret`) so they line up with the Kubernetes object kinds and the
+/// `KIND_CONFIG_MAP` / `KIND_SECRET` constants.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
+pub enum KataConfigSourceKind {
+    /// Drop-in content is stored in a `ConfigMap` on the workload cluster.
+    ConfigMap,
+    /// Drop-in content is stored in a `Secret` on the workload cluster.
+    Secret,
+}
+
+/// Pointer to a `Secret` or `ConfigMap` on the **workload cluster** whose data
+/// holds a Kata containerd drop-in to deliver to the node(s) this resource owns.
+///
+/// See [`ScheduledMachineSpec::kata`] for the full semantics (workload-cluster
+/// resolution, opt-in label + reference annotation, host write, and k0s
+/// restart). Decisions: ADR 0002 (contract + resolution) and ADR 0003 (host
+/// write + `nsenter` restart).
+///
+/// `deny_unknown_fields` is intentional and mirrors [`KubeconfigSecretRef`]: a
+/// typo must be a hard error, not a silent miss. The object is resolved on the
+/// workload cluster in `namespace` (default `5spot-system`); 5-Spot **never
+/// creates it** — it must pre-exist (Flux-delivered), or delivery fails fast
+/// with a status condition.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KataConfig {
+    /// Whether the source is a `ConfigMap` or a `Secret`. Required (no default).
+    pub kind: KataConfigSourceKind,
+
+    /// Name of the source object on the workload cluster. RFC-1123 DNS subdomain
+    /// (max 253 chars).
+    #[schemars(schema_with = "kata_config_name_schema")]
+    pub name: String,
+
+    /// Workload-cluster namespace the agent reads the object from. Defaults to
+    /// `5spot-system` (the agent's own namespace, so no cross-namespace agent
+    /// RBAC is needed). Override to place config in a per-tenant namespace.
+    #[serde(default = "default_kata_config_namespace")]
+    #[schemars(schema_with = "kata_config_namespace_schema")]
+    pub namespace: String,
+
+    /// Key within the source's `data` map whose value is the drop-in content.
+    /// Defaults to `kata-containers.toml`.
+    #[serde(default = "default_kata_config_key")]
+    #[schemars(schema_with = "kata_config_key_schema")]
+    pub key: String,
+
+    /// Absolute host path the agent writes the drop-in to. Defaults to
+    /// `/etc/k0s/container.d/kata-containers.toml` (the k0s containerd drop-in
+    /// directory). Configurable because layouts vary (k0s-in-docker, kairos,
+    /// vanilla containerd).
+    #[serde(default = "default_kata_config_dest_path")]
+    #[schemars(schema_with = "kata_config_dest_path_schema")]
+    pub dest_path: String,
+
+    /// systemd unit the node agent restarts (via `nsenter`) so containerd
+    /// reloads the drop-in. Defaults to `k0sworker.service`; override with
+    /// `k0scontroller.service` on single-node / controller-runs-workloads
+    /// layouts.
+    #[serde(default = "default_kata_config_restart_service")]
+    #[schemars(schema_with = "kata_config_restart_service_schema")]
+    pub restart_service: String,
 }
 
 // ============================================================================

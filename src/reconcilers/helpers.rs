@@ -2946,6 +2946,246 @@ pub async fn reconcile_reclaim_agent_provision(
 }
 
 // ============================================================================
+// Kata config delivery — controller-side projection (ADR 0002, Phase 2)
+// ============================================================================
+//
+// When a `ScheduledMachine`'s `spec.kataConfigRef` is set, the controller
+// resolves the referenced Secret/ConfigMap content (in the SM namespace, on
+// the management cluster) and mirrors it onto the **child** cluster as:
+//
+// 1. A label `KATA_CONFIG_LABEL=KATA_CONFIG_LABEL_ENABLED` on the backing Node
+//    so the opt-in DaemonSet's `nodeSelector` matches and the agent lands.
+// 2. A per-node `ConfigMap` named `kata-config-<node-name>` in
+//    `KATA_CONFIG_NAMESPACE` carrying the drop-in body under
+//    `KATA_CONFIG_DATA_KEY`.
+//
+// Clearing `kataConfigRef` strips the label (evicting the DaemonSet pod) and
+// deletes the ConfigMap. The pure builders/extractors below are unit-tested;
+// the async orchestrator underneath wires them to the kube API and is covered
+// by mock-client tests mirroring the reclaim-agent projection.
+
+/// Outcome of a kata-config delivery reconcile for a single Node (ADR 0002).
+///
+/// The controller performs no writes for kata delivery beyond the Node
+/// label/annotation patch — it resolves the source object on the workload
+/// cluster (read-only) and either opts the Node in or fails fast.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KataDeliveryOutcome {
+    /// `spec.kata` unset — opt-in label and reference annotation cleared so the
+    /// agent does not land (or is evicted).
+    Disabled,
+    /// Source object resolved on the workload cluster; Node opted in.
+    Ready,
+    /// `kata.namespace` exists but the named object is absent — fail fast.
+    SourceNotFound,
+    /// `kata.namespace` itself is absent on the workload cluster — fail fast.
+    TargetNamespaceMissing,
+}
+
+/// Build the merge-patch that sets (`Some`) or clears (`None`) the kata-config
+/// **reference annotation** on a Node. The value is a compact JSON object the
+/// node-side agent reads to locate and apply its drop-in (namespace, kind, name,
+/// key, destPath, restartService). Clearing uses JSON `null` so merge-patch
+/// removes the key.
+#[must_use]
+pub fn build_kata_config_ref_annotation_patch(
+    kata: Option<&crate::crd::KataConfig>,
+) -> serde_json::Value {
+    let value = match kata {
+        Some(k) => serde_json::Value::String(
+            json!({
+                "namespace": k.namespace,
+                "kind": k.kind,
+                "name": k.name,
+                "key": k.key,
+                "destPath": k.dest_path,
+                "restartService": k.restart_service,
+            })
+            .to_string(),
+        ),
+        None => serde_json::Value::Null,
+    };
+    json!({
+        "metadata": {
+            "annotations": {
+                crate::constants::KATA_CONFIG_REF_ANNOTATION: value,
+            }
+        }
+    })
+}
+
+/// Build the merge-patch body that sets (when `enable == true`) or clears (when
+/// `enable == false`) the kata-config opt-in label on a `Node`. Clearing uses
+/// JSON `null` so merge-patch deletes the key — an empty string would leave the
+/// label set and keep the DaemonSet pod scheduled.
+#[must_use]
+pub fn build_kata_config_label_patch(enable: bool) -> serde_json::Value {
+    let value = if enable {
+        serde_json::Value::String(crate::constants::KATA_CONFIG_LABEL_ENABLED.to_string())
+    } else {
+        serde_json::Value::Null
+    };
+    json!({
+        "metadata": {
+            "labels": {
+                crate::constants::KATA_CONFIG_LABEL: value,
+            }
+        }
+    })
+}
+
+/// Reconcile kata-config delivery for a single Node (ADR 0002).
+///
+/// 5-Spot performs **no writes** for kata delivery beyond the Node
+/// label/annotation patch; the config object must already exist on the workload
+/// cluster (Flux-delivered). For `kata = Some`:
+/// - resolve the named `ConfigMap`/`Secret` in `kata.namespace` on the workload
+///   cluster (read-only `get_opt`);
+/// - **present** → stamp the opt-in label + the reference annotation on the Node
+///   → [`KataDeliveryOutcome::Ready`];
+/// - **absent** → clear ONLY the reference annotation (leaving the opt-in label)
+///   and return [`KataDeliveryOutcome::SourceNotFound`] or
+///   [`KataDeliveryOutcome::TargetNamespaceMissing`] (distinguished by probing
+///   the namespace) for a fail-fast status condition.
+///
+/// For `kata = None`, the reference annotation is cleared
+/// ([`KataDeliveryOutcome::Disabled`]).
+///
+/// The opt-in label is **never removed by the controller** — the still-scheduled
+/// agent removes it itself after cleaning up the host drop-in, so it is not
+/// descheduled before it can tear the file down (ADR 0002).
+///
+/// `workload_client` is the resolved child-cluster client; all reads and the
+/// Node patch target the workload cluster where the agent runs.
+///
+/// # Errors
+/// Returns [`ReconcilerError::KubeError`] when a `get`/probe fails with a
+/// non-404 error or when the Node PATCH fails.
+pub async fn reconcile_kata_config_delivery(
+    workload_client: &Client,
+    node_name: &str,
+    kata: Option<&crate::crd::KataConfig>,
+) -> Result<KataDeliveryOutcome, ReconcilerError> {
+    use crate::crd::KataConfigSourceKind;
+    use k8s_openapi::api::core::v1::{ConfigMap, Namespace, Node, Secret};
+
+    let nodes: Api<Node> = Api::all(workload_client.clone());
+
+    // Deliver patch: stamp the opt-in label + reference annotation in one
+    // merge-patch (both under metadata).
+    let deliver_patch = |kata: &crate::crd::KataConfig| {
+        let mut patch = build_kata_config_label_patch(true);
+        let ann = build_kata_config_ref_annotation_patch(Some(kata));
+        if let (Some(meta), Some(ann_meta)) = (
+            patch.get_mut("metadata").and_then(|m| m.as_object_mut()),
+            ann.get("metadata").and_then(|m| m.as_object()),
+        ) {
+            for (k, v) in ann_meta {
+                meta.insert(k.clone(), v.clone());
+            }
+        }
+        patch
+    };
+
+    // Tear-down patch clears ONLY the reference annotation and deliberately
+    // leaves the opt-in label in place. The still-scheduled agent sees the
+    // annotation gone, unlinks the host file it recorded (in the
+    // kata-config-applied annotation), then removes its own label to deschedule
+    // (ADR 0002). Removing the label here instead would race the agent off the
+    // Node before it could clean up the host drop-in.
+    let teardown_patch = build_kata_config_ref_annotation_patch(None);
+
+    let Some(kata) = kata else {
+        nodes
+            .patch(
+                node_name,
+                &PatchParams::default(),
+                &Patch::Merge(&teardown_patch),
+            )
+            .await
+            .map_err(|e| {
+                error!(node = %node_name, error = %e, "Failed to clear kata-config reference annotation");
+                ReconcilerError::KubeError(e)
+            })?;
+        return Ok(KataDeliveryOutcome::Disabled);
+    };
+
+    // Read-only existence check on the workload cluster.
+    let present = match kata.kind {
+        KataConfigSourceKind::ConfigMap => {
+            let api: Api<ConfigMap> = Api::namespaced(workload_client.clone(), &kata.namespace);
+            api.get_opt(&kata.name)
+                .await
+                .map_err(ReconcilerError::KubeError)?
+                .is_some()
+        }
+        KataConfigSourceKind::Secret => {
+            let api: Api<Secret> = Api::namespaced(workload_client.clone(), &kata.namespace);
+            api.get_opt(&kata.name)
+                .await
+                .map_err(ReconcilerError::KubeError)?
+                .is_some()
+        }
+    };
+
+    if present {
+        let patch = deliver_patch(kata);
+        nodes
+            .patch(node_name, &PatchParams::default(), &Patch::Merge(&patch))
+            .await
+            .map_err(|e| {
+                error!(node = %node_name, error = %e, "Failed to stamp kata-config Node opt-in");
+                ReconcilerError::KubeError(e)
+            })?;
+        debug!(
+            node = %node_name,
+            namespace = %kata.namespace,
+            name = %kata.name,
+            "kata-config source resolved on workload cluster; Node opted in"
+        );
+        return Ok(KataDeliveryOutcome::Ready);
+    }
+
+    // Absent: distinguish a missing namespace from a missing object for a precise
+    // status reason, then clear the reference annotation (the agent self-cleans
+    // and deschedules; the label is left for it to remove).
+    let namespaces: Api<Namespace> = Api::all(workload_client.clone());
+    let ns_missing = namespaces
+        .get_opt(&kata.namespace)
+        .await
+        .map_err(ReconcilerError::KubeError)?
+        .is_none();
+
+    nodes
+        .patch(
+            node_name,
+            &PatchParams::default(),
+            &Patch::Merge(&teardown_patch),
+        )
+        .await
+        .map_err(|e| {
+            error!(node = %node_name, error = %e, "Failed to clear kata-config reference annotation");
+            ReconcilerError::KubeError(e)
+        })?;
+
+    if ns_missing {
+        warn!(
+            node = %node_name,
+            namespace = %kata.namespace,
+            "kata-config target namespace missing on workload cluster (fail-fast)"
+        );
+        return Ok(KataDeliveryOutcome::TargetNamespaceMissing);
+    }
+    warn!(
+        node = %node_name,
+        namespace = %kata.namespace,
+        name = %kata.name,
+        "kata-config source object not found on workload cluster (fail-fast)"
+    );
+    Ok(KataDeliveryOutcome::SourceNotFound)
+}
+
+// ============================================================================
 // Node taint diff + apply (Phase 3 of user-defined-node-taints roadmap)
 // ============================================================================
 

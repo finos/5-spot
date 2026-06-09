@@ -125,6 +125,49 @@ pub const RECLAIM_AGENT_CONFIGMAP_PREFIX: &str = "reclaim-agent-";
 /// drifting if one side is renamed in isolation.
 pub const RECLAIM_CONFIG_DATA_KEY: &str = "reclaim.toml";
 
+// ============================================================================
+// Kata Config Delivery — per-node ConfigMap projection + opt-in label (ADR 0002)
+// ============================================================================
+//
+// When a `ScheduledMachine`'s `spec.kataConfigRef` is set, the controller
+// resolves the referenced Secret/ConfigMap content and mirrors it onto the
+// child cluster as a per-node `ConfigMap`, plus stamps an opt-in label on the
+// backing Node so the `5spot-kata-config-agent` DaemonSet lands. This is a
+// separate opt-in from emergency reclaim and from kata-deploy's
+// `katacontainers.io/kata-runtime` label. See ADR 0002 / ADR 0003.
+
+/// Node label key used by the kata-config-agent `DaemonSet`'s `nodeSelector`.
+/// The controller stamps this on every Node backing a `ScheduledMachine` whose
+/// `spec.kata` source is resolved on the workload cluster; clearing `spec.kata`
+/// (or a missing source) removes the label and tears the agent off the node.
+/// Distinct from [`RECLAIM_AGENT_LABEL`] and from `kata-deploy`'s
+/// `katacontainers.io/kata-runtime` label.
+pub const KATA_CONFIG_LABEL: &str = "5spot.finos.org/kata-config";
+
+/// Value for [`KATA_CONFIG_LABEL`] indicating delivery is enabled for this node.
+pub const KATA_CONFIG_LABEL_ENABLED: &str = "enabled";
+
+/// Annotation the controller stamps on a Node alongside [`KATA_CONFIG_LABEL`],
+/// carrying a compact JSON object (`namespace`, `kind`, `name`, `key`,
+/// `destPath`, `restartService`) that tells the node-side agent which workload
+/// object to read and where to write it. Cleared (`null`) on tear-down / absent
+/// source. See ADR 0002.
+pub const KATA_CONFIG_REF_ANNOTATION: &str = "5spot.finos.org/kata-config-ref";
+
+/// Annotation the **agent** records on its own Node after writing the host
+/// drop-in, carrying the applied absolute `destPath`. It is the agent's only
+/// durable record of what it wrote, so that on tear-down (the controller clears
+/// [`KATA_CONFIG_REF_ANNOTATION`] but keeps the opt-in label) the still-scheduled
+/// agent can unlink the right host file before removing its own label to
+/// deschedule. See ADR 0002 / ADR 0003.
+pub const KATA_CONFIG_APPLIED_ANNOTATION: &str = "5spot.finos.org/kata-config-applied";
+
+/// Default workload-cluster namespace the agent reads the kata source object
+/// from (`spec.kata.namespace` default) and where the kata-config-agent
+/// `DaemonSet` runs. Same `5spot-system` namespace as the reclaim agent
+/// ([`RECLAIM_AGENT_NAMESPACE`]).
+pub const KATA_CONFIG_NAMESPACE: &str = "5spot-system";
+
 /// Kubernetes Event reason emitted on the `ScheduledMachine` when the
 /// emergency reclaim path fires. Operators see this in
 /// `kubectl describe scheduledmachine`.

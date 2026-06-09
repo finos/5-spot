@@ -315,6 +315,7 @@ mod tests {
             node_taints: vec![],
             kill_if_commands: None,
             kubeconfig_secret_ref: None,
+            kata: None,
         };
 
         // Test that it serializes without errors
@@ -537,6 +538,7 @@ mod tests {
             node_taints: vec![],
             kill_if_commands: None,
             kubeconfig_secret_ref: None,
+            kata: None,
         }
     }
 
@@ -1182,6 +1184,7 @@ mod tests {
                 name: "alpha-kubeconfig".to_string(),
                 key: "value".to_string(),
             }),
+            kata: None,
         };
         let s = serde_json::to_string(&spec).expect("must serialize");
         assert!(s.contains("kubeconfigSecretRef"));
@@ -1249,6 +1252,254 @@ mod tests {
         assert!(
             !required.iter().any(|v| v == "kubeconfigSecretRef"),
             "kubeconfigSecretRef MUST be optional to preserve backward compatibility with existing SMs: required={required:?}"
+        );
+    }
+
+    // ========================================================================
+    // KataConfig — Kata config delivery reference tests (ADR 0002, TDD)
+    //
+    // These tests pin the contract for the optional `spec.kata` field that points
+    // a ScheduledMachine at a Secret or ConfigMap **on the workload cluster**
+    // holding a Kata containerd drop-in. The CRD type is the source of truth;
+    // serde defaults (incl. `namespace` → 5spot-system) and YAML schema bounds
+    // are asserted here so a regression flips a test.
+    // ========================================================================
+
+    #[test]
+    fn test_kata_defaults_when_optional_fields_omitted() {
+        // Posit: with only `kind` and `name`, serde fills the defaulted fields
+        // (namespace, key, destPath, restartService) so the common case is
+        // zero-config.
+        let json = serde_json::json!({ "kind": "ConfigMap", "name": "kata-drop-in" });
+        let parsed: KataConfig = serde_json::from_value(json)
+            .expect("KataConfig must accept a JSON object with only kind + name");
+        assert_eq!(parsed.kind, KataConfigSourceKind::ConfigMap);
+        assert_eq!(parsed.name, "kata-drop-in");
+        assert_eq!(
+            parsed.namespace, "5spot-system",
+            "default namespace must be the agent's own namespace (5spot-system)"
+        );
+        assert_eq!(
+            parsed.key, "kata-containers.toml",
+            "default key must be the containerd drop-in filename"
+        );
+        assert_eq!(
+            parsed.dest_path, "/etc/k0s/container.d/kata-containers.toml",
+            "default destPath must be the k0s containerd drop-in path"
+        );
+        assert_eq!(
+            parsed.restart_service, "k0sworker.service",
+            "default restartService must be the k0s worker unit"
+        );
+    }
+
+    #[test]
+    fn test_kata_explicit_round_trips() {
+        let original = KataConfig {
+            kind: KataConfigSourceKind::Secret,
+            name: "kata-secret".to_string(),
+            namespace: "team-alpha".to_string(),
+            key: "custom.toml".to_string(),
+            dest_path: "/etc/kata-containers/configuration.toml".to_string(),
+            restart_service: "k0scontroller.service".to_string(),
+        };
+        let serialized = serde_json::to_value(&original).expect("must serialize");
+        let parsed: KataConfig =
+            serde_json::from_value(serialized.clone()).expect("must round-trip");
+        assert_eq!(parsed, original);
+        // camelCase JSON field names are required for kube-rs / OpenAPI conformance.
+        let s = serialized.to_string();
+        assert!(s.contains("\"kind\""), "expected camelCase `kind`: {s}");
+        assert!(s.contains("\"name\""), "expected camelCase `name`: {s}");
+        assert!(s.contains("\"key\""), "expected camelCase `key`: {s}");
+        assert!(
+            s.contains("\"destPath\""),
+            "expected camelCase `destPath`: {s}"
+        );
+        assert!(
+            s.contains("\"restartService\""),
+            "expected camelCase `restartService`: {s}"
+        );
+    }
+
+    #[test]
+    fn test_kata_config_source_kind_serializes_pascalcase() {
+        // The two variants must serialize verbatim so they line up with the
+        // Kubernetes object kinds "ConfigMap" / "Secret".
+        assert_eq!(
+            serde_json::to_value(KataConfigSourceKind::ConfigMap).unwrap(),
+            serde_json::json!("ConfigMap")
+        );
+        assert_eq!(
+            serde_json::to_value(KataConfigSourceKind::Secret).unwrap(),
+            serde_json::json!("Secret")
+        );
+    }
+
+    #[test]
+    fn test_kata_rejects_invalid_kind() {
+        // Only the two PascalCase kinds are valid; a lowercase typo must error.
+        let json = serde_json::json!({ "kind": "configmap", "name": "x" });
+        let result: Result<KataConfig, _> = serde_json::from_value(json);
+        assert!(
+            result.is_err(),
+            "KataConfig must reject a kind outside {{ConfigMap, Secret}}"
+        );
+    }
+
+    #[test]
+    fn test_kata_namespace_overrides_default() {
+        // `namespace` is a first-class field (the workload-cluster namespace the
+        // agent reads from); an explicit value must override the 5spot-system
+        // default and round-trip.
+        let json = serde_json::json!({
+            "kind": "ConfigMap",
+            "name": "kata-drop-in",
+            "namespace": "team-alpha"
+        });
+        let parsed: KataConfig =
+            serde_json::from_value(json).expect("KataConfig must accept an explicit namespace");
+        assert_eq!(parsed.namespace, "team-alpha");
+    }
+
+    #[test]
+    fn test_kata_rejects_unknown_fields() {
+        // `deny_unknown_fields` blocks typos — an unrecognised field is a hard
+        // error, not a silent miss (ADR 0002).
+        let json = serde_json::json!({
+            "kind": "ConfigMap",
+            "name": "kata-drop-in",
+            "bogusField": "x"   // not a KataConfig field
+        });
+        let result: Result<KataConfig, _> = serde_json::from_value(json);
+        assert!(
+            result.is_err(),
+            "KataConfig must reject unknown fields (typos)"
+        );
+    }
+
+    #[test]
+    fn test_kata_kind_and_name_required() {
+        // Neither `kind` nor `name` has a default — omitting either must error.
+        let missing_kind = serde_json::json!({ "name": "x" });
+        assert!(
+            serde_json::from_value::<KataConfig>(missing_kind).is_err(),
+            "KataConfig must require `kind`"
+        );
+        let missing_name = serde_json::json!({ "kind": "Secret" });
+        assert!(
+            serde_json::from_value::<KataConfig>(missing_name).is_err(),
+            "KataConfig must require `name`"
+        );
+    }
+
+    #[test]
+    fn test_spec_with_kata_round_trips() {
+        let mut spec = base_spec();
+        spec.kata = Some(KataConfig {
+            kind: KataConfigSourceKind::ConfigMap,
+            name: "kata-drop-in".to_string(),
+            namespace: "5spot-system".to_string(),
+            key: "kata-containers.toml".to_string(),
+            dest_path: "/etc/k0s/container.d/kata-containers.toml".to_string(),
+            restart_service: "k0sworker.service".to_string(),
+        });
+        let s = serde_json::to_string(&spec).expect("must serialize");
+        assert!(s.contains("\"kata\""), "expected the `kata` field key: {s}");
+        assert!(s.contains("kata-drop-in"));
+        let parsed: ScheduledMachineSpec =
+            serde_json::from_str(&s).expect("must round-trip with spec.kata");
+        let r = parsed.kata.expect("ref must survive round-trip");
+        assert_eq!(r.kind, KataConfigSourceKind::ConfigMap);
+        assert_eq!(r.name, "kata-drop-in");
+    }
+
+    #[test]
+    fn test_spec_without_kata_omits_field() {
+        // skip_serializing_if = Option::is_none must elide the field entirely so
+        // existing single-runtime SMs keep clean YAML.
+        let spec = base_spec();
+        let s = serde_json::to_string(&spec).expect("must serialize");
+        assert!(
+            !s.contains("\"kata\""),
+            "kata must be omitted when None: {s}"
+        );
+    }
+
+    // ---- Schema-bound assertions ----
+
+    #[test]
+    fn test_kata_name_schema_is_bounded() {
+        let schema =
+            serde_json::to_value(schemars::schema_for!(KataConfig)).expect("schema serializes");
+        let name_schema = schema
+            .pointer("/properties/name")
+            .or_else(|| schema.pointer("/definitions/KataConfig/properties/name"))
+            .expect("KataConfig.name property must exist in schema");
+        assert!(
+            name_schema.get("maxLength").is_some(),
+            "name must have maxLength bound (RFC-1123 DNS subdomain = 253): {name_schema}"
+        );
+        assert!(
+            name_schema.get("pattern").is_some(),
+            "name must constrain charset via pattern: {name_schema}"
+        );
+    }
+
+    #[test]
+    fn test_kata_dest_path_schema_requires_absolute() {
+        let schema =
+            serde_json::to_value(schemars::schema_for!(KataConfig)).expect("schema serializes");
+        let dest = schema
+            .pointer("/properties/destPath")
+            .or_else(|| schema.pointer("/definitions/KataConfig/properties/destPath"))
+            .expect("KataConfig.destPath property must exist in schema");
+        let pattern = dest
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .expect("destPath must constrain to an absolute path via pattern");
+        assert!(
+            pattern.starts_with("^/"),
+            "destPath pattern must anchor to a leading slash (absolute path): {pattern}"
+        );
+        assert!(
+            dest.get("maxLength").is_some(),
+            "destPath must have a maxLength bound: {dest}"
+        );
+    }
+
+    #[test]
+    fn test_kata_restart_service_schema_is_bounded() {
+        let schema =
+            serde_json::to_value(schemars::schema_for!(KataConfig)).expect("schema serializes");
+        let svc = schema
+            .pointer("/properties/restartService")
+            .or_else(|| schema.pointer("/definitions/KataConfig/properties/restartService"))
+            .expect("KataConfig.restartService property must exist in schema");
+        assert!(
+            svc.get("pattern").is_some(),
+            "restartService must constrain to a systemd unit via pattern: {svc}"
+        );
+        assert!(
+            svc.get("maxLength").is_some(),
+            "restartService must have a maxLength bound: {svc}"
+        );
+    }
+
+    #[test]
+    fn test_spec_kata_is_optional_in_schema() {
+        // Backward compat: the new field must NOT be in the `required` list.
+        let schema =
+            serde_json::to_value(schemars::schema_for!(ScheduledMachineSpec)).expect("serializes");
+        let required = schema
+            .pointer("/required")
+            .or_else(|| schema.pointer("/definitions/ScheduledMachineSpec/required"))
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            !required.iter().any(|v| v == "kata"),
+            "kata MUST be optional to preserve backward compatibility: required={required:?}"
         );
     }
 

@@ -1,0 +1,93 @@
+# 5-Spot Kata Config Agent — ServiceAccount + RBAC (workload cluster)
+#
+# The agent runs on the workload cluster and needs only:
+#   - get + patch its own Node object: get reads the
+#     5spot.finos.org/kata-config-ref annotation the controller stamps; patch
+#     records the 5spot.finos.org/kata-config-applied annotation (the dest it
+#     manages) and, on tear-down, removes the opt-in label so the DaemonSet
+#     deschedules (the cleanup handshake, ADR 0002). Cluster-scoped (Node is
+#     cluster-scoped); no list/watch — the agent only ever touches the single
+#     Node named by its downward-API NODE_NAME.
+#   - get ConfigMaps and Secrets in its target namespace (the
+#     spec.kata.namespace, default 5spot-system) to resolve the drop-in content.
+#     `get` only — it resolves one object by exact name (no list/watch).
+#
+# It writes no ConfigMaps/Secrets; its only API writes are the merge-patch on its
+# own Node's kata annotations + label.
+#
+# NOTE: if an SM sets spec.kata.namespace to something other than 5spot-system,
+# the agent needs read access there too — add a Role/RoleBinding per such
+# namespace, or widen to a read-only ClusterRole on configmaps/secrets.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: 5spot-kata-config-agent
+  namespace: 5spot-system
+  labels:
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: kata-config-agent
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: 5spot-kata-config-agent
+  labels:
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: kata-config-agent
+rules:
+  # get the own Node (read kata-config-ref); patch it (record kata-config-applied,
+  # remove the opt-in label on tear-down). No list/watch.
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: 5spot-kata-config-agent
+  labels:
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: kata-config-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: 5spot-kata-config-agent
+subjects:
+  - kind: ServiceAccount
+    name: 5spot-kata-config-agent
+    namespace: 5spot-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: 5spot-kata-config-agent
+  namespace: 5spot-system
+  labels:
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: kata-config-agent
+rules:
+  # Read-only resolution of the source object in the default target namespace.
+  # `get` only — the agent resolves a single object by exact name (the ref from
+  # its Node annotation) via a direct GET; it never enumerates, so it needs
+  # neither `list` nor `watch`. This caps the blast radius of a stolen token to
+  # objects the attacker can already name, not the whole namespace.
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: 5spot-kata-config-agent
+  namespace: 5spot-system
+  labels:
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: kata-config-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: 5spot-kata-config-agent
+subjects:
+  - kind: ServiceAccount
+    name: 5spot-kata-config-agent
+    namespace: 5spot-system

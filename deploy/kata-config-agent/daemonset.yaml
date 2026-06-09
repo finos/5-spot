@@ -1,0 +1,113 @@
+# 5-Spot Kata Config Agent DaemonSet (workload cluster)
+#
+# Opt-in node-side delivery of a Kata containerd drop-in. Lands only on nodes
+# the controller has labelled `5spot.finos.org/kata-config=enabled` (which only
+# happens when an SM with `spec.kata` resolves its source object on this cluster).
+#
+# The agent reads its Node's `5spot.finos.org/kata-config-ref` annotation, GETs
+# the referenced ConfigMap/Secret from the workload API (NOT a mounted volume — a
+# DaemonSet cannot template a configMap.name per replica, ADR 0002 §3), and
+# atomically writes the drop-in to the configured destPath under the hostPath
+# /host mount.
+#
+# The pod is `privileged: true` + `hostPID: true` (ADR 0003): writing the host
+# drop-in and bouncing the host k0s service via `nsenter -t 1 -m -u -i -n -p --
+# systemctl restart <restartService>` require setns into the host namespaces and
+# resolving host PID 1. `privileged` is the architecturally-required escalation,
+# bounded by opt-in label-gating (lands only on nodes the controller labelled),
+# a read-only root filesystem, and seccomp RuntimeDefault. Justification is in
+# `.trivyignore` (kata-config-agent banner) and docs/src/security/threat-model.md.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: 5spot-kata-config-agent
+  namespace: 5spot-system
+  labels:
+    app: 5spot-kata-config-agent
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: kata-config-agent
+spec:
+  selector:
+    matchLabels:
+      app: 5spot-kata-config-agent
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 10%
+  template:
+    metadata:
+      labels:
+        app: 5spot-kata-config-agent
+        app.kubernetes.io/name: 5spot
+        app.kubernetes.io/component: kata-config-agent
+    spec:
+      serviceAccountName: 5spot-kata-config-agent
+      # Opt-in: only land on nodes the controller has labelled.
+      nodeSelector:
+        5spot.finos.org/kata-config: enabled
+      # Reach cordoned / NotReady nodes too — delivery is infra-level.
+      tolerations:
+        - operator: Exists
+      priorityClassName: system-node-critical
+      terminationGracePeriodSeconds: 5
+      # hostPID so `nsenter -t 1` resolves host PID 1 (systemd) for the k0s
+      # service restart (ADR 0003).
+      hostPID: true
+      securityContext:
+        # Root is required to write the drop-in under /etc/k0s on the host.
+        # nosemgrep: yaml.kubernetes.security.run-as-non-root-unsafe-value.run-as-non-root-unsafe-value
+        runAsNonRoot: false
+        runAsUser: 0
+        runAsGroup: 0
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: agent
+          # Pin a released tag — never :latest in production (KSV-0013).
+          image: ghcr.io/finos/5-spot-kata-config-agent:v0.1.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: RUST_LOG
+              value: "info"
+            - name: RUST_LOG_FORMAT
+              value: "json"
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: HOST_ROOT
+              value: "/host"
+          securityContext:
+            # privileged is required for setns into host mount/PID namespaces
+            # (the `nsenter` k0s-service restart, ADR 0003). With privileged,
+            # allowPrivilegeEscalation must be true; the root filesystem stays
+            # read-only and seccomp stays RuntimeDefault to keep the escalation
+            # as narrow as the feature allows.
+            privileged: true
+            runAsUser: 0
+            runAsGroup: 0
+            # nosemgrep: yaml.kubernetes.security.run-as-non-root-unsafe-value.run-as-non-root-unsafe-value
+            runAsNonRoot: false
+            allowPrivilegeEscalation: true
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            limits:
+              cpu: 50m
+              memory: 64Mi
+            requests:
+              cpu: 10m
+              memory: 16Mi
+          volumeMounts:
+            # Host root mounted writable so the agent can write the configurable
+            # destPath (default /etc/k0s/container.d/). The dest path is
+            # operator-configurable per SM, so a narrower subPath cannot be
+            # pinned in a shared DaemonSet spec (ADR 0003).
+            - name: host-root
+              mountPath: /host
+      volumes:
+        - name: host-root
+          hostPath:
+            path: /
+            type: Directory

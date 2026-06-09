@@ -24,6 +24,7 @@ pub mod auto_vex_reachability;
 pub mod constants;
 pub mod crd;
 pub mod health;
+pub mod kata_config_agent;
 pub mod labels;
 pub mod loop_protection;
 pub mod metrics;

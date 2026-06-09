@@ -41,6 +41,12 @@ AVD-KSV-0048
 # which is impractical for a cluster-wide controller.
 AVD-KSV-0041
 
+# NOTE: KSV-0049 (create/update/patch/delete on 'configmaps') is intentionally
+# NOT suppressed. The controller ClusterRole grants `configmaps: ["get"]` only
+# (read-only kata source-object probe, ADR 0002); the reclaim-agent ConfigMap
+# projection writes ride the resolved child-cluster kubeconfig identity, not the
+# controller token. There is no configmap-write finding to suppress.
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Deployment — deploy/deployment/deployment.yaml
 # ─────────────────────────────────────────────────────────────────────────────
@@ -189,6 +195,61 @@ AVD-KSV-0116
 # only granted on the small set of nodes the operator has explicitly
 # armed.
 AVD-KSV-0022
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DaemonSet — deploy/kata-config-agent/daemonset.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The kata-config-agent shares most of its hardened-but-rooted posture with the
+# reclaim agent, so the hostPath (KSV-0023/0121), hostPID (KSV-0010), and
+# root/runAsNonRoot/runAsGroup findings (KSV-0012/0118/0105/0020/0021/0116) are
+# already suppressed above by the same global rule IDs. The two additional
+# findings are privileged (KSV-0017) and its capability corollary (KSV-0106):
+
+# KSV-0017 — Container 'agent' should not run as privileged.
+# Architecturally required (ADR 0003). The agent's job is to write a Kata
+# containerd drop-in to the HOST filesystem and bounce the host k0s service via
+# `nsenter -t 1 -m -u -i -n -p -- systemctl restart <restartService>` so
+# containerd reloads it. setns() into the host mount/PID namespaces requires
+# `privileged: true` (hostPID alone is insufficient for the mount-namespace
+# entry). The escalation is bounded by: opt-in nodeSelector
+# (5spot.finos.org/kata-config=enabled — lands only on nodes the controller
+# labelled, which only happens when an SM with spec.kata resolves a source on
+# this cluster), readOnlyRootFilesystem, seccomp RuntimeDefault, a single-purpose
+# binary with no shell, and a narrow node-scoped ServiceAccount (nodes get/patch
+# on its own Node + read-only configmaps/secrets in its target namespace).
+AVD-KSV-0017
+
+# KSV-0106 — Container 'agent' should drop all capabilities (and only add
+# NET_BIND_SERVICE). Moot under privileged: true (KSV-0017 above, ADR 0003): a
+# privileged container holds the full Linux capability set regardless of any
+# securityContext.capabilities.drop list, so `capabilities.drop: [ALL]` would be
+# a no-op rather than a real hardening — adding it would misrepresent the
+# container's effective privileges in an audit. The agent needs no
+# NET_BIND_SERVICE (it binds no privileged ports; it writes the host drop-in and
+# bounces the k0s service via nsenter). The escalation is bounded by the same
+# controls justified for KSV-0017: opt-in nodeSelector, readOnlyRootFilesystem,
+# seccomp RuntimeDefault, a shell-less single-purpose binary, and a narrow
+# node-scoped ServiceAccount.
+AVD-KSV-0106
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RBAC — deploy/kata-config-agent/rbac.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+# KSV-0113 — Role '5spot-kata-config-agent' shouldn't view/manage secrets in
+# namespace '5spot-system'.
+# Access is READ-ONLY and narrowed to `get` (no list/watch, no create/update/
+# patch/delete) — the "manage" wording is misleading; the rule fires on any
+# namespace-scoped secret read. The grant is architecturally required: a Kata
+# drop-in source object may be a Secret (spec.kata referencing a Secret, ADR
+# 0002), and the agent resolves it with a direct GET by the exact name carried
+# in its Node's kata-config-ref annotation — it never enumerates. Same posture
+# as the controller's KSV-0041 read-only secrets suppression. Tightening
+# further (e.g. dropping `get`) would remove the Secret-backed drop-in source
+# capability entirely; scope is already minimal (single namespace, get-only,
+# opt-in nodeSelector).
+AVD-KSV-0113
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Dockerfile — Dockerfile, Dockerfile.chainguard

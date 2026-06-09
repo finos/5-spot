@@ -1945,6 +1945,7 @@ mod tests {
                 node_taints: vec![],
                 kill_if_commands: None,
                 kubeconfig_secret_ref: None,
+                kata: None,
             },
             status: None,
         };
@@ -2873,6 +2874,247 @@ mod tests {
     }
 
     // ========================================================================
+    // Kata config delivery — label/annotation patch builders + workload-read
+    // reconcile (ADR 0002). 5-Spot performs NO ConfigMap/Secret writes: it reads
+    // the source object on the workload cluster and stamps (or clears) the Node
+    // opt-in, failing fast when the object/namespace is absent.
+    // ========================================================================
+
+    fn kata_json_resp(value: serde_json::Value) -> http::Response<Body> {
+        Response::builder()
+            .status(200)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&value).unwrap()))
+            .unwrap()
+    }
+    fn kata_node_resp(name: &str) -> http::Response<Body> {
+        kata_json_resp(serde_json::json!({
+            "apiVersion": "v1", "kind": "Node",
+            "metadata": { "name": name, "resourceVersion": "2" }
+        }))
+    }
+    fn kata_cm_resp(name: &str, ns: &str) -> http::Response<Body> {
+        kata_json_resp(serde_json::json!({
+            "apiVersion": "v1", "kind": "ConfigMap",
+            "metadata": { "name": name, "namespace": ns }
+        }))
+    }
+    fn kata_ns_resp(name: &str) -> http::Response<Body> {
+        kata_json_resp(serde_json::json!({
+            "apiVersion": "v1", "kind": "Namespace",
+            "metadata": { "name": name }
+        }))
+    }
+    fn kata_404() -> http::Response<Body> {
+        Response::builder()
+            .status(404)
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "apiVersion": "v1", "kind": "Status", "status": "Failure",
+                    "code": 404, "reason": "NotFound"
+                }))
+                .unwrap(),
+            ))
+            .unwrap()
+    }
+    fn sample_kata() -> crate::crd::KataConfig {
+        crate::crd::KataConfig {
+            kind: crate::crd::KataConfigSourceKind::ConfigMap,
+            name: "kata-drop-in".to_string(),
+            namespace: "5spot-system".to_string(),
+            key: "kata-containers.toml".to_string(),
+            dest_path: "/etc/k0s/container.d/kata-containers.toml".to_string(),
+            restart_service: "k0sworker.service".to_string(),
+        }
+    }
+
+    const KATA_LABEL_PTR: &str = "/metadata/labels/5spot.finos.org~1kata-config";
+    const KATA_ANN_PTR: &str = "/metadata/annotations/5spot.finos.org~1kata-config-ref";
+
+    #[test]
+    fn test_build_kata_config_label_patch_enable_writes_enabled_value() {
+        let patch = build_kata_config_label_patch(true);
+        assert_eq!(
+            patch.pointer(KATA_LABEL_PTR).and_then(|v| v.as_str()),
+            Some("enabled")
+        );
+    }
+
+    #[test]
+    fn test_build_kata_config_label_patch_disable_writes_null() {
+        let patch = build_kata_config_label_patch(false);
+        assert!(
+            patch
+                .pointer(KATA_LABEL_PTR)
+                .map(serde_json::Value::is_null)
+                .unwrap_or(false),
+            "disable must write JSON null so merge-patch removes the label"
+        );
+    }
+
+    #[test]
+    fn test_build_kata_config_ref_annotation_patch_some_carries_compact_json() {
+        let kata = sample_kata();
+        let patch = build_kata_config_ref_annotation_patch(Some(&kata));
+        let ann = patch
+            .pointer(KATA_ANN_PTR)
+            .and_then(|v| v.as_str())
+            .expect("annotation must be a JSON string");
+        let parsed: serde_json::Value =
+            serde_json::from_str(ann).expect("annotation value is JSON");
+        assert_eq!(parsed["namespace"], "5spot-system");
+        assert_eq!(parsed["kind"], "ConfigMap");
+        assert_eq!(parsed["name"], "kata-drop-in");
+        assert_eq!(parsed["key"], "kata-containers.toml");
+        assert_eq!(
+            parsed["destPath"],
+            "/etc/k0s/container.d/kata-containers.toml"
+        );
+        assert_eq!(parsed["restartService"], "k0sworker.service");
+    }
+
+    #[test]
+    fn test_build_kata_config_ref_annotation_patch_none_clears() {
+        let patch = build_kata_config_ref_annotation_patch(None);
+        assert!(
+            patch
+                .pointer(KATA_ANN_PTR)
+                .map(serde_json::Value::is_null)
+                .unwrap_or(false),
+            "None must write JSON null so merge-patch removes the annotation"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_kata_config_delivery_disabled_clears_optin() {
+        let (client, handle) = mock_client_pair();
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (req, send) = h.next_request().await.expect("expected Node PATCH (clear)");
+            assert_eq!(req.method(), http::Method::PATCH);
+            assert!(req.uri().path().ends_with("/api/v1/nodes/node-a"));
+            let body = collect_json_body(req.into_body()).await;
+            assert!(
+                body.pointer(KATA_LABEL_PTR).is_none(),
+                "tear-down must NOT touch the opt-in label (the agent removes it after cleanup)"
+            );
+            assert!(
+                body.pointer(KATA_ANN_PTR)
+                    .map(serde_json::Value::is_null)
+                    .unwrap_or(false),
+                "tear-down must clear the reference annotation"
+            );
+            send.send_response(kata_node_resp("node-a"));
+        });
+        let outcome = reconcile_kata_config_delivery(&client, "node-a", None).await;
+        assert_eq!(outcome.unwrap(), KataDeliveryOutcome::Disabled);
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_kata_config_delivery_present_opts_in() {
+        let (client, handle) = mock_client_pair();
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (req, send) = h.next_request().await.expect("expected source CM GET");
+            assert_eq!(req.method(), http::Method::GET);
+            assert!(req
+                .uri()
+                .path()
+                .ends_with("/api/v1/namespaces/5spot-system/configmaps/kata-drop-in"));
+            send.send_response(kata_cm_resp("kata-drop-in", "5spot-system"));
+
+            let (req, send) = h.next_request().await.expect("expected Node PATCH");
+            assert_eq!(req.method(), http::Method::PATCH);
+            let body = collect_json_body(req.into_body()).await;
+            assert_eq!(
+                body.pointer(KATA_LABEL_PTR).and_then(|v| v.as_str()),
+                Some("enabled"),
+                "present source must set the opt-in label"
+            );
+            assert!(
+                body.pointer(KATA_ANN_PTR)
+                    .and_then(|v| v.as_str())
+                    .is_some(),
+                "present source must stamp the reference annotation"
+            );
+            send.send_response(kata_node_resp("node-a"));
+        });
+        let kata = sample_kata();
+        let outcome = reconcile_kata_config_delivery(&client, "node-a", Some(&kata)).await;
+        assert_eq!(outcome.unwrap(), KataDeliveryOutcome::Ready);
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_kata_config_delivery_source_missing_namespace_present() {
+        let (client, handle) = mock_client_pair();
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (req, send) = h.next_request().await.expect("expected source CM GET");
+            assert!(req
+                .uri()
+                .path()
+                .ends_with("/api/v1/namespaces/5spot-system/configmaps/kata-drop-in"));
+            send.send_response(kata_404());
+
+            let (req, send) = h.next_request().await.expect("expected namespace GET");
+            assert!(req
+                .uri()
+                .path()
+                .ends_with("/api/v1/namespaces/5spot-system"));
+            send.send_response(kata_ns_resp("5spot-system"));
+
+            let (req, send) = h.next_request().await.expect("expected Node PATCH (clear)");
+            let body = collect_json_body(req.into_body()).await;
+            assert!(
+                body.pointer(KATA_LABEL_PTR).is_none(),
+                "absent source must NOT touch the opt-in label (agent removes it)"
+            );
+            assert!(
+                body.pointer(KATA_ANN_PTR)
+                    .map(serde_json::Value::is_null)
+                    .unwrap_or(false),
+                "absent source must clear the reference annotation"
+            );
+            send.send_response(kata_node_resp("node-a"));
+        });
+        let kata = sample_kata();
+        let outcome = reconcile_kata_config_delivery(&client, "node-a", Some(&kata)).await;
+        assert_eq!(outcome.unwrap(), KataDeliveryOutcome::SourceNotFound);
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_kata_config_delivery_namespace_missing() {
+        let (client, handle) = mock_client_pair();
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("expected source CM GET");
+            send.send_response(kata_404());
+
+            let (req, send) = h.next_request().await.expect("expected namespace GET");
+            assert!(req
+                .uri()
+                .path()
+                .ends_with("/api/v1/namespaces/5spot-system"));
+            send.send_response(kata_404());
+
+            let (req, send) = h.next_request().await.expect("expected Node PATCH (clear)");
+            let _ = collect_json_body(req.into_body()).await;
+            send.send_response(kata_node_resp("node-a"));
+        });
+        let kata = sample_kata();
+        let outcome = reconcile_kata_config_delivery(&client, "node-a", Some(&kata)).await;
+        assert_eq!(
+            outcome.unwrap(),
+            KataDeliveryOutcome::TargetNamespaceMissing
+        );
+        srv.await.unwrap();
+    }
+
+    // ========================================================================
     // Phase 3 — diff_node_taints pure helper
     // ========================================================================
 
@@ -3527,6 +3769,7 @@ mod tests {
                 node_taints: vec![],
                 kill_if_commands: None,
                 kubeconfig_secret_ref: None,
+                kata: None,
             },
             status: Some(crate::crd::ScheduledMachineStatus {
                 phase: Some("ShuttingDown".to_string()),

@@ -59,6 +59,9 @@ spec:
     - key: workload
       value: batch
       effect: NoSchedule
+  kataConfigRef:
+    kind: ConfigMap
+    name: kata-drop-in
 ```
 
 ### Spec Fields
@@ -187,6 +190,36 @@ Each `NodeTaint` has the following fields:
 Duplicate `(key, effect)` pairs are rejected at admission. Admin-added taints
 colliding on `(key, effect)` are surfaced as a `TaintOwnershipConflict` condition
 rather than overwritten.
+
+#### kata
+
+(optional, KataConfig) Reference to a `Secret` or `ConfigMap` **on the workload
+cluster** holding a Kata containerd drop-in to deliver to the node(s) this resource
+owns. When set, the controller resolves the object on the workload cluster (via the
+`kubeconfig-<clusterName>` Secret) in `kata.namespace` (default `5spot-system`). If
+present, it stamps the `5spot.finos.org/kata-config=enabled` opt-in label plus a
+reference annotation on the Node; the `5spot-kata-config-agent` DaemonSet reads the
+object from the workload API, writes the drop-in to `destPath`, and restarts
+`restartService` so containerd reloads it. If the object (or its namespace) is
+absent, the controller does NOT label the Node and reports a fail-fast status
+condition — 5-Spot never creates the object (it must pre-exist, Flux-delivered).
+This is config delivery, not a Kata install — `/opt/kata` binaries remain
+`kata-deploy`'s job. See ADR 0002 and ADR 0003.
+
+`KataConfig` has the following fields:
+
+- **kind** (required, enum): One of `ConfigMap`, `Secret` — the source kind.
+- **name** (required, string): Source object name on the workload cluster,
+  RFC-1123 DNS subdomain (≤ 253 chars).
+- **namespace** (optional, string, default: `5spot-system`): workload-cluster
+  namespace the agent reads the object from. Override for per-tenant placement.
+- **key** (optional, string, default: `kata-containers.toml`): `data` key whose
+  value is the drop-in content.
+- **destPath** (optional, string, default:
+  `/etc/k0s/container.d/kata-containers.toml`): absolute host path written to.
+- **restartService** (optional, string, default: `k0sworker.service`): systemd
+  unit restarted via `nsenter` so containerd reloads the drop-in. Override with
+  `k0scontroller.service` on single-node layouts.
 
 ### Status Fields
 

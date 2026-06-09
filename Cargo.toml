@@ -68,6 +68,9 @@ lazy_static = "1.5"
 # enabled explicitly.
 warp = { version = "0.4", default-features = false, features = ["server"] }
 toml = "1.1"
+# SHA-256 for the kata-config agent's content/drift hashing and (Phase 4)
+# the applied-hash node annotation. RustCrypto, pure-Rust, no system deps.
+sha2 = "0.10"
 
 # Linux-only — used by the reclaim-agent's rung 2 netlink proc connector
 # subscriber (`src/netlink_proc.rs`). The portable byte parsers in that
@@ -80,6 +83,10 @@ nix = { version = "0.31", default-features = false, features = ["socket", "net",
 [[bin]]
 name = "5spot-reclaim-agent"
 path = "src/bin/reclaim_agent.rs"
+
+[[bin]]
+name = "5spot-kata-config-agent"
+path = "src/bin/kata_config_agent.rs"
 
 [dev-dependencies]
 tokio-test = "0.4"

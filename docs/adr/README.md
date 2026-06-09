@@ -37,3 +37,5 @@ refactors) need neither. When unsure, **write the ADR.**
 | ADR | Title | Status |
 |----:|-------|--------|
 | [0001](./0001-adopt-architecture-driven-development.md) | Adopt Architecture Driven Development (ADD) | Accepted |
+| [0002](./0002-kata-config-delivery-via-spec-kata.md) | Kata config delivery via `spec.kata` (workload-cluster resolution, fail-fast on absence) | Accepted |
+| [0003](./0003-in-pod-host-service-restart-via-nsenter.md) | In-pod host k0s-service restart via `nsenter` (privileged Kata-config agent) | Accepted |

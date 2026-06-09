@@ -230,6 +230,46 @@
       "node-type": "data-asset",
       "name": "Per-Node Reclaim Agent ConfigMap",
       "description": "Per-node ConfigMap named reclaim-agent-<node-name> in namespace 5spot-system on the workload cluster. Controller-projected from ScheduledMachine.spec.killIfCommands via server-side apply with field manager 5spot-controller-reclaim-agent; consumed by the agent via a kube runtime watcher scoped by field selector. Empty killIfCommands deletes the ConfigMap; 404-on-delete is benign by contract."
+    },
+    {
+      "unique-id": "service-kata-config-agent",
+      "node-type": "service",
+      "name": "5-Spot Kata Config Agent",
+      "description": "Privileged node-side DaemonSet on the workload cluster that delivers a per-node Kata containerd drop-in to the host filesystem and bounces the host k0s service so containerd reloads it. Reads its source ConfigMap/Secret from the workload API (keyed by the 5spot.finos.org/kata-config-ref Node annotation set by the controller per ADR 0002), atomically writes the configured destPath under a hostPath /host mount, then runs `nsenter -t 1 -m -u -i -n -p -- systemctl restart <restartService>` to restart the host k0s service. Runs privileged with hostPID=true. Records 5spot.finos.org/kata-config-applied=<sha256> on its own Node before restarting to break the restart loop. Distinct field manager (5spot-kata-config-agent) attributes every write. Lands only on nodes carrying the 5spot.finos.org/kata-config=enabled opt-in label. See ADR 0003.",
+      "controls": {
+        "least-privilege": {
+          "description": "Agent holds a namespaced Role in 5spot-system granting get,list,watch on ConfigMaps and Secrets (read-only source resolution), plus a ClusterRole granting get,patch on Nodes for its OWN Node only (read the kata-config-ref annotation; record kata-config-applied; remove the opt-in label on tear-down). No ConfigMap/Secret writes; no Job RBAC.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["AC-3", "AC-6"],
+                "evidence": "deploy/kata-config-agent/rbac.yaml"
+              }
+            }
+          ]
+        },
+        "container-hardening": {
+          "description": "privileged=true and hostPID=true are unavoidable: setns() into host namespaces and nsenter -t 1 into host PID 1 (systemd) require them to restart the host k0s service. Compensating controls: opt-in only (lands solely on label-gated nodes), readOnlyRootFilesystem=true on the container, seccompProfile RuntimeDefault, and a node-scoped RBAC footprint. The privileged posture and its Trivy suppressions are documented with architectural rationale in .trivyignore and docs/src/security/threat-model.md.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/190/final",
+              "config": {
+                "framework": "NIST SP 800-190",
+                "controls": ["CM-6", "CM-7", "SI-7"],
+                "evidence": "deploy/kata-config-agent/daemonset.yaml, .trivyignore"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "data-asset-kata-config-configmap",
+      "node-type": "data-asset",
+      "name": "Per-Node Kata Config ConfigMap",
+      "description": "Source ConfigMap or Secret on the workload cluster, in spec.kata.namespace (default 5spot-system), holding the Kata containerd drop-in. Platform-/Flux-managed — 5-Spot never creates, writes, or deletes it. The controller resolves it read-only (existence check) and the kata config agent reads it via a kube runtime watcher keyed by the 5spot.finos.org/kata-config-ref Node annotation. If absent, delivery fails fast with a status reason and the Node is not opted in (ADR 0002)."
     }
   ],
 
@@ -252,14 +292,15 @@
     },
     {
       "unique-id": "rel-workload-cluster-contains-node",
-      "description": "When a schedule is active, the physical node becomes a worker in the CAPI-managed workload cluster. The workload cluster also hosts its own API server and, where ScheduledMachine.spec.killIfCommands is set, the 5-Spot reclaim agent as a DaemonSet.",
+      "description": "When a schedule is active, the physical node becomes a worker in the CAPI-managed workload cluster. The workload cluster also hosts its own API server and, where ScheduledMachine.spec.killIfCommands is set, the 5-Spot reclaim agent as a DaemonSet; where ScheduledMachine.spec.kata is set, the 5-Spot kata config agent as a DaemonSet.",
       "relationship-type": {
         "deployed-in": {
           "container": "ecosystem-workload-cluster",
           "nodes": [
             "network-physical-node",
             "service-workload-kubernetes-api",
-            "service-reclaim-agent"
+            "service-reclaim-agent",
+            "service-kata-config-agent"
           ]
         }
       }
@@ -475,6 +516,99 @@
           "nodes": ["data-asset-reclaim-request-annotation"]
         }
       }
+    },
+    {
+      "unique-id": "rel-controller-kata-config-projection",
+      "description": "Controller reads (get) the spec.kata source object on the workload cluster (read-only) and, if present, stamps the 5spot.finos.org/kata-config=enabled opt-in label plus the 5spot.finos.org/kata-config-ref annotation onto the backing Node. If the object or its namespace is absent it clears the opt-in and reports a fail-fast status condition. 5-Spot writes no ConfigMap/Secret and creates no namespace.",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "service-five-spot-controller" },
+          "destination": {
+            "node": "service-workload-kubernetes-api",
+            "interfaces": ["workload-kube-api-https"]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "audit-attribution": {
+          "description": "Kata delivery performs no object writes: the controller reads the source object on the workload cluster (read-only) and patches only the Node (opt-in label + reference annotation). The agent's read uses its workload-cluster ServiceAccount scoped to spec.kata.namespace (default 5spot-system). See ADR 0002.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["AU-2", "AU-10", "AC-6"],
+                "evidence": "src/reconcilers/helpers.rs::reconcile_kata_config_delivery"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-kata-agent-workload-kube-api",
+      "description": "Kata config agent uses the workload cluster API for: a read-only get/watch of the source ConfigMap/Secret named by its Node's 5spot.finos.org/kata-config-ref annotation, and merge-patches on its OWN Node — recording the 5spot.finos.org/kata-config-applied dest annotation on write, and (on tear-down, when the controller has cleared the ref annotation) unlinking the recorded host file then removing the opt-in label to deschedule itself. Scoped to its own Node by name.",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "service-kata-config-agent" },
+          "destination": {
+            "node": "service-workload-kubernetes-api",
+            "interfaces": ["workload-kube-api-https"]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "node-scoped-credentials": {
+          "description": "Agent writes to Node objects only via the kubelet node-scoped token (patch nodes/<self>). ConfigMap reads are gated by a namespaced Role/RoleBinding in 5spot-system granting get,list,watch only. No cluster-wide API access.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["AC-6"],
+                "evidence": "deploy/kata-config-agent/rbac.yaml"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-kata-agent-writes-host",
+      "description": "Kata config agent writes the projected drop-in to the host filesystem at the configured destPath (atomic temp-file + rename under a hostPath /host mount) and restarts the host k0s service via `nsenter -t 1 -m -u -i -n -p -- systemctl restart <restartService>`, which bounces containerd so it reloads the drop-in. This is the only host-filesystem write and host command execution in 5-Spot.",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "service-kata-config-agent" },
+          "destination": { "node": "network-physical-node" }
+        }
+      },
+      "controls": {
+        "host-isolation-boundary": {
+          "description": "Host write + restart require privileged=true and hostPID=true on the agent pod (setns into host namespaces; nsenter to host PID 1 systemd). The escalation is bounded by opt-in label-gating (the agent lands only on nodes the controller has labelled, which only happens when an SM with kata binds that node), readOnlyRootFilesystem on the container, and atomic, idempotent, hash-gated writes that restart at most once per distinct config change. Documented in .trivyignore and docs/src/security/threat-model.md.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/190/final",
+              "config": {
+                "framework": "NIST SP 800-190",
+                "controls": ["AC-6", "CM-7", "SI-7"],
+                "evidence": "deploy/kata-config-agent/daemonset.yaml, src/kata_config_agent.rs, .trivyignore"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-kata-configmap-stored-in-workload-api",
+      "description": "The per-node kata-config ConfigMap is persisted in the workload cluster API server's etcd, namespace 5spot-system.",
+      "relationship-type": {
+        "composed-of": {
+          "container": "service-workload-kubernetes-api",
+          "nodes": ["data-asset-kata-config-configmap"]
+        }
+      }
     }
   ],
 
@@ -626,6 +760,54 @@
           ]
         }
       }
+    },
+    {
+      "unique-id": "flow-kata-config-delivery",
+      "name": "Kata Config Delivery (per-node drop-in + k0s restart)",
+      "description": "A ScheduledMachine with spec.kata set drives delivery of a Kata containerd drop-in onto its backing node and a one-shot host k0s restart so containerd reloads it. The applied-hash annotation (step 4, written BEFORE the restart in step 5) is the load-bearing restart-loop guard: it ensures the agent restarts at most once per distinct config change even though the restart SIGKILLs the agent. Decisions: ADR 0002 (contract + projection) and ADR 0003 (host write + nsenter restart).",
+      "transitions": [
+        {
+          "sequence-number": 1,
+          "relationship-unique-id": "rel-controller-kata-config-projection",
+          "description": "Controller (Active phase, best-effort, workload-cluster-scoped) reads (get) the source Secret/ConfigMap named in spec.kata in spec.kata.namespace (default 5spot-system) on the workload cluster. If present, it stamps 5spot.finos.org/kata-config=enabled plus the 5spot.finos.org/kata-config-ref annotation on the backing Node; if absent, it clears the opt-in and reports a fail-fast status reason (SourceNotFound / TargetNamespaceMissing)."
+        },
+        {
+          "sequence-number": 2,
+          "relationship-unique-id": "rel-kata-agent-workload-kube-api",
+          "description": "The kata config agent DaemonSet (scheduled onto the node by the opt-in label) watches its per-node ConfigMap and reads the projected drop-in content at /etc/5spot/kata-config/<key>.",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 3,
+          "relationship-unique-id": "rel-kata-agent-writes-host",
+          "description": "Agent compares the SHA-256 of the source content against /host<destPath> and the kata-config-applied annotation. On mismatch it atomically writes the drop-in (temp-file + rename, mode 0644, root:root) to the host destPath. If the source key is absent it unlinks the host file (GitOps delete)."
+        },
+        {
+          "sequence-number": 4,
+          "relationship-unique-id": "rel-kata-agent-workload-kube-api",
+          "description": "Agent records 5spot.finos.org/kata-config-applied=<sha256> (or =absent) on its own Node via the kubelet node-scoped token. Load-bearing: written BEFORE the restart so a crash/SIGKILL during restart does not re-trigger on the next loop."
+        },
+        {
+          "sequence-number": 5,
+          "relationship-unique-id": "rel-kata-agent-writes-host",
+          "description": "Agent runs `nsenter -t 1 -m -u -i -n -p -- systemctl restart <restartService>` to restart the host k0s service; containerd reloads the new drop-in. The restart SIGKILLs the agent pod; systemd still completes the D-Bus job. Kubelet restarts the agent; on the next loop hashes match the applied annotation, so it is a no-op. Single-cycle convergence."
+        }
+      ],
+      "controls": {
+        "restart-loop-idempotence": {
+          "description": "The applied-hash annotation written before the restart (step 4) guarantees the agent restarts the host service at most once per distinct config change, despite the restart killing the agent. Drift correction rewrites the file but does not re-restart when the applied hash already matches.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["SI-7", "CM-6", "AU-2"],
+                "evidence": "src/kata_config_agent.rs, docs/src/concepts/kata-config-delivery.md"
+              }
+            }
+          ]
+        }
+      }
     }
   ],
 
@@ -658,5 +840,8 @@
     }
   },
 
-  "adrs": []
+  "adrs": [
+    "../../adr/0002-kata-config-delivery-via-spec-kata.md",
+    "../../adr/0003-in-pod-host-service-restart-via-nsenter.md"
+  ]
 }

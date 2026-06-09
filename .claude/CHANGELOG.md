@@ -9,6 +9,372 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-06-09 18:45] - Tighten kata-config-agent secret RBAC to get-only (KSV-0113)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `deploy/kata-config-agent/rbac.yaml`: narrow the namespaced Role's
+  `configmaps`/`secrets` verbs from `["get", "list", "watch"]` to `["get"]`.
+  The agent resolves a single source object by exact name (the ref carried in
+  its Node's `kata-config-ref` annotation) via a direct GET — it never
+  enumerates and runs no Kubernetes informer (the drift-watch is a node-local
+  file poll), so `list`/`watch` were dead grants. Updated the file's RBAC
+  banner accordingly.
+- `.trivyignore`: add `AVD-KSV-0113` for the now get-only secrets read. The
+  finding still fires on any namespace-scoped secret read; the access is
+  architecturally required because a Kata drop-in source may be a Secret
+  (`spec.kata` → Secret, ADR 0002). Justification mirrors the controller's
+  read-only `KSV-0041` suppression.
+
+### Why
+GitHub Advanced Security / Trivy flagged KSV-0113 (MEDIUM) on the agent Role.
+The grant is read-only — never "manage" — but was broader than needed.
+Tightening to `get`-only caps a stolen token's blast radius to objects the
+attacker can already name, rather than the whole `5spot-system` namespace, then
+the irreducible read-only finding is suppressed with justification.
+
+### Impact
+- [x] Config change only
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+
+## [2026-06-09 18:30] - Suppress KSV-0106 for the privileged kata-config-agent
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.trivyignore`: add `AVD-KSV-0106` to the kata-config-agent block. The rule
+  ("drop all capabilities, only add NET_BIND_SERVICE") is moot under
+  `privileged: true` (KSV-0017, ADR 0003) — a privileged container holds the
+  full capability set regardless of any `capabilities.drop` list, so the drop
+  would be a no-op rather than real hardening. The agent needs no
+  NET_BIND_SERVICE. Justification mirrors the existing KSV-0017 entry.
+
+### Why
+Trivy KSV-0106 (LOW) fired on `deploy/kata-config-agent/daemonset.yaml`. Adding
+`capabilities.drop: [ALL]` would satisfy the scanner but misrepresent the
+container's effective privileges in an audit, so the finding is suppressed with
+a written justification per the `.trivyignore` policy.
+
+### Impact
+- [x] Config change only
+- [x] Documentation only
+
+## [2026-06-09 18:00] - Kata tear-down handshake + privileged agent DaemonSet
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/helpers.rs`: `reconcile_kata_config_delivery` tear-down now
+  clears **only** the reference annotation and leaves the opt-in label in place
+  (so the agent is not descheduled before it can clean up the host file).
+- `src/bin/kata_config_agent.rs`: the agent records the applied `destPath` in a
+  `5spot.finos.org/kata-config-applied` Node annotation on write; on tear-down
+  (ref annotation gone) it unlinks the recorded host file, then removes its own
+  opt-in label to deschedule (`read_node_state` / `record_applied` / `clear_optin`).
+- `src/constants.rs`: add `KATA_CONFIG_APPLIED_ANNOTATION`.
+- `src/reconcilers/helpers_tests.rs`: tear-down tests assert the label is left
+  untouched and only the annotation is cleared.
+- `deploy/kata-config-agent/daemonset.yaml`: `privileged: true` + `hostPID: true`
+  (ADR 0003 — required for the `nsenter` k0s-service restart).
+- `deploy/kata-config-agent/rbac.yaml`: agent ClusterRole `nodes: get` → `get, patch`
+  (records applied annotation + removes its own label).
+- `.trivyignore`: kata-config-agent banner; add `AVD-KSV-0017` (privileged)
+  with architectural justification (other findings share the reclaim agent's
+  already-suppressed global rule IDs).
+
+### Why
+Closes two gaps: (1) the tear-down race where label-removal descheduled the agent
+before it could unlink the host drop-in — now the agent owns its own
+descheduling after cleanup; (2) the DaemonSet must be privileged to `nsenter`
+into host PID 1 and bounce k0s so containerd reloads the drop-in (ADR 0003).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (agent/manifests not yet released)
+
+## [2026-06-09 17:15] - Kata agent: API-read by Node annotation + manifests
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/kata_config_agent.rs`: add `KataRef` + `parse_kata_ref` (parse the
+  `5spot.finos.org/kata-config-ref` Node annotation) and `sync_content`
+  (reconcile the host file from in-memory content); `sync_once` now delegates to
+  `sync_content`.
+- `src/bin/kata_config_agent.rs`: rewrite from mounted-file (`SOURCE_PATH`) to
+  **API-read** — each tick reads the Node annotation, `get`s the referenced
+  workload `ConfigMap`/`Secret`, extracts the key, and syncs to `HOST_ROOT`+`destPath`.
+  No ConfigMap volume.
+- `src/kata_config_agent_tests.rs`: tests for `parse_kata_ref` (full/missing/non-JSON),
+  `sync_content` (write/delete/noop), and `host_path`. 561 lib tests + bin tests pass.
+- `deploy/kata-config-agent/rbac.yaml`: ServiceAccount + namespaced Role
+  (`configmaps`/`secrets` get/list/watch in `5spot-system`) + ClusterRole
+  (`nodes: get` for the own-Node annotation read). No API writes.
+- `deploy/kata-config-agent/daemonset.yaml`: opt-in DaemonSet (nodeSelector
+  `5spot.finos.org/kata-config=enabled`), `NODE_NAME` downward API, hostPath `/`
+  at `/host`, no ConfigMap volume. Phase-3 posture (root, caps dropped, RO rootfs,
+  no privileged/hostPID); Phase 4 adds privileged+hostPID+`nsenter` per ADR 0003.
+
+### Why
+Completes ADR 0002 §3: a cluster-wide DaemonSet can't template a `configMap.name`
+volume per replica, so the agent reads its source object from the workload API
+keyed by the controller-stamped Node annotation.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only — new node-agent manifests + agent binary (not yet released)
+
+## [2026-06-09 16:30] - Implement spec.kata workload-read delivery (ADR 0002)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/crd.rs`: rename `spec.kataConfigRef`/`KataConfigRef` → `spec.kata`/`KataConfig`;
+  add `namespace` field (workload-cluster target, default `5spot-system`) with
+  schema + default; docs reflect workload-cluster resolution.
+- `src/reconcilers/helpers.rs`: replace the per-node ConfigMap projection
+  (`reconcile_kata_config_provision`, `build_kata_config_configmap`,
+  `per_node_kata_configmap_name`, `extract_*`, `resolve_kata_config_content`)
+  with `reconcile_kata_config_delivery` (read-only workload `get_opt` of the
+  source object + namespace probe → Node opt-in label/annotation, or fail-fast
+  `SourceNotFound`/`TargetNamespaceMissing`), `build_kata_config_ref_annotation_patch`,
+  and the `KataDeliveryOutcome` enum. No controller ConfigMap/Secret writes.
+- `src/reconcilers/scheduled_machine.rs`: call site reads on the workload client,
+  logs the fail-fast outcome.
+- `src/constants.rs`: add `KATA_CONFIG_REF_ANNOTATION`; drop the
+  projection-only `KATA_CONFIG_CONFIGMAP_PREFIX` / `KATA_CONFIG_DATA_KEY` /
+  `KATA_CONFIG_FIELD_MANAGER`.
+- `src/crd_tests.rs`, `src/reconcilers/helpers_tests.rs`: migrate tests to the
+  new contract (namespace default/override, annotation builders, mock-API
+  delivery tests for present / source-missing / namespace-missing / disabled);
+  remove obsolete projection tests. 555 lib tests pass.
+- `src/bin/crddoc.rs`: regenerate API docs text for `spec.kata`.
+- `deploy/crds/scheduledmachine.yaml`, `docs/src/reference/api.md`: regenerated.
+- `deploy/deployment/rbac/clusterrole.yaml`: kata is read-only (`configmaps: get`
+  + new `namespaces: get`); the `configmaps` write verbs are re-attributed to the
+  reclaim-agent projection (the honest KSV-0049 owner). `.trivyignore`: re-add
+  `AVD-KSV-0049` attributed to reclaim.
+- `docs/architecture/calm/architecture.json`: kata flow updated to read-not-project;
+  `make calm-validate` clean; diagrams regenerated.
+- `docs/adr/0002-kata-config-delivery-via-spec-kata.md`: §5/Consequences corrected
+  — kata adds no write privilege but does NOT eliminate KSV-0049 (reclaim still
+  holds it).
+
+### Why
+Implements the approved ADR 0002 redesign: 5-Spot resolves the Flux-delivered
+kata object on the workload cluster and opts the Node in (or fails fast with a
+status reason), instead of projecting per-node ConfigMaps. Removes duplication,
+the controller-owned sync burden, and kata's contribution to the ConfigMap write
+grant.
+
+### Impact
+- [x] Breaking change (CRD field `spec.kataConfigRef` → `spec.kata`; unreleased)
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-06-09 15:00] - Redesign kata config delivery (ADR 0002): workload-read, no writes
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0002-kata-config-delivery-via-spec-kata.md`: rewritten (and renamed
+  from `0002-per-node-kata-config-delivery.md`) to the accepted design — replace
+  `spec.kataConfigRef` with `spec.kata`; the controller **resolves** the kata
+  object on the workload cluster (via `kubeconfig-<clusterName>`) and either opts
+  the Node in (label + reference annotation) or **fails fast** with a status
+  reason (`SourceNotFound` / `TargetNamespaceMissing`). 5-Spot performs **no**
+  ConfigMap/Secret writes and **no** namespace creation for kata delivery; the
+  config must pre-exist (Flux-delivered). Target namespace defaults to
+  `5spot-system`, overridable. KSV-0049 eliminated by construction.
+- `docs/adr/0003-in-pod-host-service-restart-via-nsenter.md`: aligned with the
+  above — controller reads (not projects); agent consumes the object via the
+  workload kube API keyed by Node annotation (no ConfigMap volume); `spec.kata`.
+- `docs/adr/README.md`: index reflects the consolidated set (0001–0003).
+- Removed the two intermediate, never-committed-to-main ADRs (the per-node
+  `spec.kataConfigRef` projection and its KSV-0049 ownership/RBAC defense) and
+  reverted this session's per-node documentation (concept page, `.trivyignore`
+  `AVD-KSV-0049`, threat-model rows, `clusterrole.yaml` / `helpers.rs` comments).
+
+### Why
+Review against the platform model (tenants create nothing; Flux delivers config;
+a tenant namespace backs 1+ k0smotron control planes; the agent runs on the
+workload cluster the controller already has kubeconfig access to) rejected the
+per-node ConfigMap projection: wrong granularity, controller-owned duplication, a
+sync burden 5-Spot shouldn't own, and an unnecessary ConfigMap write grant. The
+accepted design makes 5-Spot a read-only resolver + opt-in labeler that fails
+fast when config is absent.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (ADR/design; implementation tracked separately)
+
+## [2026-06-09 01:00] - Kata config delivery Phase 3 — node agent host-sync engine
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/kata_config_agent.rs`: new host-filesystem sync engine — `sha256_hex`,
+  `file_sha256`, `SyncAction` + `decide_action` (pure decision), `atomic_write`
+  (temp + `rename`, mode 0644, parent-dir create, crash-safe), `remove_if_present`,
+  and `sync_once` → `SyncOutcome` (Wrote/Deleted/Unchanged). Drift self-heals.
+- `src/kata_config_agent_tests.rs`: 22 unit tests (SHA-256 vectors, decision
+  matrix, atomic write incl. mode/parent-dirs/no-temp-leak/crash-safety,
+  idempotent unlink, end-to-end sync incl. drift correction + GitOps delete).
+- `src/bin/kata_config_agent.rs`: new `5spot-kata-config-agent` binary — clap
+  CLI (`SOURCE_PATH`/`DEST_PATH`/`NODE_NAME`/`POLL_INTERVAL_SECS`/`--oneshot`)
+  driving a drift-watch poll loop over `sync_once`.
+- `src/lib.rs`: export `kata_config_agent` module.
+- `Cargo.toml`: add `sha2` dependency (already in the graph transitively) and
+  the `5spot-kata-config-agent` bin target.
+
+### Why
+Phase 3 of ADR 0003 — land the drop-in on the host and self-heal drift. The
+applied-hash node annotation and the `nsenter` host k0s-service restart are
+Phase 4; the DaemonSet manifest, agent RBAC, `.trivyignore`, and metrics land
+in Phase 4 with the final (privileged) security posture so they are decided as
+one unit. The drift-watch is a deliberate node-local poll — out-of-band host
+edits raise no Kubernetes event to watch on.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+> New binary only; not yet deployed (no DaemonSet until Phase 4). No controller
+> or CRD behavior change. Verified end-to-end via `--oneshot`: write → no-op →
+> delete, parent dirs created, no temp-file leakage.
+
+---
+
+## [2026-06-09 00:00] - Kata config delivery Phase 2 — controller projection + RBAC
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/constants.rs`: new kata-config constants — `KATA_CONFIG_LABEL`
+  (`5spot.finos.org/kata-config`), `KATA_CONFIG_LABEL_ENABLED`,
+  `KATA_CONFIG_NAMESPACE`, `KATA_CONFIG_CONFIGMAP_PREFIX`,
+  `KATA_CONFIG_DATA_KEY`, `KATA_CONFIG_FIELD_MANAGER`
+  (`5spot-controller-kata-config`).
+- `src/reconcilers/helpers.rs`: kata projection — pure builders
+  `per_node_kata_configmap_name`, `build_kata_config_configmap`,
+  `build_kata_config_label_patch`; content extractors
+  `extract_kata_content_from_configmap` / `_from_secret`; async
+  `resolve_kata_config_content` and `reconcile_kata_config_provision`
+  (resolve source → stamp label → SSA per-node ConfigMap; tear down on
+  `None`, 404-on-delete benign). Mirrors the reclaim-agent projection.
+- `src/reconcilers/helpers_tests.rs`: 18 new tests — pure builders/extractors
+  (happy/missing-key/non-UTF-8) plus five mock-client orchestrator tests
+  (ConfigMap source, Secret source w/ custom key, tear-down, 404-benign,
+  source-404 short-circuit).
+- `src/reconcilers/scheduled_machine.rs`: `provision_kata_config_best_effort`
+  wired into `handle_active_phase` beside reclaim/taints — child-cluster-scoped
+  writes, management-cluster source read, non-fatal.
+- `deploy/deployment/rbac/clusterrole.yaml`: new `configmaps`
+  get/create/patch/delete rule (first such rule); secrets rule comment notes
+  kataConfigRef source reads.
+
+### Why
+Phase 2 of ADR 0002 — project the referenced kata drop-in into a per-node
+ConfigMap on the child cluster and stamp the opt-in label, so the Phase 3 node
+agent can consume it. Implements the `rel-controller-kata-config-projection`
+relationship already modeled in CALM.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+> Apply the updated controller ClusterRole (new `configmaps` rule) before
+> rolling out the controller, or kata-config projection will fail with RBAC
+> Forbidden. Behavior is inert for ScheduledMachines without `kataConfigRef`.
+
+---
+
+## [2026-06-08 01:00] - Kata config delivery Phase 1 — CRD `spec.kataConfigRef`
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/crd.rs`: new `kata_config_ref: Option<KataConfigRef>` field on
+  `ScheduledMachineSpec`; new `KataConfigRef` struct (kind/name/key/destPath/
+  restartService, `deny_unknown_fields`, in-namespace only) and
+  `KataConfigSourceKind` enum (`ConfigMap`/`Secret`); four field schema
+  functions and three default functions.
+- `src/crd_tests.rs`: 12 new TDD tests (serde defaults, round-trip, PascalCase
+  kind, rejects invalid kind / unknown fields, required kind+name, optional in
+  schema, name/destPath/restartService schema bounds). Existing spec literals
+  updated with `kata_config_ref: None`.
+- `src/reconcilers/{scheduled_machine_tests,helpers_tests,child_client_tests}.rs`,
+  `tests/integration_child_kubeconfig.rs`: spec literals updated with
+  `kata_config_ref: None`.
+- `src/bin/crddoc.rs`: documents the new `kataConfigRef` field + example.
+- `deploy/crds/scheduledmachine.yaml`, `docs/src/reference/api.md`: regenerated
+  (`make crds` → `make crddoc`).
+
+### Why
+Phase 1 of ADR 0002 — establish the `spec.kataConfigRef` CRD contract (types,
+schema bounds, serde defaults) test-first before the controller projection
+(Phase 2) and node agent (Phases 3–4). No behavioral/controller code yet.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+> CRD schema change (additive, optional field). Apply the regenerated
+> `deploy/crds/scheduledmachine.yaml` to pick up `kataConfigRef`; existing
+> ScheduledMachines are unaffected (field is optional, omitted when unset).
+
+---
+
+## [2026-06-08 00:00] - ADR + CALM: per-node Kata config delivery (design only)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0002-per-node-kata-config-delivery.md`: new ADR (Proposed) — the
+  `spec.kataConfigRef` contract and controller-side per-node ConfigMap
+  projection, mirroring the reclaim-agent projection; in-namespace source only
+  (like `KubeconfigSecretRef`).
+- `docs/adr/0003-in-pod-host-service-restart-via-nsenter.md`: new ADR (Proposed)
+  — the privileged `5spot-kata-config-agent` DaemonSet that writes the host
+  drop-in and restarts the host k0s service via `nsenter -t 1 … systemctl
+  restart`, with the applied-hash annotation as the restart-loop guard.
+- `docs/adr/README.md`: index updated with ADR-0002 and ADR-0003.
+- `docs/architecture/calm/architecture.json`: modeled the feature — new nodes
+  `service-kata-config-agent` and `data-asset-kata-config-configmap`; new
+  relationships `rel-controller-kata-config-projection`,
+  `rel-kata-agent-workload-kube-api`, `rel-kata-agent-writes-host`,
+  `rel-kata-configmap-stored-in-workload-api`; new flow
+  `flow-kata-config-delivery`; `adrs` linked. `make calm-validate` passes;
+  `make calm-diagrams` renders.
+
+### Why
+ADD requires the decision to be recorded and modeled before code. This entry
+covers the ADR + CALM deliverables only; no Rust, CRD, or manifest changes yet —
+implementation (TDD) is gated on review of these two ADRs.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
 ## [2026-05-31 00:00] - Adopt Architecture Driven Development (ADD) methodology
 
 **Author:** Erick Bourgeois

@@ -40,6 +40,7 @@ mod tests {
             node_taints: vec![],
             kill_if_commands: None,
             kubeconfig_secret_ref: None,
+            kata: None,
         }
     }
 

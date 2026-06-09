@@ -863,6 +863,7 @@ async fn handle_active_phase(
             }
             provision_reclaim_agent_best_effort(&resource, &ctx, &node_ref).await;
             reconcile_node_taints_best_effort(&resource, &ctx, &node_ref).await;
+            provision_kata_config_best_effort(&resource, &ctx, &node_ref).await;
         }
         Ok(None) => {
             debug!(resource = %name, "CAPI Machine not found yet — skipping status enrichment");
@@ -930,6 +931,79 @@ async fn provision_reclaim_agent_best_effort(
             error = %e,
             "Failed to project reclaim-agent label/ConfigMap (non-fatal)"
         );
+    }
+}
+
+/// Best-effort projection of the kata-config opt-in label + per-node
+/// `ConfigMap` based on the current `spec.kataConfigRef`.
+///
+/// Runs from the `Active` phase once a `nodeRef` is known so the projection
+/// follows the Node the machine is bound to. The source Secret/ConfigMap is
+/// read from the **management** cluster (the SM namespace); the label and
+/// per-node ConfigMap are written to the **child** cluster where the
+/// `5spot-kata-config-agent` DaemonSet runs. A failure here must not block the
+/// reconcile — a missing or stale projection degrades kata config delivery but
+/// does not break day-to-day scheduling. Non-fatal errors are logged.
+///
+/// `kataConfigRef` cleared (or never set) runs the tear-down path so a removed
+/// reference strips the label and deletes the ConfigMap (GitOps semantics),
+/// mirroring the reclaim-agent projection.
+async fn provision_kata_config_best_effort(
+    resource: &Arc<ScheduledMachine>,
+    ctx: &Arc<Context>,
+    node_ref: &Option<crate::crd::NodeRef>,
+) {
+    let Some(node_name) = node_ref.as_ref().map(|n| n.name.as_str()) else {
+        return;
+    };
+    if node_name.is_empty() {
+        return;
+    }
+    let kata = resource.spec.kata.as_ref();
+
+    // Resolve the workload-cluster client. The kata source object and the
+    // kata-config agent both live on the workload cluster; the controller reads
+    // the object (read-only) and stamps the Node opt-in there. 5-Spot writes no
+    // ConfigMap/Secret and creates no namespace (ADR 0002).
+    let resolved = match ctx.child_clients.resolve(&ctx.client, resource).await {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(
+                resource = %resource.name_any(),
+                node = %node_name,
+                error = %e,
+                "Failed to resolve workload-cluster client for kata-config delivery (non-fatal)"
+            );
+            return;
+        }
+    };
+    match super::helpers::reconcile_kata_config_delivery(resolved.client(), node_name, kata).await {
+        Ok(outcome) => {
+            use super::helpers::KataDeliveryOutcome::{
+                Disabled, Ready, SourceNotFound, TargetNamespaceMissing,
+            };
+            match outcome {
+                Ready | Disabled => {}
+                SourceNotFound => warn!(
+                    resource = %resource.name_any(),
+                    node = %node_name,
+                    "kata-config source object not found on workload cluster — Node not opted in (fail-fast)"
+                ),
+                TargetNamespaceMissing => warn!(
+                    resource = %resource.name_any(),
+                    node = %node_name,
+                    "kata-config target namespace missing on workload cluster — Node not opted in (fail-fast)"
+                ),
+            }
+        }
+        Err(e) => {
+            warn!(
+                resource = %resource.name_any(),
+                node = %node_name,
+                error = %e,
+                "Failed to reconcile kata-config delivery (non-fatal)"
+            );
+        }
     }
 }
 
