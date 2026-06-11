@@ -1284,10 +1284,6 @@ mod tests {
             "default key must be the containerd drop-in filename"
         );
         assert_eq!(
-            parsed.dest_path, "/etc/k0s/container.d/kata-containers.toml",
-            "default destPath must be the k0s containerd drop-in path"
-        );
-        assert_eq!(
             parsed.restart_service, "k0sworker.service",
             "default restartService must be the k0s worker unit"
         );
@@ -1300,7 +1296,6 @@ mod tests {
             name: "kata-secret".to_string(),
             namespace: "team-alpha".to_string(),
             key: "custom.toml".to_string(),
-            dest_path: "/etc/kata-containers/configuration.toml".to_string(),
             restart_service: "k0scontroller.service".to_string(),
         };
         let serialized = serde_json::to_value(&original).expect("must serialize");
@@ -1313,12 +1308,12 @@ mod tests {
         assert!(s.contains("\"name\""), "expected camelCase `name`: {s}");
         assert!(s.contains("\"key\""), "expected camelCase `key`: {s}");
         assert!(
-            s.contains("\"destPath\""),
-            "expected camelCase `destPath`: {s}"
-        );
-        assert!(
             s.contains("\"restartService\""),
             "expected camelCase `restartService`: {s}"
+        );
+        assert!(
+            !s.contains("destPath"),
+            "destPath must not serialize — removed per ADR 0005: {s}"
         );
     }
 
@@ -1401,7 +1396,6 @@ mod tests {
             name: "kata-drop-in".to_string(),
             namespace: "5spot-system".to_string(),
             key: "kata-containers.toml".to_string(),
-            dest_path: "/etc/k0s/container.d/kata-containers.toml".to_string(),
             restart_service: "k0sworker.service".to_string(),
         });
         let s = serde_json::to_string(&spec).expect("must serialize");
@@ -1447,24 +1441,33 @@ mod tests {
     }
 
     #[test]
-    fn test_kata_dest_path_schema_requires_absolute() {
+    fn test_kata_schema_has_no_dest_path_property() {
+        // ADR 0005: destPath is removed from the contract entirely — the host
+        // path is the compile-time constant KATA_CONFIG_DEST_PATH, so no
+        // CR author can steer where the privileged agent writes.
         let schema =
             serde_json::to_value(schemars::schema_for!(KataConfig)).expect("schema serializes");
-        let dest = schema
-            .pointer("/properties/destPath")
-            .or_else(|| schema.pointer("/definitions/KataConfig/properties/destPath"))
-            .expect("KataConfig.destPath property must exist in schema");
-        let pattern = dest
-            .get("pattern")
-            .and_then(|v| v.as_str())
-            .expect("destPath must constrain to an absolute path via pattern");
         assert!(
-            pattern.starts_with("^/"),
-            "destPath pattern must anchor to a leading slash (absolute path): {pattern}"
+            schema.pointer("/properties/destPath").is_none()
+                && schema
+                    .pointer("/definitions/KataConfig/properties/destPath")
+                    .is_none(),
+            "destPath must not exist in the KataConfig schema (ADR 0005)"
         );
+    }
+
+    #[test]
+    fn test_kata_rejects_dest_path_field() {
+        // deny_unknown_fields makes a lingering destPath a hard admission
+        // error rather than a silently-ignored no-op — pins the removal.
+        let json = serde_json::json!({
+            "kind": "ConfigMap",
+            "name": "kata-drop-in",
+            "destPath": "/etc/k0s/containerd.d/kata.toml"
+        });
         assert!(
-            dest.get("maxLength").is_some(),
-            "destPath must have a maxLength bound: {dest}"
+            serde_json::from_value::<KataConfig>(json).is_err(),
+            "destPath must be rejected as an unknown field (ADR 0005)"
         );
     }
 

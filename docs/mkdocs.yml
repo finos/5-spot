@@ -213,6 +213,10 @@ nav:
       - Machine Lifecycle: concepts/machine-lifecycle.md
       - Schedule Configuration: concepts/schedules.md
       - Emergency Reclaim (Kill Switch): concepts/emergency-reclaim.md
+      - Kata Config Delivery: concepts/kata-config-delivery.md
+
+  - Guides:
+      - Kata Config Drop-In: guides/kata-config.md
 
   - Operations:
       - Configuration: operations/configuration.md

@@ -272,7 +272,7 @@ async fn main() -> Result<()> {
     tokio::spawn(async move {
         start_health_server(cli.health_port, health_state_clone).await;
     });
-    tokio::spawn(run_metrics_server(cli.metrics_port));
+    tokio::spawn(five_spot::metrics::serve_metrics(cli.metrics_port));
 
     // Mark controller as ready
     health_state.set_ready(true);
@@ -400,36 +400,6 @@ async fn check_crd_installed(api: &Api<ScheduledMachine>) -> Result<()> {
             )
         })?;
     Ok(())
-}
-
-/// Run the metrics server on the specified port
-async fn run_metrics_server(port: u16) {
-    use prometheus::{Encoder, TextEncoder};
-    use warp::Filter;
-
-    info!(port = port, "Starting metrics server");
-
-    let metrics = warp::path("metrics").map(|| {
-        let encoder = TextEncoder::new();
-        let metric_families = prometheus::gather();
-        let mut buffer = vec![];
-
-        match encoder.encode(&metric_families, &mut buffer) {
-            Ok(()) => warp::reply::with_status(
-                String::from_utf8_lossy(&buffer).to_string(),
-                warp::http::StatusCode::OK,
-            ),
-            Err(e) => {
-                error!(error = %e, "Failed to encode metrics");
-                warp::reply::with_status(
-                    format!("# Error encoding metrics: {e}\n"),
-                    warp::http::StatusCode::INTERNAL_SERVER_ERROR,
-                )
-            }
-        }
-    });
-
-    warp::serve(metrics.boxed()).run(([0, 0, 0, 0], port)).await;
 }
 
 #[cfg(test)]

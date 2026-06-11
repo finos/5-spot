@@ -126,15 +126,15 @@ pub const RECLAIM_AGENT_CONFIGMAP_PREFIX: &str = "reclaim-agent-";
 pub const RECLAIM_CONFIG_DATA_KEY: &str = "reclaim.toml";
 
 // ============================================================================
-// Kata Config Delivery — per-node ConfigMap projection + opt-in label (ADR 0002)
+// Kata Config Delivery — Node opt-in label + reference annotation (ADR 0002)
 // ============================================================================
 //
-// When a `ScheduledMachine`'s `spec.kataConfigRef` is set, the controller
-// resolves the referenced Secret/ConfigMap content and mirrors it onto the
-// child cluster as a per-node `ConfigMap`, plus stamps an opt-in label on the
-// backing Node so the `5spot-kata-config-agent` DaemonSet lands. This is a
-// separate opt-in from emergency reclaim and from kata-deploy's
-// `katacontainers.io/kata-runtime` label. See ADR 0002 / ADR 0003.
+// When a `ScheduledMachine`'s `spec.kata` is set, the controller verifies the
+// referenced Secret/ConfigMap exists on the workload cluster (read-only) and
+// stamps an opt-in label plus a reference annotation on the backing Node so
+// the `5spot-kata-config-agent` DaemonSet lands and reads the source via the
+// kube API itself. This is a separate opt-in from emergency reclaim and from
+// kata-deploy's `katacontainers.io/kata-runtime` label. See ADR 0002 / 0003.
 
 /// Node label key used by the kata-config-agent `DaemonSet`'s `nodeSelector`.
 /// The controller stamps this on every Node backing a `ScheduledMachine` whose
@@ -155,11 +155,12 @@ pub const KATA_CONFIG_LABEL_ENABLED: &str = "enabled";
 pub const KATA_CONFIG_REF_ANNOTATION: &str = "5spot.finos.org/kata-config-ref";
 
 /// Annotation the **agent** records on its own Node after writing the host
-/// drop-in, carrying the applied absolute `destPath`. It is the agent's only
-/// durable record of what it wrote, so that on tear-down (the controller clears
-/// [`KATA_CONFIG_REF_ANNOTATION`] but keeps the opt-in label) the still-scheduled
-/// agent can unlink the right host file before removing its own label to
-/// deschedule. See ADR 0002 / ADR 0003.
+/// drop-in, carrying the **bare applied content hash** (SHA-256 hex, or the
+/// `absent` marker after tear-down). Written BEFORE the host k0s restart so
+/// the SIGKILL the restart delivers cannot re-trigger next tick (the
+/// restart-loop guard, ADR 0003). Deliberately carries no path — the drop-in
+/// location is the fixed [`KATA_CONFIG_DEST_PATH`] (ADR 0005), so a forged
+/// annotation cannot steer a root unlink.
 pub const KATA_CONFIG_APPLIED_ANNOTATION: &str = "5spot.finos.org/kata-config-applied";
 
 /// Default workload-cluster namespace the agent reads the kata source object
@@ -167,6 +168,19 @@ pub const KATA_CONFIG_APPLIED_ANNOTATION: &str = "5spot.finos.org/kata-config-ap
 /// `DaemonSet` runs. Same `5spot-system` namespace as the reclaim agent
 /// ([`RECLAIM_AGENT_NAMESPACE`]).
 pub const KATA_CONFIG_NAMESPACE: &str = "5spot-system";
+
+/// Host directory base the kata drop-in lives under (ADR 0005). The agent's
+/// `confine_dest_path` keeps every write/unlink inside it as defense-in-depth.
+/// Trailing slash is load-bearing: it makes the prefix check slash-aware so
+/// `/etc/k0s.evil/…` does not pass.
+pub const KATA_CONFIG_DEST_BASE: &str = "/etc/k0s/";
+
+/// The **fixed** host path the kata drop-in is written to (ADR 0005). k0s
+/// imports containerd drop-ins from `/etc/k0s/containerd.d/*.toml`
+/// (<https://docs.k0sproject.io/stable/runtime/>). Deliberately NOT
+/// user-configurable — no CRD field, no annotation field carries a host path,
+/// which is what closes the arbitrary-host-write vector through `spec.kata`.
+pub const KATA_CONFIG_DEST_PATH: &str = "/etc/k0s/containerd.d/kata.toml";
 
 /// Kubernetes Event reason emitted on the `ScheduledMachine` when the
 /// emergency reclaim path fires. Operators see this in

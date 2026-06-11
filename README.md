@@ -55,6 +55,7 @@ A cloud-native Kubernetes controller for managing time-based machine scheduling 
 - 🎯 **Priority-based** - Resource distribution across controller instances
 - 🚨 **Kill switch** - Emergency immediate removal capability
 - 🏷️ **User-defined Node taints** - Declare taints in `spec.nodeTaints`; the controller applies them once the Node is Ready, tracks ownership, and reconciles drift
+- 📦 **Kata config delivery** - Declare a containerd drop-in source in `spec.kata`; an opt-in node agent writes it to the host and restarts the k0s service once per change ([docs](docs/src/concepts/kata-config-delivery.md))
 - 📊 **Multi-instance** - Horizontal scaling with consistent hashing
 - 🔍 **Full observability** - Prometheus metrics and health checks
 

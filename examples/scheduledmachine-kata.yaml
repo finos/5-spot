@@ -1,0 +1,64 @@
+# Example ScheduledMachine with Kata config delivery (spec.kata)
+#
+# When this machine's node reaches Ready, the controller opts the Node in to
+# the 5spot-kata-config-agent DaemonSet, which writes the referenced drop-in
+# to /etc/k0s/containerd.d/kata.toml on the host and restarts
+# k0sworker.service once so containerd reloads it (ADR 0002 / ADR 0003).
+#
+# The source ConfigMap must pre-exist ON THE WORKLOAD CLUSTER (typically
+# Flux-delivered) — 5-Spot never creates it. For example:
+#
+#   apiVersion: v1
+#   kind: ConfigMap
+#   metadata:
+#     name: kata-drop-in
+#     namespace: 5spot-system
+#   data:
+#     kata-containers.toml: |
+#       [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.kata]
+#         runtime_type = "io.containerd.kata.v2"
+
+apiVersion: 5spot.finos.org/v1alpha1
+kind: ScheduledMachine
+metadata:
+  name: kata-business-hours-worker
+  namespace: default
+spec:
+  clusterName: my-k0s-cluster
+
+  schedule:
+    daysOfWeek:
+      - mon-fri
+    hoursOfDay:
+      - "9-17"
+    timezone: America/New_York
+    enabled: true
+
+  # Kata containerd drop-in delivery. Only `kind` and `name` are required;
+  # the remaining fields show their defaults. The host destination is NOT
+  # configurable — the agent always writes /etc/k0s/containerd.d/kata.toml
+  # (ADR 0005).
+  kata:
+    kind: ConfigMap
+    name: kata-drop-in
+    namespace: 5spot-system
+    key: kata-containers.toml
+    restartService: k0sworker.service
+
+  bootstrapSpec:
+    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    kind: K0sWorkerConfig
+    spec:
+      version: v1.30.0+k0s.0
+
+  infrastructureSpec:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: RemoteMachine
+    spec:
+      address: 192.168.1.100
+      port: 22
+      user: admin
+
+  priority: 50
+  gracefulShutdownTimeout: 5m
+  nodeDrainTimeout: 5m

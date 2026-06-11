@@ -120,6 +120,7 @@ Optional configuration applied to the created CAPI Machine.
 | `killSwitch` | `bool` | No | `false` | Operator-driven kill switch. Immediately remove machine if `true`; reset to `false` to return to scheduled service. |
 | `killIfCommands` | `[]string` | No | `null` | Node-side process-match kill switch. When non-empty, the reclaim agent DaemonSet is installed on the backing node and watches `/proc` for any process whose `comm` or `cmdline` matches an entry. First match triggers `EmergencyRemove` + auto-disables the schedule. See [Emergency Reclaim](./emergency-reclaim.md). |
 | `nodeTaints` | `[]NodeTaint` | No | `[]` | User-defined taints applied to the Kubernetes Node once it is Ready. The controller owns and reconciles only the taints it applied; admin-added taints on the same Node are left untouched. See [Node Taints](#node-taints) below. |
+| `kata` | `KataConfig` | No | `null` | Kata containerd drop-in delivery. References a `ConfigMap`/`Secret` **on the workload cluster** whose content the node-side agent writes to the **fixed** host path `/etc/k0s/containerd.d/kata.toml` (not configurable — ADR 0005), then restarts `restartService` (default `k0sworker.service`) once per distinct content change so containerd reloads it. See [Kata Config Delivery](./kata-config-delivery.md). |
 
 ## Node Taints
 

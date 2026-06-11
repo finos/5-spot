@@ -90,6 +90,24 @@ All metrics use the `fivespot_` prefix. The full list lives in
 label lets dashboards compute success-only P95 and timeout-rate
 side by side without mixing them in the same query.
 
+#### Kata config delivery (node agent)
+
+Exposed by each `5spot-kata-config-agent` DaemonSet pod on its own
+`:8080/metrics` (the pod template carries `prometheus.io/scrape`
+annotations), **not** by the controller:
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `fivespot_kata_config_writes_total` | Counter | — | Kata drop-in files written to the host (rollouts **and** drift corrections) |
+| `fivespot_kata_config_deletes_total` | Counter | — | Drop-in files removed from the host (GitOps tear-down) |
+| `fivespot_kata_config_drift_corrected_total` | Counter | — | Out-of-band edits rewritten **without** a service restart. Sustained non-zero rate ⇒ something on the node keeps editing the file |
+| `fivespot_kata_config_restarts_total` | Counter | — | Host k0s-service restarts issued via `nsenter`. Expect exactly one per distinct config change per node; more ⇒ restart loop |
+| `fivespot_kata_config_sync_errors_total` | Counter | — | Failed reconcile ticks (API fetch, host I/O, annotation PATCH, restart) |
+| `fivespot_kata_config_last_sync_timestamp_seconds` | Gauge | — | Unix time of the last successful reconcile tick. Alert when `time() - this` exceeds a few poll intervals (default poll: 30 s) |
+
+See the [Kata config delivery concept](../concepts/kata-config-delivery.md)
+for the architecture and the restart-loop guard these metrics observe.
+
 ### Labels
 
 Common labels across metrics:

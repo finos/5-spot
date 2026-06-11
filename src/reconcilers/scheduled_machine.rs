@@ -934,20 +934,20 @@ async fn provision_reclaim_agent_best_effort(
     }
 }
 
-/// Best-effort projection of the kata-config opt-in label + per-node
-/// `ConfigMap` based on the current `spec.kataConfigRef`.
+/// Best-effort reconcile of the kata-config Node opt-in (label + reference
+/// annotation) based on the current `spec.kata`.
 ///
-/// Runs from the `Active` phase once a `nodeRef` is known so the projection
+/// Runs from the `Active` phase once a `nodeRef` is known so the opt-in
 /// follows the Node the machine is bound to. The source Secret/ConfigMap is
-/// read from the **management** cluster (the SM namespace); the label and
-/// per-node ConfigMap are written to the **child** cluster where the
-/// `5spot-kata-config-agent` DaemonSet runs. A failure here must not block the
-/// reconcile — a missing or stale projection degrades kata config delivery but
-/// does not break day-to-day scheduling. Non-fatal errors are logged.
+/// resolved (read-only existence check) on the **workload** cluster — the
+/// same cluster where the label/annotation are stamped and where the
+/// `5spot-kata-config-agent` DaemonSet runs. A failure here must not block
+/// the reconcile — a missing or stale opt-in degrades kata config delivery
+/// but does not break day-to-day scheduling. Non-fatal errors are logged.
 ///
-/// `kataConfigRef` cleared (or never set) runs the tear-down path so a removed
-/// reference strips the label and deletes the ConfigMap (GitOps semantics),
-/// mirroring the reclaim-agent projection.
+/// `spec.kata` cleared (or never set) runs the tear-down path so a removed
+/// reference clears the annotation; the agent self-cleans the host file and
+/// removes the opt-in label itself (GitOps semantics, ADR 0002).
 async fn provision_kata_config_best_effort(
     resource: &Arc<ScheduledMachine>,
     ctx: &Arc<Context>,

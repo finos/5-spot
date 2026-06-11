@@ -2924,7 +2924,6 @@ mod tests {
             name: "kata-drop-in".to_string(),
             namespace: "5spot-system".to_string(),
             key: "kata-containers.toml".to_string(),
-            dest_path: "/etc/k0s/container.d/kata-containers.toml".to_string(),
             restart_service: "k0sworker.service".to_string(),
         }
     }
@@ -2967,11 +2966,11 @@ mod tests {
         assert_eq!(parsed["kind"], "ConfigMap");
         assert_eq!(parsed["name"], "kata-drop-in");
         assert_eq!(parsed["key"], "kata-containers.toml");
-        assert_eq!(
-            parsed["destPath"],
-            "/etc/k0s/container.d/kata-containers.toml"
-        );
         assert_eq!(parsed["restartService"], "k0sworker.service");
+        assert!(
+            parsed.get("destPath").is_none(),
+            "the ref annotation must carry NO host path (ADR 0005): {parsed}"
+        );
     }
 
     #[test]

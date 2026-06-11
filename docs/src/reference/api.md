@@ -59,7 +59,7 @@ spec:
     - key: workload
       value: batch
       effect: NoSchedule
-  kataConfigRef:
+  kata:
     kind: ConfigMap
     name: kata-drop-in
 ```
@@ -199,7 +199,8 @@ owns. When set, the controller resolves the object on the workload cluster (via 
 `kubeconfig-<clusterName>` Secret) in `kata.namespace` (default `5spot-system`). If
 present, it stamps the `5spot.finos.org/kata-config=enabled` opt-in label plus a
 reference annotation on the Node; the `5spot-kata-config-agent` DaemonSet reads the
-object from the workload API, writes the drop-in to `destPath`, and restarts
+object from the workload API, writes the drop-in to the fixed host path
+`/etc/k0s/containerd.d/kata.toml` (not configurable — ADR 0005), and restarts
 `restartService` so containerd reloads it. If the object (or its namespace) is
 absent, the controller does NOT label the Node and reports a fail-fast status
 condition — 5-Spot never creates the object (it must pre-exist, Flux-delivered).
@@ -215,8 +216,6 @@ This is config delivery, not a Kata install — `/opt/kata` binaries remain
   namespace the agent reads the object from. Override for per-tenant placement.
 - **key** (optional, string, default: `kata-containers.toml`): `data` key whose
   value is the drop-in content.
-- **destPath** (optional, string, default:
-  `/etc/k0s/container.d/kata-containers.toml`): absolute host path written to.
 - **restartService** (optional, string, default: `k0sworker.service`): systemd
   unit restarted via `nsenter` so containerd reloads the drop-in. Override with
   `k0scontroller.service` on single-node layouts.

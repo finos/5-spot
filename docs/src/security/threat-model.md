@@ -288,6 +288,7 @@ in `5spot-system`.
 | ID | Threat | Likelihood | Impact | Status |
 |---|---|---|---|---|
 | E4 | `hostPID: true` lets the agent see all host PIDs — could be abused to extract data from another container's `/proc/<pid>/environ` if the agent is compromised | Low | Medium | **Accepted** — `hostPID` is architecturally required (the agent's job is to read host process state). Mitigated by: opt-in `nodeSelector` (only on nodes with `killIfCommands`), single-purpose binary with no shell, `readOnlyRootFilesystem: true`, drop ALL caps + add only `NET_ADMIN`, `seccompProfile: RuntimeDefault`. Trivy / Semgrep suppressions in `.trivyignore` document the architectural-necessity reasoning. |
+| E5 | **Abuse of the namespace-wide pod-security exemption** — the privileged agents require `5spot-system` to be exempted from the cluster's PSA/Gatekeeper/Kyverno baseline; any principal with `create pods` in the namespace (compromised CI, typo'd Deployment) could then run privileged / mount the host root with no admission check | Medium | Critical | **Mitigated (2026-06-10, ADR 0004)** — `5spot-agent-pod-security` deny-by-default `ValidatingAdmissionPolicy` re-imposes the baseline inside `5spot-system`: risky attributes pinned to the two agent ServiceAccounts at their exact documented posture (hostPath clamped per agent, caps clamped to `NET_ADMIN`, `privileged` to the kata agent only), compensating controls mandatory, `hostNetwork`/`hostIPC` and risky ephemeral containers denied outright, `failurePolicy: Fail`. Residual: a principal who can both create pods *and* use an agent SA wears the exception — clamped to the agents' documented posture; SA RBAC is the control. |
 
 ---
 
@@ -313,6 +314,7 @@ in `5spot-system`.
 | Per-pod `ServiceAccount` with `nodes: get,patch` only (no `list/watch`) | `deploy/node-agent/rbac.yaml` | T12 — agent enumerates other Nodes |
 | Opt-in `5spot.finos.org/reclaim-agent: enabled` nodeSelector | `deploy/node-agent/daemonset.yaml` | T13 — `CAP_NET_ADMIN` scope-bounding |
 | Loop-protection (`RapidReReclaim` warning + counter) | `src/loop_protection.rs` + `src/reconcilers/helpers.rs::handle_emergency_remove` | D8 — re-enable loop |
+| Agent pod-security exception boundary (`5spot-agent-pod-security` VAP, deny-by-default in `5spot-system`) | `deploy/admission/agent-pod-security-policy.yaml` + binding (ADR 0004) | E5 — abuse of the namespace-wide PSA/OPA/Kyverno exemption the privileged agents require |
 
 ### Deployment-Layer Controls (operator responsibility)
 

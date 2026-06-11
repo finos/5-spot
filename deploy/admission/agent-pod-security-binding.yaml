@@ -1,0 +1,35 @@
+# ValidatingAdmissionPolicyBinding — activates 5spot-agent-pod-security,
+# scoped ONLY to the 5spot-system namespace on the WORKLOAD cluster (ADR 0004).
+#
+# The namespaceSelector is the scoping mechanism: the policy's CEL assumes it
+# is evaluating pods inside the namespace the baseline engines (PSA /
+# Gatekeeper / Kyverno) have exempted for the 5-Spot node agents. Binding it
+# wider would deny ordinary workloads elsewhere; binding it narrower (e.g. an
+# objectSelector on agent labels) would defeat the purpose — the policy exists
+# precisely to catch the pods that are NOT the agents.
+#
+# Apply after the ValidatingAdmissionPolicy (against the workload cluster
+# kubeconfig):
+#   kubectl apply -f deploy/admission/agent-pod-security-policy.yaml
+#   kubectl apply -f deploy/admission/agent-pod-security-binding.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: 5spot-agent-pod-security-binding
+  labels:
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: admission
+    app.kubernetes.io/part-of: child-cluster
+    app.kubernetes.io/managed-by: 5spot-controller
+spec:
+  policyName: 5spot-agent-pod-security
+
+  # Deny rejects the request with HTTP 422. During initial rollout you can
+  # switch to [Deny, Audit] (or just [Audit]) to observe matches in the audit
+  # log before enforcing.
+  validationActions: [Deny]
+
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: 5spot-system

@@ -128,3 +128,95 @@ fn test_record_rapid_re_reclaim_increments_per_sm_counter() {
         "RAPID_RE_RECLAIMS_TOTAL must increment by one: before={before} after={after}"
     );
 }
+
+/// The kata-config counters are label-less process-globals, so the tests below
+/// serialize on this lock — without it, concurrent kata tests increment the
+/// same counters between another test's before/after reads.
+static KATA_METRICS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[test]
+fn test_record_kata_config_write_increments_writes_and_stamps_last_sync() {
+    let _guard = KATA_METRICS_LOCK.lock().unwrap();
+    let writes_before = KATA_CONFIG_WRITES_TOTAL.get();
+    let drift_before = KATA_CONFIG_DRIFT_CORRECTED_TOTAL.get();
+    record_kata_config_write(false);
+    assert!(
+        (KATA_CONFIG_WRITES_TOTAL.get() - writes_before - 1.0).abs() < f64::EPSILON,
+        "KATA_CONFIG_WRITES_TOTAL must increment by one"
+    );
+    assert!(
+        (KATA_CONFIG_DRIFT_CORRECTED_TOTAL.get() - drift_before).abs() < f64::EPSILON,
+        "a non-drift write must not touch the drift counter"
+    );
+    assert!(
+        KATA_CONFIG_LAST_SYNC_TIMESTAMP_SECONDS.get() > 0.0,
+        "last-sync gauge must be stamped with a wall-clock timestamp"
+    );
+}
+
+#[test]
+fn test_record_kata_config_write_drift_corrected_increments_both_counters() {
+    let _guard = KATA_METRICS_LOCK.lock().unwrap();
+    let writes_before = KATA_CONFIG_WRITES_TOTAL.get();
+    let drift_before = KATA_CONFIG_DRIFT_CORRECTED_TOTAL.get();
+    record_kata_config_write(true);
+    assert!(
+        (KATA_CONFIG_WRITES_TOTAL.get() - writes_before - 1.0).abs() < f64::EPSILON,
+        "a drift-correcting write still counts as a write"
+    );
+    assert!(
+        (KATA_CONFIG_DRIFT_CORRECTED_TOTAL.get() - drift_before - 1.0).abs() < f64::EPSILON,
+        "KATA_CONFIG_DRIFT_CORRECTED_TOTAL must increment by one"
+    );
+}
+
+#[test]
+fn test_record_kata_config_delete_increments_deletes_and_stamps_last_sync() {
+    let _guard = KATA_METRICS_LOCK.lock().unwrap();
+    let before = KATA_CONFIG_DELETES_TOTAL.get();
+    record_kata_config_delete();
+    assert!(
+        (KATA_CONFIG_DELETES_TOTAL.get() - before - 1.0).abs() < f64::EPSILON,
+        "KATA_CONFIG_DELETES_TOTAL must increment by one"
+    );
+    assert!(KATA_CONFIG_LAST_SYNC_TIMESTAMP_SECONDS.get() > 0.0);
+}
+
+#[test]
+fn test_record_kata_config_sync_unchanged_only_stamps_last_sync() {
+    let _guard = KATA_METRICS_LOCK.lock().unwrap();
+    let writes_before = KATA_CONFIG_WRITES_TOTAL.get();
+    let deletes_before = KATA_CONFIG_DELETES_TOTAL.get();
+    record_kata_config_sync_unchanged();
+    assert!(
+        (KATA_CONFIG_WRITES_TOTAL.get() - writes_before).abs() < f64::EPSILON,
+        "an unchanged tick must not count as a write"
+    );
+    assert!(
+        (KATA_CONFIG_DELETES_TOTAL.get() - deletes_before).abs() < f64::EPSILON,
+        "an unchanged tick must not count as a delete"
+    );
+    assert!(KATA_CONFIG_LAST_SYNC_TIMESTAMP_SECONDS.get() > 0.0);
+}
+
+#[test]
+fn test_record_kata_config_restart_increments_counter() {
+    let _guard = KATA_METRICS_LOCK.lock().unwrap();
+    let before = KATA_CONFIG_RESTARTS_TOTAL.get();
+    record_kata_config_restart();
+    assert!(
+        (KATA_CONFIG_RESTARTS_TOTAL.get() - before - 1.0).abs() < f64::EPSILON,
+        "KATA_CONFIG_RESTARTS_TOTAL must increment by one"
+    );
+}
+
+#[test]
+fn test_record_kata_config_sync_error_increments_counter() {
+    let _guard = KATA_METRICS_LOCK.lock().unwrap();
+    let before = KATA_CONFIG_SYNC_ERRORS_TOTAL.get();
+    record_kata_config_sync_error();
+    assert!(
+        (KATA_CONFIG_SYNC_ERRORS_TOTAL.get() - before - 1.0).abs() < f64::EPSILON,
+        "KATA_CONFIG_SYNC_ERRORS_TOTAL must increment by one"
+    );
+}

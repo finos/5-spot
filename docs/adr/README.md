@@ -39,3 +39,5 @@ refactors) need neither. When unsure, **write the ADR.**
 | [0001](./0001-adopt-architecture-driven-development.md) | Adopt Architecture Driven Development (ADD) | Accepted |
 | [0002](./0002-kata-config-delivery-via-spec-kata.md) | Kata config delivery via `spec.kata` (workload-cluster resolution, fail-fast on absence) | Accepted |
 | [0003](./0003-in-pod-host-service-restart-via-nsenter.md) | In-pod host k0s-service restart via `nsenter` (privileged Kata-config agent) | Accepted |
+| [0004](./0004-agent-pod-security-exception-boundary-vap.md) | Agent pod-security exception boundary via deny-by-default ValidatingAdmissionPolicy | Accepted |
+| [0005](./0005-remove-kata-destpath-fixed-host-path.md) | Remove `spec.kata.destPath`; fix the host path to `/etc/k0s/containerd.d/kata.toml` | Accepted |

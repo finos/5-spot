@@ -118,8 +118,8 @@ mod tests {
     #[test]
     fn test_atomic_write_creates_parent_dirs() {
         let dir = tempfile::tempdir().unwrap();
-        // Mimic /etc/k0s/container.d/ not existing yet.
-        let dest = dir.path().join("etc/k0s/container.d/kata-containers.toml");
+        // Mimic /etc/k0s/containerd.d/ not existing yet.
+        let dest = dir.path().join("etc/k0s/containerd.d/kata.toml");
         atomic_write(&dest, b"deep").unwrap();
         assert_eq!(fs::read(&dest).unwrap(), b"deep");
     }
@@ -240,7 +240,6 @@ mod tests {
             "kind": "ConfigMap",
             "name": "kata-drop-in",
             "key": "kata-containers.toml",
-            "destPath": "/etc/k0s/container.d/kata-containers.toml",
             "restartService": "k0sworker.service"
         }"#;
         let r = parse_kata_ref(json).expect("must parse the controller-stamped annotation");
@@ -248,18 +247,35 @@ mod tests {
         assert_eq!(r.kind, "ConfigMap");
         assert_eq!(r.name, "kata-drop-in");
         assert_eq!(r.key, "kata-containers.toml");
-        assert_eq!(r.dest_path, "/etc/k0s/container.d/kata-containers.toml");
         assert_eq!(r.restart_service, "k0sworker.service");
     }
 
     #[test]
     fn test_parse_kata_ref_rejects_missing_field() {
-        // destPath omitted → hard error (the camelCase rename is required).
-        let json = r#"{"namespace":"ns","kind":"Secret","name":"n","key":"k","restartService":"s.service"}"#;
+        // restartService omitted → hard error (no silent defaults in the
+        // annotation contract).
+        let json = r#"{"namespace":"ns","kind":"Secret","name":"n","key":"k"}"#;
         assert!(
             parse_kata_ref(json).is_err(),
-            "a missing destPath must be a parse error, not a silent default"
+            "a missing restartService must be a parse error, not a silent default"
         );
+    }
+
+    #[test]
+    fn test_parse_kata_ref_tolerates_legacy_dest_path_field() {
+        // Annotations stamped before ADR 0005 carried a destPath field; the
+        // agent must parse them (ignoring the path — the location is fixed)
+        // rather than wedging on every pre-upgrade node.
+        let json = r#"{
+            "namespace": "ns",
+            "kind": "ConfigMap",
+            "name": "n",
+            "key": "k",
+            "destPath": "/etc/k0s/containerd.d/kata.toml",
+            "restartService": "k0sworker.service"
+        }"#;
+        let r = parse_kata_ref(json).expect("legacy destPath field must be ignored, not fatal");
+        assert_eq!(r.name, "n");
     }
 
     #[test]
@@ -297,5 +313,269 @@ mod tests {
         fs::write(&dest, b"same").unwrap();
         let outcome = sync_content(Some(b"same"), &dest).unwrap();
         assert!(matches!(outcome, SyncOutcome::Unchanged(Some(_))));
+    }
+
+    // ========================================================================
+    // Phase 4 — restart orchestration (ADR 0003)
+    // ========================================================================
+
+    // ---- nsenter_restart_argv: the host-service restart command line ----
+
+    #[test]
+    fn test_nsenter_restart_argv_exact_command_line() {
+        // Pin the exact argv kata-deploy uses: enter host PID 1's mount/uts/ipc/
+        // net/pid namespaces, then `systemctl restart <service>`.
+        assert_eq!(
+            nsenter_restart_argv("k0sworker.service"),
+            vec![
+                "nsenter",
+                "-t",
+                "1",
+                "-m",
+                "-u",
+                "-i",
+                "-n",
+                "-p",
+                "--",
+                "systemctl",
+                "restart",
+                "k0sworker.service",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_nsenter_restart_argv_threads_service_name() {
+        let argv = nsenter_restart_argv("k0scontroller.service");
+        assert_eq!(argv.last().unwrap(), "k0scontroller.service");
+    }
+
+    // ---- intended_hash_for: outcome → the hash we record/guard on ----
+
+    #[test]
+    fn test_intended_hash_for_wrote_carries_content_hash() {
+        let h = sha256_hex(b"x");
+        assert_eq!(intended_hash_for(&SyncOutcome::Wrote(h.clone())), h);
+    }
+
+    #[test]
+    fn test_intended_hash_for_unchanged_present_carries_hash() {
+        let h = sha256_hex(b"y");
+        assert_eq!(
+            intended_hash_for(&SyncOutcome::Unchanged(Some(h.clone()))),
+            h
+        );
+    }
+
+    #[test]
+    fn test_intended_hash_for_deleted_and_empty_are_absent() {
+        assert_eq!(intended_hash_for(&SyncOutcome::Deleted), ABSENT_HASH_MARKER);
+        assert_eq!(
+            intended_hash_for(&SyncOutcome::Unchanged(None)),
+            ABSENT_HASH_MARKER
+        );
+    }
+
+    // ---- needs_restart: the restart-loop guard ----
+
+    #[test]
+    fn test_needs_restart_true_when_no_prior_applied() {
+        // First provision: no applied annotation yet → must restart.
+        assert!(needs_restart(None, "deadbeef"));
+    }
+
+    #[test]
+    fn test_needs_restart_true_when_applied_is_stale() {
+        assert!(needs_restart(Some("oldhash"), "newhash"));
+    }
+
+    #[test]
+    fn test_needs_restart_false_when_applied_matches() {
+        // Drift correction rewrites the file but must NOT re-restart when the
+        // applied hash already matches the content (ADR 0003).
+        assert!(!needs_restart(Some("samehash"), "samehash"));
+    }
+
+    // ---- restart_if_needed: guard + executor, exactly-once ----
+
+    /// Test double for [`RestartExecutor`] that records every restart call.
+    struct CountingExecutor {
+        calls: std::cell::RefCell<Vec<String>>,
+        fail: bool,
+    }
+
+    impl CountingExecutor {
+        fn new(fail: bool) -> Self {
+            Self {
+                calls: std::cell::RefCell::new(Vec::new()),
+                fail,
+            }
+        }
+    }
+
+    impl RestartExecutor for CountingExecutor {
+        fn restart(&self, service: &str) -> std::io::Result<()> {
+            self.calls.borrow_mut().push(service.to_string());
+            if self.fail {
+                return Err(std::io::Error::other("simulated restart failure"));
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_restart_if_needed_short_circuits_when_applied_matches() {
+        let exec = CountingExecutor::new(false);
+        let issued = restart_if_needed(&exec, Some("h"), "h", "k0sworker.service").unwrap();
+        assert!(
+            !issued,
+            "must not restart when the applied hash already matches"
+        );
+        assert!(
+            exec.calls.borrow().is_empty(),
+            "executor must not be invoked on a no-op"
+        );
+    }
+
+    #[test]
+    fn test_restart_if_needed_invokes_executor_once_when_stale() {
+        let exec = CountingExecutor::new(false);
+        let issued = restart_if_needed(&exec, None, "h", "k0sworker.service").unwrap();
+        assert!(issued);
+        assert_eq!(*exec.calls.borrow(), vec!["k0sworker.service".to_string()]);
+    }
+
+    #[test]
+    fn test_restart_if_needed_propagates_executor_error() {
+        let exec = CountingExecutor::new(true);
+        let err = restart_if_needed(&exec, None, "h", "k0sworker.service").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Other);
+    }
+
+    // ========================================================================
+    // is_drift_correction — metrics classification (Phase 5)
+    // ========================================================================
+
+    #[test]
+    fn test_is_drift_correction_true_when_rewriting_already_applied_content() {
+        // Out-of-band edit reverted by the agent: the write restores content
+        // whose hash was already applied (and restarted for) — drift, not a
+        // new config rollout.
+        let outcome = SyncOutcome::Wrote("h1".to_string());
+        assert!(is_drift_correction(&outcome, Some("h1")));
+    }
+
+    #[test]
+    fn test_is_drift_correction_false_for_new_content() {
+        let outcome = SyncOutcome::Wrote("h2".to_string());
+        assert!(!is_drift_correction(&outcome, Some("h1")));
+    }
+
+    #[test]
+    fn test_is_drift_correction_false_when_nothing_applied_yet() {
+        let outcome = SyncOutcome::Wrote("h1".to_string());
+        assert!(!is_drift_correction(&outcome, None));
+    }
+
+    #[test]
+    fn test_is_drift_correction_false_for_delete_and_noop() {
+        assert!(!is_drift_correction(&SyncOutcome::Deleted, Some("h1")));
+        assert!(!is_drift_correction(
+            &SyncOutcome::Unchanged(Some("h1".to_string())),
+            Some("h1")
+        ));
+        assert!(!is_drift_correction(&SyncOutcome::Unchanged(None), None));
+    }
+
+    // ========================================================================
+    // confine_dest_path — /etc/k0s/ host-path containment (ADR 0005)
+    // ========================================================================
+
+    #[test]
+    fn test_confine_dest_path_accepts_default_drop_in() {
+        let root = tempfile::tempdir().unwrap();
+        let resolved = confine_dest_path(root.path(), "/etc/k0s/containerd.d/kata.toml").unwrap();
+        assert_eq!(
+            resolved,
+            root.path()
+                .canonicalize()
+                .unwrap()
+                .join("etc/k0s/containerd.d/kata.toml")
+        );
+    }
+
+    #[test]
+    fn test_confine_dest_path_accepts_nested_subdirectory() {
+        let root = tempfile::tempdir().unwrap();
+        let resolved = confine_dest_path(root.path(), "/etc/k0s/containerd.d/sub/kata.toml");
+        assert!(resolved.is_ok(), "nested dirs under the base are allowed");
+    }
+
+    #[test]
+    fn test_confine_dest_path_rejects_path_outside_base() {
+        let root = tempfile::tempdir().unwrap();
+        let err = confine_dest_path(root.path(), "/etc/cron.d/evil.toml").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn test_confine_dest_path_rejects_base_prefix_sibling() {
+        // "/etc/k0s.evil/…" shares the string prefix "/etc/k0s" but is a
+        // different directory — the boundary check must be slash-aware.
+        let root = tempfile::tempdir().unwrap();
+        let err = confine_dest_path(root.path(), "/etc/k0s.evil/kata.toml").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn test_confine_dest_path_rejects_dotdot_traversal() {
+        let root = tempfile::tempdir().unwrap();
+        let err = confine_dest_path(root.path(), "/etc/k0s/../cron.d/evil.toml").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn test_confine_dest_path_rejects_curdir_component() {
+        let root = tempfile::tempdir().unwrap();
+        let err = confine_dest_path(root.path(), "/etc/k0s/./kata.toml").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn test_confine_dest_path_rejects_non_toml_suffix() {
+        let root = tempfile::tempdir().unwrap();
+        let err = confine_dest_path(root.path(), "/etc/k0s/containerd.d/kata.conf").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn test_confine_dest_path_rejects_relative_path() {
+        let root = tempfile::tempdir().unwrap();
+        let err = confine_dest_path(root.path(), "etc/k0s/kata.toml").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn test_confine_dest_path_rejects_symlinked_directory_escape() {
+        // A symlink inside the base pointing outside it must be caught by the
+        // canonicalize containment check — lexical checks cannot see it.
+        let root = tempfile::tempdir().unwrap();
+        let outside = root.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let base = root.path().join("etc/k0s");
+        fs::create_dir_all(&base).unwrap();
+        std::os::unix::fs::symlink(&outside, base.join("link")).unwrap();
+
+        let err = confine_dest_path(root.path(), "/etc/k0s/link/kata.toml").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn test_confine_dest_path_creates_missing_parent_inside_base() {
+        // The parent must exist for canonicalize; confine creates it (the
+        // write path needs it anyway) and still confines the result.
+        let root = tempfile::tempdir().unwrap();
+        let resolved = confine_dest_path(root.path(), "/etc/k0s/containerd.d/kata.toml").unwrap();
+        assert!(resolved.parent().unwrap().is_dir(), "parent dir created");
     }
 }

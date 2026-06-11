@@ -55,9 +55,9 @@ SIGKILLs the agent → kubelet restarts the agent → agent must *not* write+res
 again. The on-disk content hash already converges this (after the restart the
 file matches the source, so no second write), but we add belt-and-braces: before
 calling `nsenter`, the agent records the content hash it is about to apply on its
-own Node as `5spot.finos.org/kata-config-applied=<sha256>`. On every loop it
-compares the source content hash to that annotation and only restarts when the
-annotation is missing or stale. This also covers the case where an operator edits
+own Node in the `5spot.finos.org/kata-config-applied` annotation (a `{destPath,
+hash}` record — see the Decision). On every loop it compares the source content
+hash to that record's `hash` and only restarts when it is missing or stale. This also covers the case where an operator edits
 the host file back to old content: the drift path rewrites the file but does
 **not** re-restart if the applied hash already matches.
 
@@ -89,8 +89,12 @@ ADR 0002 §3).
    directory + `rename()`, mode `0644`, owner `root:root`.
 5. Source absent (object or key gone) → `unlink` the dest file (404 benign).
    GitOps: absent in source ⇒ absent on host.
-6. Record `5spot.finos.org/kata-config-applied=<sha256>` (or `=absent`) on the
-   agent's own Node via the kubelet node-scoped token, **before** the restart.
+6. Record `5spot.finos.org/kata-config-applied` on the agent's own Node via the
+   kubelet node-scoped token, **before** the restart. The value is a compact
+   JSON record `{"destPath": "<path>", "hash": "<sha256>"}` (the hash is
+   `absent` after a tear-down). `hash` is the restart-loop guard; `destPath`
+   lets the tear-down path find and unlink the file after the controller has
+   cleared the reference annotation.
 7. `nsenter -t 1 -m -u -i -n -p -- systemctl restart <restartService>`.
    Expect to be SIGKILL'd mid-call — systemd still processes the D-Bus job after
    the client dies. On pod restart the hashes match → no-op. Single-cycle
@@ -112,9 +116,10 @@ ConfigMap volume — the source is read from the workload API, keyed by the Node
 annotation. Env: `NODE_NAME` (downward API); `destPath` / `restartService` /
 `key` are read from the annotation, with the binary defaults as fallback.
 
-**Applied-hash annotation** `5spot.finos.org/kata-config-applied` is the
-restart-loop guard; the existing node `patch` grant already covers it (no new
-controller RBAC, no Job RBAC). The agent gets its own workload-cluster
+**Applied-state annotation** `5spot.finos.org/kata-config-applied` carries the
+compact JSON record `{destPath, hash}` and is the restart-loop guard (`hash`)
+as well as the tear-down cleanup pointer (`destPath`); the existing node `patch`
+grant already covers it (no new controller RBAC, no Job RBAC). The agent gets its own workload-cluster
 ServiceAccount + narrow Role mirroring the reclaim agent's: `configmaps` (and
 `secrets`, for `Secret` sources) `get/watch` in its target namespace (default
 `5spot-system`, per `spec.kata.namespace`), plus node-scoped self-patch.

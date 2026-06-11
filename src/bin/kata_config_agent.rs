@@ -11,12 +11,13 @@
 //!
 //! The agent reads via the kube API rather than a mounted ConfigMap volume
 //! because a cluster-wide DaemonSet cannot template a `configMap.name` volume per
-//! replica (ADR 0002 §3). The host k0s-service restart (`nsenter`) and the
-//! applied-hash node annotation are Phase 4 and not yet wired here — this binary
-//! lands and self-heals the file; containerd reloads it once Phase 4 triggers the
-//! restart. The drift-watch is a deliberate node-local poll: out-of-band edits to
-//! the host file generate no Kubernetes event, so there is nothing to watch on
-//! the API for that signal.
+//! replica (ADR 0002 §3). After a write it restarts the host k0s service via
+//! `nsenter` into host PID 1 (ADR 0003) so containerd reloads the drop-in,
+//! recording the applied content hash on its own Node **before** the restart so
+//! the SIGKILL the restart delivers does not re-trigger on the next loop. The
+//! drift-watch is a deliberate node-local poll: out-of-band edits to the host
+//! file generate no Kubernetes event, so there is nothing to watch on the API for
+//! that signal.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -30,11 +31,19 @@ use serde_json::json;
 use tracing::{debug, info, warn};
 
 use five_spot::constants::{
-    KATA_CONFIG_APPLIED_ANNOTATION, KATA_CONFIG_LABEL, KATA_CONFIG_REF_ANNOTATION,
+    KATA_CONFIG_APPLIED_ANNOTATION, KATA_CONFIG_DEST_PATH, KATA_CONFIG_LABEL,
+    KATA_CONFIG_REF_ANNOTATION,
 };
 use five_spot::kata_config_agent::{
-    parse_kata_ref, sync_content, KataRef, SyncOutcome, DEFAULT_POLL_INTERVAL_SECS,
+    confine_dest_path, intended_hash_for, is_drift_correction, needs_restart, nsenter_restart_argv,
+    parse_kata_ref, restart_if_needed, sync_content, KataRef, RestartExecutor, SyncOutcome,
+    DEFAULT_POLL_INTERVAL_SECS,
 };
+use five_spot::metrics;
+
+/// Default port for the agent's Prometheus `/metrics` endpoint — matches the
+/// controller's `METRICS_PORT` convention.
+const DEFAULT_METRICS_PORT: u16 = 8080;
 
 /// CLI / environment configuration for the kata-config agent.
 #[derive(Debug, Parser)]
@@ -57,26 +66,28 @@ struct Cli {
     #[arg(long, env = "POLL_INTERVAL_SECS", default_value_t = DEFAULT_POLL_INTERVAL_SECS)]
     poll_interval_secs: u64,
 
+    /// Port for the Prometheus `/metrics` endpoint.
+    #[arg(long, env = "METRICS_PORT", default_value_t = DEFAULT_METRICS_PORT)]
+    metrics_port: u16,
+
     /// Run a single reconcile and exit (smoke-test / one-shot use).
     #[arg(long, env = "ONESHOT", default_value_t = false)]
     oneshot: bool,
 }
 
-/// Resolve the absolute host `destPath` to the in-pod path under `host_root`
-/// (e.g. `host_root=/host`, `dest=/etc/k0s/x.toml` → `/host/etc/k0s/x.toml`).
-fn host_path(host_root: &std::path::Path, dest_path: &str) -> PathBuf {
-    host_root.join(dest_path.trim_start_matches('/'))
-}
-
 /// The two kata annotations the agent reads off its own Node: the controller's
-/// reference (present ⇒ deliver) and the agent's own applied-dest record (the
-/// host path it last wrote, so it can clean up after tear-down).
+/// reference (present ⇒ deliver) and the agent's own applied content hash (the
+/// bare SHA-256 it last restarted for, or the `absent` marker — the restart-loop
+/// guard). Neither carries a host path (ADR 0005).
 struct NodeState {
     kata_ref: Option<KataRef>,
-    applied_dest: Option<String>,
+    applied: Option<String>,
 }
 
-/// Read this Node's kata-config-ref and kata-config-applied annotations.
+/// Read this Node's kata-config-ref and kata-config-applied annotations. The
+/// applied value is an opaque hash string — a legacy/garbage value simply never
+/// matches a real content hash, so the agent re-applies + restarts (the safe
+/// direction).
 async fn read_node_state(nodes: &Api<Node>, node_name: &str) -> Result<NodeState> {
     let node = nodes
         .get(node_name)
@@ -89,23 +100,40 @@ async fn read_node_state(nodes: &Api<Node>, node_name: &str) -> Result<NodeState
         })?),
         None => None,
     };
-    Ok(NodeState {
-        kata_ref,
-        applied_dest: anns.get(KATA_CONFIG_APPLIED_ANNOTATION).cloned(),
-    })
+    let applied = anns.get(KATA_CONFIG_APPLIED_ANNOTATION).cloned();
+    Ok(NodeState { kata_ref, applied })
 }
 
-/// Record the absolute host `destPath` this agent is responsible for, in the
-/// kata-config-applied annotation on its own Node — the durable record cleanup
-/// reads after the controller clears the reference annotation.
-async fn record_applied(nodes: &Api<Node>, node_name: &str, dest_path: &str) -> Result<()> {
-    let patch =
-        json!({ "metadata": { "annotations": { KATA_CONFIG_APPLIED_ANNOTATION: dest_path } } });
+/// Record the applied content hash (bare value) in the kata-config-applied
+/// annotation on this agent's own Node. Written **before** a restart so a
+/// SIGKILL mid-restart cannot re-trigger next tick.
+async fn record_applied(nodes: &Api<Node>, node_name: &str, hash: &str) -> Result<()> {
+    let patch = json!({ "metadata": { "annotations": { KATA_CONFIG_APPLIED_ANNOTATION: hash } } });
     nodes
         .patch(node_name, &PatchParams::default(), &Patch::Merge(&patch))
         .await
-        .with_context(|| format!("recording applied-dest on Node {node_name}"))?;
+        .with_context(|| format!("recording applied hash on Node {node_name}"))?;
     Ok(())
+}
+
+/// Concrete [`RestartExecutor`] that restarts the host k0s service by entering
+/// host PID 1's namespaces via `nsenter` and running `systemctl restart` (ADR
+/// 0003). Requires the pod to run `privileged: true` + `hostPID: true`.
+struct NsenterRestartExecutor;
+
+impl RestartExecutor for NsenterRestartExecutor {
+    fn restart(&self, service: &str) -> std::io::Result<()> {
+        let argv = nsenter_restart_argv(service);
+        let status = std::process::Command::new(&argv[0])
+            .args(&argv[1..])
+            .status()?;
+        if !status.success() {
+            return Err(std::io::Error::other(format!(
+                "`nsenter … systemctl restart {service}` exited with {status}"
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// Clear the applied annotation and remove the opt-in label from this Node so
@@ -152,56 +180,84 @@ async fn fetch_content(client: &Client, kref: &KataRef) -> Result<Option<String>
 
 /// One reconcile tick.
 ///
-/// - **reference present** → fetch the source, sync the host file, and record
-///   the applied dest on the Node (so cleanup can find it later).
+/// - **reference present** → fetch the source, sync the host file, and — when
+///   the content now on the host differs from what was last applied — record the
+///   new applied hash on the Node and restart the host k0s service so containerd
+///   reloads the drop-in (ADR 0003). The record is written **before** the
+///   restart so the SIGKILL it delivers cannot re-trigger next tick.
 /// - **reference absent** → tear-down: unlink the host file the agent recorded
 ///   (if any), then clear the applied annotation and remove the opt-in label so
 ///   the DaemonSet deschedules. Doing the unlink here — while still scheduled —
 ///   is what closes the descheduled-before-cleanup gap (ADR 0002).
-async fn reconcile_once(client: &Client, cli: &Cli) -> Result<()> {
+async fn reconcile_once(client: &Client, cli: &Cli, executor: &dyn RestartExecutor) -> Result<()> {
     let nodes: Api<Node> = Api::all(client.clone());
     let state = read_node_state(&nodes, &cli.node_name).await?;
 
     let Some(kref) = state.kata_ref else {
-        // Tear-down. If we previously applied a file, unlink it now.
-        if let Some(dest_path) = state.applied_dest.as_deref() {
-            let dest = host_path(&cli.host_root, dest_path);
-            if sync_content(None, &dest)? == SyncOutcome::Deleted {
-                info!(node = %cli.node_name, dest = %dest.display(), "removed kata drop-in from host (tear-down)");
-                // Phase 4: bounce the host k0s service here (nsenter) so
-                // containerd drops the removed runtime.
-            }
+        // Tear-down: unlink the fixed drop-in path (idempotent — no-op when
+        // already absent). The location is the compile-time constant, resolved
+        // through the same ADR 0005 containment as the write path, so no
+        // annotation content can steer this root unlink.
+        let dest = confine_dest_path(&cli.host_root, KATA_CONFIG_DEST_PATH)?;
+        if sync_content(None, &dest)? == SyncOutcome::Deleted {
+            metrics::record_kata_config_delete();
+            info!(node = %cli.node_name, dest = %dest.display(), "removed kata drop-in from host (tear-down)");
         }
         clear_optin(&nodes, &cli.node_name).await?;
         debug!(node = %cli.node_name, "kata tear-down complete; opt-in label removed (descheduling)");
         return Ok(());
     };
 
-    // Deliver.
+    // Deliver — always to the fixed drop-in path (ADR 0005), resolved through
+    // the containment check as defense-in-depth against host-side symlinks.
+    let dest = confine_dest_path(&cli.host_root, KATA_CONFIG_DEST_PATH)?;
     let content = fetch_content(client, &kref).await?;
-    let dest = host_path(&cli.host_root, &kref.dest_path);
     let bytes = content.as_ref().map(String::as_bytes);
+    let outcome = sync_content(bytes, &dest)?;
 
-    match sync_content(bytes, &dest)? {
-        SyncOutcome::Wrote(hash) => info!(
-            node = %cli.node_name,
-            dest = %dest.display(),
-            sha256 = %hash,
-            "wrote kata drop-in to host (containerd reload pending Phase 4 restart)"
-        ),
-        SyncOutcome::Deleted => info!(
-            node = %cli.node_name,
-            dest = %dest.display(),
-            "removed kata drop-in from host (source object/key cleared)"
-        ),
+    let prev_hash = state.applied.as_deref();
+    match &outcome {
+        SyncOutcome::Wrote(hash) => {
+            metrics::record_kata_config_write(is_drift_correction(&outcome, prev_hash));
+            info!(
+                node = %cli.node_name,
+                dest = %dest.display(),
+                sha256 = %hash,
+                "wrote kata drop-in to host"
+            );
+        }
+        SyncOutcome::Deleted => {
+            metrics::record_kata_config_delete();
+            info!(
+                node = %cli.node_name,
+                dest = %dest.display(),
+                "removed kata drop-in from host (source object/key cleared)"
+            );
+        }
         SyncOutcome::Unchanged(_) => {
-            debug!(node = %cli.node_name, dest = %dest.display(), "kata drop-in in sync")
+            metrics::record_kata_config_sync_unchanged();
+            debug!(node = %cli.node_name, dest = %dest.display(), "kata drop-in in sync");
         }
     }
 
-    // Record the dest we manage so tear-down can find it after the controller
-    // clears the reference annotation.
-    record_applied(&nodes, &cli.node_name, &kref.dest_path).await?;
+    // Restart-loop guard: restart the host service only when the content now on
+    // the host differs from what we last applied. Record the new hash BEFORE the
+    // restart so the SIGKILL it delivers does not re-trigger on the next loop.
+    let intended_hash = intended_hash_for(&outcome);
+    if needs_restart(prev_hash, &intended_hash) {
+        record_applied(&nodes, &cli.node_name, &intended_hash).await?;
+        info!(
+            node = %cli.node_name,
+            service = %kref.restart_service,
+            sha256 = %intended_hash,
+            "restarting host k0s service so containerd reloads the kata drop-in"
+        );
+        if restart_if_needed(executor, prev_hash, &intended_hash, &kref.restart_service)
+            .with_context(|| format!("restarting host service {}", kref.restart_service))?
+        {
+            metrics::record_kata_config_restart();
+        }
+    }
     Ok(())
 }
 
@@ -218,6 +274,7 @@ async fn main() -> Result<()> {
         node = %cli.node_name,
         host_root = %cli.host_root.display(),
         poll_interval_secs = cli.poll_interval_secs,
+        metrics_port = cli.metrics_port,
         oneshot = cli.oneshot,
         "kata-config-agent started",
     );
@@ -226,9 +283,16 @@ async fn main() -> Result<()> {
         .await
         .context("building in-cluster kube client")?;
 
+    // Oneshot is a smoke-test mode; a lingering server would block exit.
+    if !cli.oneshot {
+        tokio::spawn(metrics::serve_metrics(cli.metrics_port));
+    }
+
+    let executor = NsenterRestartExecutor;
     let interval = Duration::from_secs(cli.poll_interval_secs.max(1));
     loop {
-        if let Err(e) = reconcile_once(&client, &cli).await {
+        if let Err(e) = reconcile_once(&client, &cli, &executor).await {
+            metrics::record_kata_config_sync_error();
             warn!(
                 node = %cli.node_name,
                 error = %e,
@@ -242,29 +306,4 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::host_path;
-    use std::path::Path;
-
-    #[test]
-    fn test_host_path_joins_dest_under_root() {
-        assert_eq!(
-            host_path(
-                Path::new("/host"),
-                "/etc/k0s/container.d/kata-containers.toml"
-            ),
-            Path::new("/host/etc/k0s/container.d/kata-containers.toml")
-        );
-    }
-
-    #[test]
-    fn test_host_path_strips_leading_slashes() {
-        assert_eq!(
-            host_path(Path::new("/host"), "///a/b"),
-            Path::new("/host/a/b")
-        );
-    }
 }

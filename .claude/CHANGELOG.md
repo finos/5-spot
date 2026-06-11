@@ -9,6 +9,217 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-06-10 11:30] - ADR 0005: remove spec.kata.destPath — fixed host path, H-1 gate closed
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0005-remove-kata-destpath-fixed-host-path.md`: NEW — remove the
+  user-configurable `destPath` entirely rather than allowlist it; the drop-in
+  destination is the compile-time constant `/etc/k0s/containerd.d/kata.toml`
+  (the real k0s containerd import dir per docs.k0sproject.io/stable/runtime —
+  the previous `container.d` default was a typo k0s never read). Index updated.
+- `src/crd.rs`: `KataConfig.dest_path` field, its schema fn, and its default
+  removed; `deny_unknown_fields` makes a lingering `destPath` a hard admission
+  error. Spec docs updated.
+- `src/constants.rs`: new `KATA_CONFIG_DEST_PATH` + `KATA_CONFIG_DEST_BASE`;
+  `KATA_CONFIG_APPLIED_ANNOTATION` doc rewritten (bare hash, no path).
+- `src/kata_config_agent.rs`: NEW `confine_dest_path` — fail-closed
+  defense-in-depth resolver (`/etc/k0s/` slash-aware prefix + `.toml` suffix,
+  lexical `..`/`.`/empty-segment rejection, `canonicalize(parent)` must stay
+  under the canonicalized base — defeats symlinked-directory escapes) run
+  before EVERY host write and tear-down unlink; `KataRef.dest_path` removed
+  (legacy annotations with the field still parse, path ignored);
+  `AppliedRecord`/`parse_applied_record` deleted — the applied annotation is a
+  bare content hash a forged value cannot weaponize.
+- `src/bin/kata_config_agent.rs`: deliver + tear-down both target the fixed
+  constant through `confine_dest_path`; tear-down no longer needs a recorded
+  path (always reconciles the fixed path to absent); `host_path` helper gone.
+- `src/reconcilers/helpers.rs`: ref-annotation builder no longer emits
+  `destPath` — no Node annotation carries a host path.
+- `deploy/kata-config-agent/daemonset.yaml`: hostPath mount narrowed from `/`
+  to `/etc/k0s` (`type: Directory` fail-fast); comments rewritten.
+- Tests (all four suites): fixtures drop `dest_path`; new coverage — schema has
+  no destPath property, serde rejects a lingering destPath, legacy-annotation
+  tolerance, 10 `confine_dest_path` tests (traversal, symlink escape, prefix
+  sibling `/etc/k0s.evil`, non-toml, relative, curdir), ref-annotation
+  carries-no-path assertions. CRDs + api.md regenerated (crddoc kata section
+  rewritten).
+- `src/labels.rs` → `src/labels_tests.rs`: inline `mod tests` body moved out —
+  the last violation of the separate-`_tests.rs` rule; `.claude/CLAUDE.md`
+  hardened to state the rule is exception-free for ALL targets including
+  `src/bin/*.rs`, with only the three-line `#[path]` declaration allowed in
+  source files.
+- Docs: concepts page (annotation-contract table, diagrams, security table,
+  ruled-out list), operator guide (fixed-path prereqs/steps/troubleshooting),
+  scheduled-machine spec row, example manifest — all rewritten for the fixed
+  path; `docs/architecture/calm/architecture.json` `host-path-containment`
+  control + agent/flow descriptions updated (`make calm-validate` clean,
+  diagrams re-rendered).
+
+### Why
+Closes the H-1 latent-High gate from the 2026-06-09 security roadmap, stronger
+than originally specified: with the agent running privileged on the host, a
+CRD-supplied path was a node-root-via-CRD vector (write any host file, unlink
+any host file via a forged applied annotation). Per operator decision the
+capability is removed, not validated — no path-shaped attacker input exists in
+the contract at all, and the writable host surface shrinks to /etc/k0s.
+
+### Impact
+- [x] Breaking change (pre-release: any SM setting kata.destPath now fails admission)
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-06-10 09:30] - Agent pod-security exception boundary VAP (ADR 0004)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0004-agent-pod-security-exception-boundary-vap.md`: new ADR — the
+  privileged node agents need a PSA/Gatekeeper/Kyverno exemption for
+  `5spot-system` on the workload cluster; since Kubernetes admission is
+  conjunctive (no VAP can override another engine's deny), the exemption lives
+  in the baseline engine and we ship a deny-by-default compensating VAP behind
+  it. Index updated in `docs/adr/README.md`.
+- `deploy/admission/agent-pod-security-policy.yaml`: new `ValidatingAdmissionPolicy`
+  (`5spot-agent-pod-security`, k8s ≥ 1.30, `failurePolicy: Fail`) — identity-pinned
+  allowlist over pods in `5spot-system`: `hostPID`/`hostPath`/explicit-root
+  restricted to the two agent ServiceAccounts; `privileged` to the kata agent only;
+  hostPath clamped per agent (kata: `/`; reclaim: `/proc`, `/etc/machine-id`);
+  capability adds clamped to `NET_ADMIN` on the reclaim agent;
+  `hostNetwork`/`hostIPC` denied for everyone; compensating controls
+  (readOnlyRootFilesystem on privileged containers, pod seccomp RuntimeDefault)
+  made mandatory; ephemeral containers may never be risky. Header documents the
+  PSA/Gatekeeper/Kyverno exemption recipes this policy pairs with.
+- `deploy/admission/agent-pod-security-binding.yaml`: binding scoped to
+  `5spot-system` via `namespaceSelector`, `validationActions: [Deny]`.
+- `docs/architecture/calm/architecture.json`: `agent-pod-security-boundary`
+  control added to the workload-cluster API server node (NIST AC-6/CM-5);
+  `make calm-validate` clean, diagrams re-rendered.
+- `docs/src/security/admission-validation.md`: new "Agent Pod-Security Exception
+  Boundary" section (posture table, conjunctive-admission explanation, per-engine
+  exemption recipes); deployment list/commands extended to the fourth policy pair.
+- `docs/src/security/threat-model.md`: new threat E5 (abuse of the namespace-wide
+  exemption) marked mitigated by ADR 0004; mitigations-summary row added.
+
+### Why
+The agents' privileged posture (ADR 0003) cannot pass a pod-security baseline,
+and the only exemption mechanisms those engines offer are namespace-wide. An
+unguarded exemption would let anything in `5spot-system` run privileged. The
+paired deny-by-default VAP makes the "only our two agents, only their exact
+posture" claim machine-enforced and auditable. Policy logic verified by
+simulating all 12 CEL validations against the real DaemonSet pod templates
+(admitted) and 9 rogue/escalation scenarios (each denied by the intended rule).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (new admission manifests; operator applies with the
+  baseline-engine exemption as a paired deployment)
+- [ ] Documentation only
+
+## [2026-06-09 21:30] - Kata config delivery Phase 5 — agent metrics, integration test, docs, security pass
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/metrics.rs`: six new agent metrics — `fivespot_kata_config_writes_total`,
+  `…_deletes_total`, `…_drift_corrected_total`, `…_restarts_total`,
+  `…_sync_errors_total`, and the `…_last_sync_timestamp_seconds` staleness gauge —
+  plus their recorder fns and a shared `serve_metrics(port)` (the controller's
+  private metrics server moved here so both binaries serve one implementation).
+- `src/metrics_tests.rs`: 6 new tests covering every recorder (counter increments,
+  drift/write coupling, unchanged-tick gauge-only semantics), serialized on a
+  lock because the kata counters are label-less process-globals.
+- `src/kata_config_agent.rs` + `_tests.rs`: new pure `is_drift_correction`
+  classifier (a rewrite of already-applied content is drift, not a rollout) + 4 tests.
+- `src/bin/kata_config_agent.rs`: `--metrics-port` (env `METRICS_PORT`, default
+  8080), metrics server spawned in loop mode, and recording wired into
+  `reconcile_once` (write/delete/unchanged/restart) and the retry path (errors).
+- `src/main.rs`: `run_metrics_server` replaced by `metrics::serve_metrics`.
+- `tests/integration_kata_config.rs`: NEW — pins the ADR 0002 annotation contract
+  (controller patch builder ↔ agent parser, field-for-field), runs the full
+  host-file lifecycle (provision → restart-once → drift-heal-without-restart →
+  rollout-restart → tear-down) against a tempdir with a counting executor, and
+  adds an `--ignored` real-Node round-trip mirroring `integration_emergency_reclaim.rs`.
+- `src/reconcilers/mod.rs`: re-export the two kata patch builders for the test.
+- `deploy/kata-config-agent/daemonset.yaml`: `prometheus.io/*` scrape annotations,
+  named `metrics` containerPort 8080, `METRICS_PORT` env.
+- `deploy/kata-config-agent/kustomization.yaml`: NEW — `kubectl apply -k` entry
+  point mirroring `deploy/node-agent/`.
+- `examples/scheduledmachine-kata.yaml`: NEW — full `spec.kata` example with the
+  source-ConfigMap shape in a comment.
+- `.trivyignore`: justify KSV-0001 (allowPrivilegeEscalation cannot be false with
+  privileged: true — API server rejects the combination) and KSV-0003/0004
+  (drop: [ALL] is a kernel no-op under privileged); `trivy config deploy/` now 0 findings.
+- Docs: NEW `docs/src/concepts/kata-config-delivery.md` (architecture, mermaid
+  delivery chain + sequence, restart-guard table, security posture) and NEW
+  `docs/src/guides/kata-config.md` (operator walkthrough + troubleshooting);
+  `spec.kata` row in `concepts/scheduled-machine.md`; agent metrics table in
+  `operations/monitoring.md`; nav entries (new Guides section) in `mkdocs.yml`;
+  feature bullet in `README.md`.
+- Stale-comment sweep: `src/bin/crddoc.rs` emitted the pre-pivot `kataConfigRef:`
+  field name into the generated API example — fixed and `make crddoc` re-run;
+  pre-pivot "per-node ConfigMap projection" comments rewritten in
+  `src/constants.rs`, `src/reconcilers/helpers.rs`, `src/reconcilers/scheduled_machine.rs`.
+- `docs/architecture/calm/architecture.json`: agent node gains its `/metrics`
+  HTTP interface; least-privilege control text corrected to get-only
+  ConfigMap/Secret RBAC (KSV-0113); data-asset wording aligned to the per-tick
+  GET (no watcher). `make calm-validate` clean, diagrams re-rendered.
+
+### Why
+Closes Phase 5 (final phase) of the per-node Kata config delivery roadmap:
+observability for the node agent, an integration test pinning the single
+load-bearing controller↔agent contract, user-facing concept + operator docs,
+and a clean security scan with every privileged-posture finding justified.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (agent/manifests not yet released)
+
+## [2026-06-09 19:30] - Kata config delivery Phase 4 — nsenter host k0s-service restart
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/kata_config_agent.rs`: add the Phase 4 restart-orchestration units (ADR
+  0003) — `nsenter_restart_argv` (builds `nsenter -t 1 -m -u -i -n -p -- systemctl
+  restart <service>`), the `RestartExecutor` trait, `AppliedRecord` ({destPath,
+  hash} carried in the `kata-config-applied` annotation) + `parse_applied_record`,
+  `intended_hash_for`, `needs_restart`, and `restart_if_needed`. `ABSENT_HASH_MARKER`
+  marks the torn-down state.
+- `src/kata_config_agent_tests.rs`: 14 new tests — exact nsenter command line,
+  `AppliedRecord` serde round-trip + garbage→None, `intended_hash_for` per outcome,
+  the `needs_restart` guard (no-prior / stale / match), and `restart_if_needed`
+  short-circuit / once / error-propagation via a counting `RestartExecutor` fake.
+- `src/bin/kata_config_agent.rs`: wire the restart into `reconcile_once` — after a
+  sync, when the on-host content hash differs from the last-applied hash, record the
+  new `AppliedRecord` **before** restarting via the concrete `NsenterRestartExecutor`.
+  `read_node_state`/`record_applied` now use the compact `{destPath, hash}` record
+  (replacing the bare-destPath value); unparseable records degrade to "not applied"
+  (re-apply + restart, the safe direction).
+- `docs/adr/0003-*.md`: refine the applied annotation to the `{destPath, hash}` record.
+- `docs/architecture/calm/architecture.json`: align the agent node, the workload-API
+  relationship, and the delivery-flow step prose to the compact record; `make
+  calm-validate` clean, `make calm-diagrams` re-rendered.
+
+### Why
+Completes the load-bearing piece of per-node kata delivery: after writing the
+drop-in the agent must bounce the host k0s service so containerd reloads it.
+Done in-pod via `nsenter` into host PID 1 (ADR 0003). The applied-hash record,
+written before the restart, is the restart-loop guard — the restart SIGKILLs the
+agent, and on the next loop a matching hash makes it a no-op (single-cycle
+convergence). Drift correction rewrites the file but does not re-restart.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (agent/manifests not yet released)
+
 ## [2026-06-09 18:45] - Tighten kata-config-agent secret RBAC to get-only (KSV-0113)
 
 **Author:** Erick Bourgeois

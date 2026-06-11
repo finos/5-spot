@@ -3,7 +3,7 @@
 //! # Kata config agent — host-filesystem sync engine
 //!
 //! Core logic for the node-side `5spot-kata-config-agent` binary (ADR 0002 /
-//! ADR 0003, roadmap `5spot-kata-config-per-node.md`, Phase 3). This module is
+//! ADR 0003, roadmap `completed-5spot-kata-config-per-node.md`, Phase 3). This module is
 //! I/O-light around the filesystem and fully unit-testable; the binary entry
 //! point in `src/bin/kata_config_agent.rs` wires it to a poll loop.
 //!
@@ -22,9 +22,27 @@
 //!   unlink the host file (GitOps: absent in source ⇒ absent on host).
 //!
 //! Writes are atomic so a crash mid-write can never leave a partially-written
-//! drop-in that containerd would fail to parse. The applied-hash node
-//! annotation and the host k0s-service restart (`nsenter`) are Phase 4 and
-//! live in the binary, not here.
+//! drop-in that containerd would fail to parse.
+//!
+//! ## Restart orchestration (Phase 4 — ADR 0003)
+//!
+//! After a write/delete the host k0s service must be restarted so containerd
+//! reloads the drop-in. This module owns the I/O-light, unit-testable pieces of
+//! that mechanism — the [`nsenter_restart_argv`] command-line builder, the
+//! [`RestartExecutor`] abstraction (so tests assert the command line without
+//! executing it), the bare applied-hash value carried in the
+//! `5spot.finos.org/kata-config-applied` Node annotation, and the
+//! [`needs_restart`] / [`restart_if_needed`] restart-loop guard. The concrete
+//! `nsenter`-executing implementation lives in the binary; the poll loop wires
+//! these together.
+//!
+//! ## Host-path containment (ADR 0005)
+//!
+//! The drop-in destination is the **fixed**
+//! [`crate::constants::KATA_CONFIG_DEST_PATH`] — no CRD field or annotation
+//! carries a host path. [`confine_dest_path`] additionally resolves and
+//! re-checks that constant against the `/etc/k0s/` base (canonicalized, so
+//! host-side symlink games fail) before every write and unlink, fail closed.
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -47,9 +65,6 @@ pub struct KataRef {
     pub name: String,
     /// `data` key whose value is the drop-in content.
     pub key: String,
-    /// Absolute host path to write the drop-in to.
-    #[serde(rename = "destPath")]
-    pub dest_path: String,
     /// systemd unit to restart so containerd reloads the drop-in (Phase 4).
     #[serde(rename = "restartService")]
     pub restart_service: String,
@@ -237,6 +252,82 @@ pub fn sync_content(content: Option<&[u8]>, dest_path: &Path) -> io::Result<Sync
     }
 }
 
+/// Suffix every kata drop-in must carry — the only file type k0s's containerd
+/// import directory consumes, and a cheap fail-closed bound on what the
+/// privileged agent will write (ADR 0005).
+const DEST_FILE_SUFFIX: &str = ".toml";
+
+/// Resolve `dest_path` to its in-pod location under `host_root`, enforcing the
+/// ADR 0005 containment at the privileged trust boundary. The caller passes the
+/// fixed [`crate::constants::KATA_CONFIG_DEST_PATH`] — no user input reaches
+/// this function — so the checks are defense-in-depth against host-side
+/// symlink games and future regressions, run before **every** host write and
+/// tear-down unlink.
+///
+/// Checks, fail-closed:
+/// 1. must start with [`crate::constants::KATA_CONFIG_DEST_BASE`] (`/etc/k0s/`,
+///    slash-aware) and end with `.toml`;
+/// 2. lexical: every `/`-separated segment must be a normal name — no `..`,
+///    no `.`, no empty segment — so no later join can reinterpret the path;
+/// 3. physical: the destination parent is created (the write needs it anyway)
+///    and canonicalized, and must remain under the canonicalized
+///    `<host_root>/etc/k0s` — a symlinked directory inside the base resolves
+///    elsewhere and fails this check even though it passes the lexical one.
+///
+/// Returns the canonicalized parent joined with the file name — the path the
+/// caller hands to [`sync_content`].
+///
+/// # Errors
+/// [`io::ErrorKind::PermissionDenied`] for any containment violation; the
+/// underlying [`io::Error`] if directory creation or canonicalization fails.
+pub fn confine_dest_path(host_root: &Path, dest_path: &str) -> io::Result<PathBuf> {
+    use crate::constants::KATA_CONFIG_DEST_BASE;
+
+    let deny = |why: &str| {
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "refusing destPath {dest_path:?}: {why} \
+                 (ADR 0005 confines kata writes to {KATA_CONFIG_DEST_BASE}*.toml)"
+            ),
+        )
+    };
+
+    if !dest_path.starts_with(KATA_CONFIG_DEST_BASE) {
+        return Err(deny("outside the allowed base"));
+    }
+    if !dest_path.ends_with(DEST_FILE_SUFFIX) {
+        return Err(deny("not a .toml drop-in"));
+    }
+    // Lexical pass. `split('/')` on an absolute path yields a leading ""
+    // (before the root slash) — every later segment must be a plain name.
+    if dest_path
+        .split('/')
+        .skip(1)
+        .any(|seg| seg.is_empty() || seg == "." || seg == "..")
+    {
+        return Err(deny("non-canonical path segment"));
+    }
+
+    let full = host_root.join(dest_path.trim_start_matches('/'));
+    let parent = full.parent().ok_or_else(|| deny("no parent directory"))?;
+    let file_name = full
+        .file_name()
+        .ok_or_else(|| deny("no file name"))?
+        .to_os_string();
+
+    // Physical pass: canonicalize and re-check the boundary.
+    let base = host_root.join(KATA_CONFIG_DEST_BASE.trim_start_matches('/'));
+    fs::create_dir_all(parent)?;
+    fs::create_dir_all(&base)?;
+    let canon_parent = parent.canonicalize()?;
+    let canon_base = base.canonicalize()?;
+    if !canon_parent.starts_with(&canon_base) {
+        return Err(deny("resolves outside the allowed base (symlink?)"));
+    }
+    Ok(canon_parent.join(file_name))
+}
+
 /// Reconcile `dest_path` to match the file at `source_path` exactly once.
 ///
 /// Thin wrapper over [`sync_content`] that reads `source_path` first (absent
@@ -252,6 +343,128 @@ pub fn sync_once(source_path: &Path, dest_path: &Path) -> io::Result<SyncOutcome
         Err(e) => return Err(e),
     };
     sync_content(source.as_deref(), dest_path)
+}
+
+// ============================================================================
+// Phase 4 — host k0s-service restart orchestration (ADR 0003)
+// ============================================================================
+
+/// Sentinel recorded in [`AppliedRecord::hash`] when the agent has torn the
+/// drop-in down (no content on the host). Distinguishes "applied nothing" from
+/// "applied content `X`" so the restart guard fires on a present → absent
+/// transition.
+pub const ABSENT_HASH_MARKER: &str = "absent";
+
+/// `nsenter` binary — entered to run a command in the host's namespaces.
+const NSENTER_BIN: &str = "nsenter";
+/// Host init PID. `nsenter -t 1` targets systemd (PID 1) on the host; requires
+/// `hostPID: true` on the pod so PID 1 resolves to the host's init, not the
+/// container's.
+const HOST_INIT_PID: &str = "1";
+/// `systemctl` invoked inside the host mount namespace to restart the unit.
+const SYSTEMCTL_BIN: &str = "systemctl";
+/// `systemctl` subcommand.
+const SYSTEMCTL_RESTART: &str = "restart";
+
+/// Build the exact argv for the in-pod host-service restart (ADR 0003):
+///
+/// ```text
+/// nsenter -t 1 -m -u -i -n -p -- systemctl restart <service>
+/// ```
+///
+/// `-t 1` targets host PID 1 (systemd); `-m -u -i -n -p` enter the host mount,
+/// UTS, IPC, network, and PID namespaces so `systemctl` and its D-Bus socket
+/// resolve to the host's, matching an operator shell on the node.
+#[must_use]
+pub fn nsenter_restart_argv(service: &str) -> Vec<String> {
+    [
+        NSENTER_BIN,
+        "-t",
+        HOST_INIT_PID,
+        "-m",
+        "-u",
+        "-i",
+        "-n",
+        "-p",
+        "--",
+        SYSTEMCTL_BIN,
+        SYSTEMCTL_RESTART,
+        service,
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
+}
+
+/// Restarts a host systemd unit. Hidden behind a trait so the poll loop can be
+/// unit-tested with a fake while the real implementation (`nsenter` into host
+/// PID 1) is exercised only in integration tests / on a node.
+pub trait RestartExecutor {
+    /// Restart `service` on the host, blocking until the request is issued.
+    ///
+    /// # Errors
+    /// Returns an [`io::Error`] if the restart command cannot be spawned or
+    /// exits non-zero. Note the restart typically SIGKILLs this very pod
+    /// (containerd bounces); a successful return is not guaranteed even on
+    /// success — the caller treats an error as "retry next tick".
+    fn restart(&self, service: &str) -> io::Result<()>;
+}
+
+/// The content hash a [`SyncOutcome`] implies is now on the host — the bare
+/// value to record in the `5spot.finos.org/kata-config-applied` annotation and
+/// compare against in [`needs_restart`]. A present file carries its content
+/// hash; an absent one (deleted, or never written) maps to
+/// [`ABSENT_HASH_MARKER`]. The annotation deliberately carries **no path**
+/// (ADR 0005): the drop-in location is the fixed
+/// [`crate::constants::KATA_CONFIG_DEST_PATH`], so a forged annotation cannot
+/// steer a root unlink.
+#[must_use]
+pub fn intended_hash_for(outcome: &SyncOutcome) -> String {
+    match outcome {
+        SyncOutcome::Wrote(hash) | SyncOutcome::Unchanged(Some(hash)) => hash.clone(),
+        SyncOutcome::Deleted | SyncOutcome::Unchanged(None) => ABSENT_HASH_MARKER.to_string(),
+    }
+}
+
+/// Classify a sync outcome for metrics: `true` iff the agent rewrote content
+/// whose hash was **already applied** (and restarted for) — i.e. it corrected
+/// an out-of-band edit/deletion back to the desired state. A write of a hash
+/// that differs from the applied record is a new-config rollout, not drift.
+#[must_use]
+pub fn is_drift_correction(outcome: &SyncOutcome, prev_applied_hash: Option<&str>) -> bool {
+    match outcome {
+        SyncOutcome::Wrote(hash) => prev_applied_hash == Some(hash.as_str()),
+        SyncOutcome::Deleted | SyncOutcome::Unchanged(_) => false,
+    }
+}
+
+/// The restart-loop guard: restart only when the content now on the host differs
+/// from what was last applied (or nothing has been applied yet). Equal hashes
+/// mean containerd was already restarted for this content — drift correction
+/// rewrites the file but must not bounce the service again (ADR 0003).
+#[must_use]
+pub fn needs_restart(prev_applied_hash: Option<&str>, intended_hash: &str) -> bool {
+    prev_applied_hash != Some(intended_hash)
+}
+
+/// Restart `service` via `executor` iff [`needs_restart`] says the applied state
+/// is stale. Returns `Ok(true)` if a restart was issued, `Ok(false)` if it was
+/// short-circuited. The caller must record the new [`AppliedRecord`] **before**
+/// invoking this, so a SIGKILL mid-restart does not re-trigger next tick.
+///
+/// # Errors
+/// Propagates any [`io::Error`] from the executor.
+pub fn restart_if_needed(
+    executor: &dyn RestartExecutor,
+    prev_applied_hash: Option<&str>,
+    intended_hash: &str,
+    service: &str,
+) -> io::Result<bool> {
+    if !needs_restart(prev_applied_hash, intended_hash) {
+        return Ok(false);
+    }
+    executor.restart(service)?;
+    Ok(true)
 }
 
 #[cfg(test)]

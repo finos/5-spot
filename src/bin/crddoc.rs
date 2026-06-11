@@ -93,7 +93,7 @@ fn main() {
     println!("    - key: workload");
     println!("      value: batch");
     println!("      effect: NoSchedule");
-    println!("  kataConfigRef:");
+    println!("  kata:");
     println!("    kind: ConfigMap");
     println!("    name: kata-drop-in");
     println!("```");
@@ -251,7 +251,8 @@ fn main() {
     println!("`kubeconfig-<clusterName>` Secret) in `kata.namespace` (default `5spot-system`). If");
     println!("present, it stamps the `5spot.finos.org/kata-config=enabled` opt-in label plus a");
     println!("reference annotation on the Node; the `5spot-kata-config-agent` DaemonSet reads the");
-    println!("object from the workload API, writes the drop-in to `destPath`, and restarts");
+    println!("object from the workload API, writes the drop-in to the fixed host path");
+    println!("`/etc/k0s/containerd.d/kata.toml` (not configurable — ADR 0005), and restarts");
     println!("`restartService` so containerd reloads it. If the object (or its namespace) is");
     println!("absent, the controller does NOT label the Node and reports a fail-fast status");
     println!("condition — 5-Spot never creates the object (it must pre-exist, Flux-delivered).");
@@ -267,8 +268,6 @@ fn main() {
     println!("  namespace the agent reads the object from. Override for per-tenant placement.");
     println!("- **key** (optional, string, default: `kata-containers.toml`): `data` key whose");
     println!("  value is the drop-in content.");
-    println!("- **destPath** (optional, string, default:");
-    println!("  `/etc/k0s/container.d/kata-containers.toml`): absolute host path written to.");
     println!("- **restartService** (optional, string, default: `k0sworker.service`): systemd");
     println!("  unit restarted via `nsenter` so containerd reloads the drop-in. Override with");
     println!("  `k0scontroller.service` on single-node layouts.");

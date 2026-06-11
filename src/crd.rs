@@ -162,7 +162,9 @@ pub struct ScheduledMachineSpec {
     /// `5spot.finos.org/kata-config=enabled` opt-in label **and** a reference
     /// annotation on the backing Node; the `5spot-kata-config-agent` DaemonSet —
     /// scheduled onto labelled nodes — reads the object from the workload API,
-    /// writes the drop-in to `destPath`, and restarts `restartService` so
+    /// writes the drop-in to the fixed host path
+    /// `/etc/k0s/containerd.d/kata.toml` (not configurable — ADR 0005), and
+    /// restarts `restartService` so
     /// containerd reloads it. If the object (or its namespace) is absent, the
     /// controller does **not** label the Node and reports a fail-fast status
     /// condition — 5-Spot never creates the object (it must pre-exist,
@@ -461,18 +463,6 @@ fn kata_config_key_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema
     })
 }
 
-/// Schema for `KataConfig.destPath` — the absolute host path the agent writes
-/// the drop-in to. Must be absolute (anchored at `/`) and is bounded to the
-/// Linux `PATH_MAX` (4096) so a malicious CR cannot inflate the host write path.
-fn kata_config_dest_path_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-    schemars::json_schema!({
-        "type": "string",
-        "minLength": 1,
-        "maxLength": 4096,
-        "pattern": "^/[^\\u0000]*$"
-    })
-}
-
 /// Schema for `KataConfig.restartService` — the systemd unit the agent
 /// restarts via `nsenter`. Constrained to a `*.service` unit name with the
 /// systemd unit charset and bounded to systemd's 255-char unit-name cap.
@@ -506,12 +496,6 @@ fn default_kata_config_namespace() -> String {
 /// Default `data` key for `KataConfig.key` — the containerd drop-in filename.
 fn default_kata_config_key() -> String {
     "kata-containers.toml".to_string()
-}
-
-/// Default host path for `KataConfig.destPath` — the k0s containerd drop-in
-/// directory. k0s loads drop-ins from `/etc/k0s/container.d/` on (re)start.
-fn default_kata_config_dest_path() -> String {
-    "/etc/k0s/container.d/kata-containers.toml".to_string()
 }
 
 /// Default systemd unit for `KataConfig.restartService` — the k0s worker
@@ -697,14 +681,6 @@ pub struct KataConfig {
     #[serde(default = "default_kata_config_key")]
     #[schemars(schema_with = "kata_config_key_schema")]
     pub key: String,
-
-    /// Absolute host path the agent writes the drop-in to. Defaults to
-    /// `/etc/k0s/container.d/kata-containers.toml` (the k0s containerd drop-in
-    /// directory). Configurable because layouts vary (k0s-in-docker, kairos,
-    /// vanilla containerd).
-    #[serde(default = "default_kata_config_dest_path")]
-    #[schemars(schema_with = "kata_config_dest_path_schema")]
-    pub dest_path: String,
 
     /// systemd unit the node agent restarts (via `nsenter`) so containerd
     /// reloads the drop-in. Defaults to `k0sworker.service`; override with

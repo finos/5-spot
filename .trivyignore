@@ -233,6 +233,28 @@ AVD-KSV-0017
 # node-scoped ServiceAccount.
 AVD-KSV-0106
 
+# KSV-0001 — Container 'agent' should set allowPrivilegeEscalation to false.
+# Impossible under privileged: true (KSV-0017 above, ADR 0003): the Kubernetes
+# API server REJECTS a pod that sets privileged: true together with
+# allowPrivilegeEscalation: false ("cannot set `allowPrivilegeEscalation` to
+# false and `privileged` to true"). The field is therefore set to true
+# explicitly rather than left implicit, so the manifest states the effective
+# posture honestly. Bounded by the same controls justified for KSV-0017:
+# opt-in nodeSelector, readOnlyRootFilesystem, seccomp RuntimeDefault, a
+# shell-less single-purpose binary, and a narrow node-scoped ServiceAccount.
+AVD-KSV-0001
+
+# KSV-0003 / KSV-0004 — Container 'agent' should add 'ALL' to
+# securityContext.capabilities.drop. Same rationale as KSV-0106 above: under
+# privileged: true the container holds the full capability set regardless of
+# any drop list, so `drop: [ALL]` would be a cosmetic no-op that misrepresents
+# the container's effective privileges in an audit. The real bound on the
+# escalation is the KSV-0017 control set (opt-in nodeSelector,
+# readOnlyRootFilesystem, seccomp RuntimeDefault, single-purpose binary,
+# node-scoped ServiceAccount), not a capability list the kernel ignores.
+AVD-KSV-0003
+AVD-KSV-0004
+
 # ─────────────────────────────────────────────────────────────────────────────
 # RBAC — deploy/kata-config-agent/rbac.yaml
 # ─────────────────────────────────────────────────────────────────────────────

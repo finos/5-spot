@@ -2946,23 +2946,22 @@ pub async fn reconcile_reclaim_agent_provision(
 }
 
 // ============================================================================
-// Kata config delivery — controller-side projection (ADR 0002, Phase 2)
+// Kata config delivery — controller-side Node opt-in (ADR 0002, Phase 2)
 // ============================================================================
 //
-// When a `ScheduledMachine`'s `spec.kataConfigRef` is set, the controller
-// resolves the referenced Secret/ConfigMap content (in the SM namespace, on
-// the management cluster) and mirrors it onto the **child** cluster as:
+// When a `ScheduledMachine`'s `spec.kata` is set, the controller verifies the
+// referenced Secret/ConfigMap exists on the **workload** cluster (read-only)
+// and stamps the backing Node with:
 //
-// 1. A label `KATA_CONFIG_LABEL=KATA_CONFIG_LABEL_ENABLED` on the backing Node
-//    so the opt-in DaemonSet's `nodeSelector` matches and the agent lands.
-// 2. A per-node `ConfigMap` named `kata-config-<node-name>` in
-//    `KATA_CONFIG_NAMESPACE` carrying the drop-in body under
-//    `KATA_CONFIG_DATA_KEY`.
+// 1. A label `KATA_CONFIG_LABEL=KATA_CONFIG_LABEL_ENABLED` so the opt-in
+//    DaemonSet's `nodeSelector` matches and the agent lands.
+// 2. A `KATA_CONFIG_REF_ANNOTATION` carrying the compact JSON reference the
+//    agent reads to resolve the source object via the kube API itself.
 //
-// Clearing `kataConfigRef` strips the label (evicting the DaemonSet pod) and
-// deletes the ConfigMap. The pure builders/extractors below are unit-tested;
-// the async orchestrator underneath wires them to the kube API and is covered
-// by mock-client tests mirroring the reclaim-agent projection.
+// Clearing `spec.kata` clears the reference annotation; the still-scheduled
+// agent unlinks the host file, then removes the opt-in label itself to
+// deschedule (the tear-down handshake). The pure builders below are
+// unit-tested; the async orchestrator wires them to the kube API.
 
 /// Outcome of a kata-config delivery reconcile for a single Node (ADR 0002).
 ///
@@ -2985,8 +2984,8 @@ pub enum KataDeliveryOutcome {
 /// Build the merge-patch that sets (`Some`) or clears (`None`) the kata-config
 /// **reference annotation** on a Node. The value is a compact JSON object the
 /// node-side agent reads to locate and apply its drop-in (namespace, kind, name,
-/// key, destPath, restartService). Clearing uses JSON `null` so merge-patch
-/// removes the key.
+/// key, restartService — deliberately NO host path, ADR 0005). Clearing uses
+/// JSON `null` so merge-patch removes the key.
 #[must_use]
 pub fn build_kata_config_ref_annotation_patch(
     kata: Option<&crate::crd::KataConfig>,
@@ -2998,7 +2997,6 @@ pub fn build_kata_config_ref_annotation_patch(
                 "kind": k.kind,
                 "name": k.name,
                 "key": k.key,
-                "destPath": k.dest_path,
                 "restartService": k.restart_service,
             })
             .to_string(),

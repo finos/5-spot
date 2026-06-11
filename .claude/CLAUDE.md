@@ -251,8 +251,12 @@ This project follows strict Test-Driven Development practices. You MUST follow t
 4. **Refactoring Code:** Update test names and assertions to match refactored code
 
 **Test File Organization:**
-- **CRITICAL**: ALWAYS place tests in separate `_tests.rs` files
-- NEVER embed large test modules directly in source files
+- **CRITICAL**: ALWAYS place tests in separate `_tests.rs` files — this is a
+  HARD REQUIREMENT with NO exceptions for ANY target: library modules,
+  `src/bin/*.rs` binaries, and submodules alike
+- NEVER write an inline `mod tests { ... }` body in a source file — not even
+  for one small test; the source file carries only the three-line declaration
+  `#[cfg(test)] #[path = "foo_tests.rs"] mod tests;`
 - Follow the pattern: `foo.rs` → `foo_tests.rs`
 
 ### Rust Style Guidelines

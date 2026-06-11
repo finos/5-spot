@@ -240,6 +240,73 @@ keys.
 
 ---
 
+## Agent Pod-Security Exception Boundary (workload cluster)
+
+The two 5-Spot node agents deliberately exceed the Pod Security Standards
+([ADR 0004](https://github.com/finos/5-spot/blob/main/docs/adr/0004-agent-pod-security-exception-boundary-vap.md)):
+
+| Attribute | kata-config agent | reclaim agent |
+|---|---|---|
+| `privileged` | ✅ (nsenter k0s restart, ADR 0003) | — |
+| `hostPID` | ✅ | ✅ (scan host `/proc`) |
+| root (`runAsUser: 0`) | ✅ | ✅ |
+| `hostPath` | `/` (RW) | `/proc`, `/etc/machine-id` (RO) |
+| added capabilities | — | `NET_ADMIN` |
+
+Clusters enforcing a pod-security baseline (Pod Security Admission, OPA
+Gatekeeper, Kyverno) will deny these pods. **Kubernetes admission is
+conjunctive — no `ValidatingAdmissionPolicy` can override another engine's
+deny** — so the exemption must be granted inside your baseline engine, for
+the `5spot-system` namespace:
+
+=== "Pod Security Admission"
+
+    ```bash
+    kubectl label namespace 5spot-system \
+      pod-security.kubernetes.io/enforce=privileged \
+      pod-security.kubernetes.io/audit=privileged \
+      pod-security.kubernetes.io/warn=privileged
+    ```
+
+=== "OPA Gatekeeper"
+
+    Add `5spot-system` to each relevant constraint's
+    `spec.match.excludedNamespaces`, or exempt it cluster-wide via a
+    `config.gatekeeper.sh/v1alpha1` `Config` entry.
+
+=== "Kyverno"
+
+    ```yaml
+    exclude:
+      any:
+        - resources:
+            namespaces: ["5spot-system"]
+    ```
+
+That exemption is namespace-wide — which is the hole the
+`5spot-agent-pod-security` policy
+(`deploy/admission/agent-pod-security-policy.yaml` + binding) closes. It is a
+**deny-by-default compensating guardrail** scoped to pods in `5spot-system`:
+
+- `hostPID`, `hostPath`, explicit root — restricted to the two agent
+  ServiceAccounts; `privileged` to the kata-config agent only.
+- `hostNetwork` / `hostIPC` — denied for everyone (no 5-Spot component uses them).
+- hostPath **clamped per agent**: kata may mount only `/`; reclaim only
+  `/proc` and `/etc/machine-id`. Capability adds clamped to `NET_ADMIN` on the
+  reclaim agent.
+- The compensating controls become **mandatory**: privileged containers must
+  keep `readOnlyRootFilesystem: true`; agent pods must keep
+  `seccompProfile.type: RuntimeDefault`.
+- Ephemeral (debug) containers may never be privileged, add capabilities, or
+  run as root — the exception covers the agents' declared workloads, not
+  interactive escalation paths.
+
+`failurePolicy: Fail` — the boundary fails closed. Treat the baseline-engine
+exemption and this policy as a **paired deployment**: apply the policy + binding
+*before* (or in the same change as) the namespace exemption.
+
+---
+
 ## Deployment
 
 ### Prerequisites
@@ -263,7 +330,7 @@ For Kubernetes 1.26–1.27, enable the feature gate on the API server:
 
 ### Apply the manifests
 
-`deploy/admission/` ships three policies, each with its own binding:
+`deploy/admission/` ships four policies, each with its own binding:
 
 - `validatingadmissionpolicy*.yaml` — validates `ScheduledMachine` CRs.
 - `controller-deployment-policy.yaml` + `controller-deployment-binding.yaml`
@@ -280,10 +347,16 @@ For Kubernetes 1.26–1.27, enable the feature gate on the API server:
   pod lifecycle naturally gates installation on Node `Ready`, so no
   controller is required. `failurePolicy: Ignore` ensures a policy
   error never blocks Node registration.
+- `agent-pod-security-policy.yaml` + `agent-pod-security-binding.yaml` —
+  **applied to the child (workload) cluster.** The deny-by-default
+  pod-security exception boundary for `5spot-system` described
+  [above](#agent-pod-security-exception-boundary-workload-cluster)
+  (ADR 0004). Pair it with your baseline engine's namespace exemption.
 
 Apply each policy before its binding (order matters — the binding
 references the policy by name). The first two go on the **management**
-cluster; the `child-cluster-*` pair goes on the **child** cluster:
+cluster; the `child-cluster-*` and `agent-pod-security-*` pairs go on the
+**child** cluster:
 
 ```bash
 # Management cluster
@@ -297,6 +370,10 @@ kubectl --kubeconfig <child-kubeconfig> apply \
   -f deploy/admission/child-cluster-kata-runtime-mutatingpolicy.yaml
 kubectl --kubeconfig <child-kubeconfig> apply \
   -f deploy/admission/child-cluster-kata-runtime-mutatingpolicybinding.yaml
+kubectl --kubeconfig <child-kubeconfig> apply \
+  -f deploy/admission/agent-pod-security-policy.yaml
+kubectl --kubeconfig <child-kubeconfig> apply \
+  -f deploy/admission/agent-pod-security-binding.yaml
 ```
 
 ### Verify the policy is active

@@ -29,6 +29,12 @@
 //! | `fivespot_emergency_drain_duration_seconds` | Histogram | Emergency-reclaim drain wall-clock by outcome |
 //! | `fivespot_emergency_reclaims_total` | Counter | Emergency-reclaim events per SM (namespace, name) |
 //! | `fivespot_rapid_re_reclaims_total` | Counter | RapidReReclaim warnings per SM (namespace, name) |
+//! | `fivespot_kata_config_writes_total` | Counter | Kata drop-in host writes by the node agent |
+//! | `fivespot_kata_config_deletes_total` | Counter | Kata drop-in host deletions (GitOps tear-down) |
+//! | `fivespot_kata_config_drift_corrected_total` | Counter | Out-of-band edits rewritten without a service restart |
+//! | `fivespot_kata_config_restarts_total` | Counter | Host k0s-service restarts issued via nsenter |
+//! | `fivespot_kata_config_sync_errors_total` | Counter | Failed kata-config reconcile ticks |
+//! | `fivespot_kata_config_last_sync_timestamp_seconds` | Gauge | Unix time of the last successful kata-config reconcile |
 
 use std::sync::LazyLock;
 
@@ -445,6 +451,108 @@ pub static CHILD_KUBECONFIG_ERRORS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|
     })
 });
 
+/// Kata drop-in host writes performed by the node agent (new-config rollouts
+/// **and** drift corrections — slice the latter out via
+/// `fivespot_kata_config_drift_corrected_total`).
+pub static KATA_CONFIG_WRITES_TOTAL: LazyLock<Counter> = LazyLock::new(|| {
+    register_counter!(
+        "fivespot_kata_config_writes_total",
+        "Total kata drop-in files written to the host by the node agent"
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_kata_config_writes_total: {e}");
+        fallback_counter(
+            "fivespot_kata_config_writes_total",
+            "Total kata drop-in files written to the host by the node agent",
+        )
+    })
+});
+
+/// Kata drop-in host deletions (source object/key/annotation cleared —
+/// GitOps: absent in source ⇒ absent on host).
+pub static KATA_CONFIG_DELETES_TOTAL: LazyLock<Counter> = LazyLock::new(|| {
+    register_counter!(
+        "fivespot_kata_config_deletes_total",
+        "Total kata drop-in files removed from the host by the node agent"
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_kata_config_deletes_total: {e}");
+        fallback_counter(
+            "fivespot_kata_config_deletes_total",
+            "Total kata drop-in files removed from the host by the node agent",
+        )
+    })
+});
+
+/// Writes that restored content already applied (and restarted for) — i.e.
+/// corrections of out-of-band edits. These rewrite the file but do **not**
+/// bounce the host k0s service (ADR 0003 restart-loop guard). A sustained
+/// non-zero rate means something on the node keeps editing the drop-in.
+pub static KATA_CONFIG_DRIFT_CORRECTED_TOTAL: LazyLock<Counter> = LazyLock::new(|| {
+    register_counter!(
+        "fivespot_kata_config_drift_corrected_total",
+        "Total out-of-band kata drop-in edits corrected without a service restart"
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_kata_config_drift_corrected_total: {e}");
+        fallback_counter(
+            "fivespot_kata_config_drift_corrected_total",
+            "Total out-of-band kata drop-in edits corrected without a service restart",
+        )
+    })
+});
+
+/// Host k0s-service restarts issued via `nsenter` (ADR 0003). Expect exactly
+/// one per distinct config change per node; a higher rate signals a
+/// restart loop (e.g. two writers fighting over the same destPath).
+pub static KATA_CONFIG_RESTARTS_TOTAL: LazyLock<Counter> = LazyLock::new(|| {
+    register_counter!(
+        "fivespot_kata_config_restarts_total",
+        "Total host k0s-service restarts issued by the kata-config agent"
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_kata_config_restarts_total: {e}");
+        fallback_counter(
+            "fivespot_kata_config_restarts_total",
+            "Total host k0s-service restarts issued by the kata-config agent",
+        )
+    })
+});
+
+/// Failed kata-config reconcile ticks (API fetch, host I/O, annotation PATCH,
+/// or restart errors). The agent retries next tick; alert on a sustained rate.
+pub static KATA_CONFIG_SYNC_ERRORS_TOTAL: LazyLock<Counter> = LazyLock::new(|| {
+    register_counter!(
+        "fivespot_kata_config_sync_errors_total",
+        "Total failed kata-config reconcile ticks"
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_kata_config_sync_errors_total: {e}");
+        fallback_counter(
+            "fivespot_kata_config_sync_errors_total",
+            "Total failed kata-config reconcile ticks",
+        )
+    })
+});
+
+/// Unix timestamp of the last successful kata-config reconcile tick
+/// (regardless of whether it wrote, deleted, or found everything in sync).
+/// Alert when `time() - this` exceeds a few poll intervals — the agent is
+/// wedged or cannot reach the API.
+pub static KATA_CONFIG_LAST_SYNC_TIMESTAMP_SECONDS: LazyLock<Gauge> = LazyLock::new(|| {
+    register_gauge!(
+        "fivespot_kata_config_last_sync_timestamp_seconds",
+        "Unix time of the last successful kata-config reconcile tick"
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_kata_config_last_sync_timestamp_seconds: {e}");
+        fallback_gauge(
+            "fivespot_kata_config_last_sync_timestamp_seconds",
+            "Unix time of the last successful kata-config reconcile tick",
+        )
+    })
+});
+
 /// Record a successful reconciliation
 pub fn record_reconciliation_success(phase: &str, duration_secs: f64) {
     RECONCILIATIONS_TOTAL
@@ -573,6 +681,80 @@ pub fn record_child_kubeconfig_error(reason: &str) {
 
 pub fn record_finalizer_cleanup_timeout() {
     FINALIZER_CLEANUP_TIMEOUTS_TOTAL.inc();
+}
+
+/// Stamp [`KATA_CONFIG_LAST_SYNC_TIMESTAMP_SECONDS`] with the current wall
+/// clock. A pre-epoch system clock (the only failure mode) degrades to not
+/// stamping rather than panicking.
+fn stamp_kata_config_last_sync() {
+    if let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        KATA_CONFIG_LAST_SYNC_TIMESTAMP_SECONDS.set(now.as_secs_f64());
+    }
+}
+
+/// Record one kata drop-in host write. `drift_corrected` is `true` when the
+/// write restored content already applied (see
+/// `kata_config_agent::is_drift_correction`) — it then also increments
+/// [`KATA_CONFIG_DRIFT_CORRECTED_TOTAL`].
+pub fn record_kata_config_write(drift_corrected: bool) {
+    KATA_CONFIG_WRITES_TOTAL.inc();
+    if drift_corrected {
+        KATA_CONFIG_DRIFT_CORRECTED_TOTAL.inc();
+    }
+    stamp_kata_config_last_sync();
+}
+
+/// Record one kata drop-in host deletion (GitOps tear-down).
+pub fn record_kata_config_delete() {
+    KATA_CONFIG_DELETES_TOTAL.inc();
+    stamp_kata_config_last_sync();
+}
+
+/// Record an in-sync kata-config tick — only refreshes the last-sync gauge.
+pub fn record_kata_config_sync_unchanged() {
+    stamp_kata_config_last_sync();
+}
+
+/// Record one host k0s-service restart issued by the kata-config agent.
+pub fn record_kata_config_restart() {
+    KATA_CONFIG_RESTARTS_TOTAL.inc();
+}
+
+/// Record one failed kata-config reconcile tick.
+pub fn record_kata_config_sync_error() {
+    KATA_CONFIG_SYNC_ERRORS_TOTAL.inc();
+}
+
+/// Serve the default Prometheus registry on `/metrics` at `0.0.0.0:<port>`.
+/// Shared by the controller and the node agents — runs until the process
+/// exits, so callers `tokio::spawn` it.
+pub async fn serve_metrics(port: u16) {
+    use prometheus::{Encoder, TextEncoder};
+    use warp::Filter;
+
+    tracing::info!(port = port, "Starting metrics server");
+
+    let metrics = warp::path("metrics").map(|| {
+        let encoder = TextEncoder::new();
+        let metric_families = prometheus::gather();
+        let mut buffer = vec![];
+
+        match encoder.encode(&metric_families, &mut buffer) {
+            Ok(()) => warp::reply::with_status(
+                String::from_utf8_lossy(&buffer).to_string(),
+                warp::http::StatusCode::OK,
+            ),
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to encode metrics");
+                warp::reply::with_status(
+                    format!("# Error encoding metrics: {e}\n"),
+                    warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                )
+            }
+        }
+    });
+
+    warp::serve(metrics.boxed()).run(([0, 0, 0, 0], port)).await;
 }
 
 /// Initialize controller info metric

@@ -26,9 +26,11 @@ pub use child_client::{
 pub use child_watch::ChildNodeWatchManager;
 #[allow(deprecated)] // re-export of legacy node_to_scheduled_machines for one release
 pub use helpers::{
-    build_clear_reclaim_patch, error_policy, evaluate_schedule, machine_to_scheduled_machine,
-    node_reclaim_request, node_to_scheduled_machines, node_to_scheduled_machines_via_machine,
-    parse_duration, reconcile_node_taints, should_process_resource, validate_cluster_name,
-    validate_kill_if_commands, NodeTaintReconcileOutcome, ReclaimRequest, ReconcileNodeTaintsInput,
+    build_clear_reclaim_patch, build_kata_config_label_patch,
+    build_kata_config_ref_annotation_patch, error_policy, evaluate_schedule,
+    machine_to_scheduled_machine, node_reclaim_request, node_to_scheduled_machines,
+    node_to_scheduled_machines_via_machine, parse_duration, reconcile_node_taints,
+    should_process_resource, validate_cluster_name, validate_kill_if_commands,
+    NodeTaintReconcileOutcome, ReclaimRequest, ReconcileNodeTaintsInput,
 };
 pub use scheduled_machine::{reconcile_scheduled_machine, Context, ReconcilerError};
