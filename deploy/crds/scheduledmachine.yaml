@@ -32,13 +32,16 @@ spec:
     - jsonPath: .spec.schedule.hoursOfDay
       name: Schedule Hours
       type: string
+    - jsonPath: .spec.spotSchedule.kind
+      name: SpotSchedule
+      type: string
     - jsonPath: .spec.killSwitch
       name: KillSwitch
       type: boolean
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
-    name: v1alpha1
+    name: v1beta1
     schema:
       openAPIV3Schema:
         description: Auto-generated derived type for ScheduledMachineSpec via `CustomResource`
@@ -369,7 +372,591 @@ spec:
                 minimum: 0.0
                 type: integer
               schedule:
-                description: Machine scheduling configuration
+                description: |-
+                  Inline time-based scheduling configuration (days of week, hours,
+                  timezone, enabled). **Optional since `v1beta1`** (ADR 0006): a machine
+                  may instead delegate its active/inactive decision to an external
+                  provider via [`spot_schedule`](Self::spot_schedule). At least one of
+                  `schedule` / `spotSchedule` must be set (CEL-enforced). When both are
+                  set the machine is active only when the time window **and** the provider
+                  both agree (logical AND); `killSwitch` always overrides.
+                nullable: true
+                properties:
+                  daysOfWeek:
+                    default: []
+                    description: |-
+                      Days of the week when machine should be active
+                      Supports: individual days (mon), ranges (mon-fri), combinations (mon-wed,fri-sun)
+                    items:
+                      type: string
+                    type: array
+                  enabled:
+                    default: true
+                    description: Whether the schedule is enabled
+                    type: boolean
+                  hoursOfDay:
+                    default: []
+                    description: |-
+                      Hours when machine should be active (0-23)
+                      Supports: individual hours (9), ranges (9-17), combinations (0-9,18-23)
+                    items:
+                      type: string
+                    type: array
+                  timezone:
+                    default: UTC
+                    description: |-
+                      Timezone for the schedule (e.g., "UTC", "America/New\_York")
+                      Maximum length of 64 characters.
+                    maxLength: 64
+                    pattern: ^[A-Za-z][A-Za-z0-9_+\-/]*$
+                    type: string
+                type: object
+              spotSchedule:
+                description: |-
+                  Reference to an external spot-schedule provider resource that owns the
+                  active/inactive decision for this machine (ADR 0006). The referenced
+                  object must live in **this `ScheduledMachine`'s namespace**, and its
+                  `apiVersion` group must be `spotschedules.5spot.finos.org`
+                  (CEL-enforced). 5-Spot reads only the provider's duck-typed
+                  `status.active` (and `Ready` condition); it never reads the provider
+                  `spec` and never writes the provider object. Composed with `schedule`
+                  via logical AND when both are present.
+                nullable: true
+                properties:
+                  apiVersion:
+                    description: |-
+                      API version of the provider resource, `group/version`. The group MUST be
+                      `spotschedules.5spot.finos.org` (CEL-pinned); e.g.
+                      `spotschedules.5spot.finos.org/v1alpha1`.
+                    maxLength: 253
+                    minLength: 1
+                    pattern: ^spotschedules\.5spot\.finos\.org/[A-Za-z0-9][A-Za-z0-9.-]*$
+                    type: string
+                    x-kubernetes-validations:
+                    - message: spec.spotSchedule.apiVersion group must be spotschedules.5spot.finos.org
+                      rule: self.startsWith('spotschedules.5spot.finos.org/')
+                  kind:
+                    description: Kind of the provider resource, e.g. `CapitalMarketsSchedule`.
+                    maxLength: 63
+                    minLength: 1
+                    pattern: ^[A-Z][A-Za-z0-9]*$
+                    type: string
+                  name:
+                    description: |-
+                      Name of the provider object in **this `ScheduledMachine`'s namespace**.
+                      RFC-1123 DNS subdomain (max 253 chars).
+                    maxLength: 253
+                    minLength: 1
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                type: object
+            required:
+            - bootstrapSpec
+            - clusterName
+            - infrastructureSpec
+            type: object
+            x-kubernetes-validations:
+            - message: at least one of spec.schedule or spec.spotSchedule must be set
+              rule: has(self.schedule) || has(self.spotSchedule)
+          status:
+            nullable: true
+            properties:
+              appliedNodeTaints:
+                description: |-
+                  Taints the controller has applied to the Node, in the order they were
+                  applied. Maintained as the controller's record of truth so subsequent
+                  reconciles only mutate taints we own — admin-added taints on the same
+                  Node whose `(key, effect)` collides with an entry here are surfaced as
+                  a `TaintOwnershipConflict` condition rather than overwritten.
+                items:
+                  description: |-
+                    A taint the controller applies to the Kubernetes Node once it is Ready.
+
+                    Mirrors the shape of core/v1 `Taint`. Identity is the tuple `(key, effect)`;
+                    `value` is mutable. See `ScheduledMachineSpec.node_taints` for ownership
+                    semantics.
+                  properties:
+                    effect:
+                      description: Taint effect — one of `NoSchedule`, `PreferNoSchedule`, `NoExecute`.
+                      enum:
+                      - NoSchedule
+                      - PreferNoSchedule
+                      - NoExecute
+                      type: string
+                    key:
+                      description: |-
+                        Taint key. Must be a qualified name (`[prefix/]name`), 1–63 chars on the
+                        name portion and matching `[a-z0-9A-Z]([-a-zA-Z0-9.]*[a-zA-Z0-9])?`.
+                        Reserved prefixes (`5spot.finos.org/`, `kubernetes.io/`,
+                        `node.kubernetes.io/`, `node-role.kubernetes.io/`) are rejected.
+                      type: string
+                    value:
+                      description: |-
+                        Optional taint value (max 63 chars). Matches the same qualified-name
+                        pattern as `key`'s name portion when set.
+                      nullable: true
+                      type: string
+                  required:
+                  - effect
+                  - key
+                  type: object
+                type: array
+              bootstrapRef:
+                description: Reference to the created bootstrap resource
+                nullable: true
+                properties:
+                  apiVersion:
+                    description: API version of the referenced object
+                    type: string
+                  kind:
+                    description: Kind of the referenced object
+                    type: string
+                  name:
+                    description: Name of the referenced object
+                    type: string
+                  namespace:
+                    description: Namespace of the referenced object
+                    nullable: true
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                type: object
+              conditions:
+                default: []
+                description: Standard Kubernetes conditions
+                items:
+                  properties:
+                    lastTransitionTime:
+                      description: Last transition time (RFC3339 format)
+                      type: string
+                    message:
+                      description: Human-readable message
+                      type: string
+                    reason:
+                      description: One-word reason in CamelCase
+                      type: string
+                    status:
+                      description: 'Status: "True", "False", or "Unknown"'
+                      enum:
+                      - 'True'
+                      - 'False'
+                      - Unknown
+                      type: string
+                    type:
+                      description: Type of condition (e.g., "Ready", "`MachineReady`", "`ReferencesValid`")
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              inSchedule:
+                default: false
+                description: Whether machine is currently in scheduled window
+                type: boolean
+              infrastructureRef:
+                description: Reference to the created infrastructure resource
+                nullable: true
+                properties:
+                  apiVersion:
+                    description: API version of the referenced object
+                    type: string
+                  kind:
+                    description: Kind of the referenced object
+                    type: string
+                  name:
+                    description: Name of the referenced object
+                    type: string
+                  namespace:
+                    description: Namespace of the referenced object
+                    nullable: true
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                type: object
+              lastScheduledTime:
+                description: Last time a machine was created (RFC3339 format)
+                nullable: true
+                type: string
+              machineRef:
+                description: Reference to the created CAPI Machine
+                nullable: true
+                properties:
+                  apiVersion:
+                    description: API version of the referenced object
+                    type: string
+                  kind:
+                    description: Kind of the referenced object
+                    type: string
+                  name:
+                    description: Name of the referenced object
+                    type: string
+                  namespace:
+                    description: Namespace of the referenced object
+                    nullable: true
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                type: object
+              message:
+                description: Human-readable status message
+                nullable: true
+                type: string
+              nextActivation:
+                description: Next scheduled activation time (RFC3339 format)
+                nullable: true
+                type: string
+              nextCleanup:
+                description: Time when machine will be cleaned up (RFC3339 format)
+                nullable: true
+                type: string
+              nodeRef:
+                description: |-
+                  Reference to the Kubernetes Node (once provisioned), mirroring the
+                  shape of CAPI's `Machine.status.nodeRef`.
+                nullable: true
+                properties:
+                  apiVersion:
+                    description: API version of the Node resource (typically `"v1"`)
+                    type: string
+                  kind:
+                    description: Kind of the referenced object (typically `"Node"`)
+                    type: string
+                  name:
+                    description: Name of the Node
+                    type: string
+                  uid:
+                    description: UID of the Node, protecting against name reuse
+                    nullable: true
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                type: object
+              observedGeneration:
+                description: Observed generation for change detection
+                format: int64
+                nullable: true
+                type: integer
+              phase:
+                description: |-
+                  Current phase of the machine lifecycle
+                  Values: Pending, Active, `ShuttingDown`, Inactive, Disabled, Terminated, Error
+                nullable: true
+                type: string
+              providerID:
+                description: |-
+                  Provider-assigned machine identifier, copied from the CAPI
+                  `Machine.spec.providerID`. Stable for the life of the machine and
+                  unique across the cluster.
+                nullable: true
+                type: string
+              ready:
+                default: false
+                description: |-
+                  True only when the machine has reached the `Active` phase. Surfaced as
+                  the `Ready` printer column for fast operator triage; any other phase
+                  (Pending, ShuttingDown, Inactive, Disabled, Terminated, Error) is
+                  reported as `False`.
+                type: boolean
+            type: object
+        required:
+        - spec
+        title: ScheduledMachine
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.ready
+      name: Ready
+      type: boolean
+    - jsonPath: .status.inSchedule
+      name: InSchedule
+      type: boolean
+    - jsonPath: .spec.schedule.enabled
+      name: Enabled
+      type: boolean
+    - jsonPath: .spec.schedule.daysOfWeek
+      name: Schedule Days
+      type: string
+    - jsonPath: .spec.schedule.hoursOfDay
+      name: Schedule Hours
+      type: string
+    - jsonPath: .spec.killSwitch
+      name: KillSwitch
+      type: boolean
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    deprecated: true
+    deprecationWarning: 5spot.finos.org/v1alpha1 ScheduledMachine is deprecated; migrate to v1beta1 (adds spec.spotSchedule)
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ScheduledMachineSpec via `CustomResource`
+        properties:
+          spec:
+            description: |-
+              Frozen `v1alpha1` spec — identical to the original `ScheduledMachine`
+              shape before `spec.spotSchedule` was introduced. `schedule` is
+              **required** here (it predates the optional-schedule relaxation).
+            properties:
+              bootstrapSpec:
+                description: Inline bootstrap configuration spec (e.g., `K0sWorkerConfig`).
+                properties:
+                  apiVersion:
+                    description: API version of the resource (e.g., 'bootstrap.cluster.x-k8s.io/v1beta1')
+                    type: string
+                  kind:
+                    description: Kind of the resource (e.g., 'K0sWorkerConfig', 'RemoteMachine')
+                    type: string
+                  metadata:
+                    description: Optional labels/annotations to stamp on the created resource. Only 'labels' and 'annotations' are honoured; 'name' and 'namespace' are controller-owned and rejected at admission.
+                    properties:
+                      annotations:
+                        additionalProperties:
+                          type: string
+                        description: Annotations merged onto the created resource (reserved prefixes are rejected)
+                        type: object
+                      labels:
+                        additionalProperties:
+                          type: string
+                        description: Labels merged onto the created resource (reserved prefixes are rejected)
+                        type: object
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                  spec:
+                    description: Provider-specific configuration
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                required:
+                - apiVersion
+                - kind
+                - spec
+                type: object
+              clusterName:
+                description: Name of the CAPI cluster this machine belongs to.
+                maxLength: 63
+                minLength: 1
+                pattern: ^[A-Za-z0-9][A-Za-z0-9._-]*$
+                type: string
+              gracefulShutdownTimeout:
+                default: 5m
+                description: Timeout for graceful machine shutdown (e.g., "5m", "10s").
+                type: string
+              infrastructureSpec:
+                description: Inline infrastructure configuration spec (e.g., `RemoteMachine`).
+                properties:
+                  apiVersion:
+                    description: API version of the resource (e.g., 'bootstrap.cluster.x-k8s.io/v1beta1')
+                    type: string
+                  kind:
+                    description: Kind of the resource (e.g., 'K0sWorkerConfig', 'RemoteMachine')
+                    type: string
+                  metadata:
+                    description: Optional labels/annotations to stamp on the created resource. Only 'labels' and 'annotations' are honoured; 'name' and 'namespace' are controller-owned and rejected at admission.
+                    properties:
+                      annotations:
+                        additionalProperties:
+                          type: string
+                        description: Annotations merged onto the created resource (reserved prefixes are rejected)
+                        type: object
+                      labels:
+                        additionalProperties:
+                          type: string
+                        description: Labels merged onto the created resource (reserved prefixes are rejected)
+                        type: object
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                  spec:
+                    description: Provider-specific configuration
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                required:
+                - apiVersion
+                - kind
+                - spec
+                type: object
+              kata:
+                description: |-
+                  Optional reference to a Kata containerd drop-in source on the
+                  workload cluster.
+                nullable: true
+                properties:
+                  key:
+                    default: kata-containers.toml
+                    description: |-
+                      Key within the source's `data` map whose value is the drop-in content.
+                      Defaults to `kata-containers.toml`.
+                    maxLength: 253
+                    minLength: 1
+                    pattern: ^[A-Za-z0-9._-]+$
+                    type: string
+                  kind:
+                    description: Whether the source is a `ConfigMap` or a `Secret`. Required (no default).
+                    enum:
+                    - ConfigMap
+                    - Secret
+                    type: string
+                  name:
+                    description: |-
+                      Name of the source object on the workload cluster. RFC-1123 DNS subdomain
+                      (max 253 chars).
+                    maxLength: 253
+                    minLength: 1
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                    type: string
+                  namespace:
+                    default: 5spot-system
+                    description: |-
+                      Workload-cluster namespace the agent reads the object from. Defaults to
+                      `5spot-system` (the agent's own namespace, so no cross-namespace agent
+                      RBAC is needed). Override to place config in a per-tenant namespace.
+                    maxLength: 63
+                    minLength: 1
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                    type: string
+                  restartService:
+                    default: k0sworker.service
+                    description: |-
+                      systemd unit the node agent restarts (via `nsenter`) so containerd
+                      reloads the drop-in. Defaults to `k0sworker.service`; override with
+                      `k0scontroller.service` on single-node / controller-runs-workloads
+                      layouts.
+                    maxLength: 255
+                    minLength: 1
+                    pattern: ^[A-Za-z0-9@._-]+\.service$
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+              killIfCommands:
+                description: |-
+                  Optional list of process patterns that trigger an emergency node
+                  reclaim.
+                items:
+                  maxLength: 256
+                  minLength: 1
+                  type: string
+                maxItems: 100
+                type: array
+              killSwitch:
+                default: false
+                description: When true, immediately removes the machine from cluster.
+                type: boolean
+              kubeconfigSecretRef:
+                description: Reference to a Secret holding a workload-cluster kubeconfig.
+                nullable: true
+                properties:
+                  key:
+                    default: value
+                    description: |-
+                      Key within the Secret's `data` map whose value is the kubeconfig YAML
+                      document. Defaults to `value` — CAPI's convention for
+                      `<clusterName>-kubeconfig` Secrets generated by the control-plane
+                      provider. Common overrides: `kubeconfig` (some k0smotron flows),
+                      `admin.conf` (kubeadm-style).
+                    maxLength: 253
+                    minLength: 1
+                    pattern: ^[A-Za-z0-9._-]+$
+                    type: string
+                  name:
+                    description: |-
+                      Name of the Secret. RFC-1123 DNS subdomain (max 253 chars).
+                      The Secret MUST live in the same namespace as the ScheduledMachine —
+                      there is no `namespace` field by design.
+                    maxLength: 253
+                    minLength: 1
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                    type: string
+                required:
+                - name
+                type: object
+              machineTemplate:
+                description: Optional configuration for the created CAPI Machine.
+                nullable: true
+                properties:
+                  annotations:
+                    additionalProperties:
+                      type: string
+                    default: {}
+                    description: Annotations to apply to the created Machine
+                    type: object
+                  labels:
+                    additionalProperties:
+                      type: string
+                    default: {}
+                    description: Labels to apply to the created Machine
+                    type: object
+                type: object
+              nodeDrainTimeout:
+                default: 5m
+                description: Timeout for draining the node before deletion (e.g., "5m", "10m").
+                type: string
+              nodeTaints:
+                description: User-defined taints applied to the Kubernetes Node once it is Ready.
+                items:
+                  description: |-
+                    A taint the controller applies to the Kubernetes Node once it is Ready.
+
+                    Mirrors the shape of core/v1 `Taint`. Identity is the tuple `(key, effect)`;
+                    `value` is mutable. See `ScheduledMachineSpec.node_taints` for ownership
+                    semantics.
+                  properties:
+                    effect:
+                      description: Taint effect — one of `NoSchedule`, `PreferNoSchedule`, `NoExecute`.
+                      enum:
+                      - NoSchedule
+                      - PreferNoSchedule
+                      - NoExecute
+                      type: string
+                    key:
+                      description: |-
+                        Taint key. Must be a qualified name (`[prefix/]name`), 1–63 chars on the
+                        name portion and matching `[a-z0-9A-Z]([-a-zA-Z0-9.]*[a-zA-Z0-9])?`.
+                        Reserved prefixes (`5spot.finos.org/`, `kubernetes.io/`,
+                        `node.kubernetes.io/`, `node-role.kubernetes.io/`) are rejected.
+                      type: string
+                    value:
+                      description: |-
+                        Optional taint value (max 63 chars). Matches the same qualified-name
+                        pattern as `key`'s name portion when set.
+                      nullable: true
+                      type: string
+                  required:
+                  - effect
+                  - key
+                  type: object
+                type: array
+              priority:
+                default: 50
+                description: Priority for machine scheduling (higher values = higher priority).
+                format: uint8
+                maximum: 255.0
+                minimum: 0.0
+                type: integer
+              schedule:
+                description: Machine scheduling configuration (required in `v1alpha1`).
                 properties:
                   daysOfWeek:
                     default: []
@@ -623,7 +1210,6 @@ spec:
         title: ScheduledMachine
         type: object
     served: true
-    storage: true
+    storage: false
     subresources:
       status: {}
-

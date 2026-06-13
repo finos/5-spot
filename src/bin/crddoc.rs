@@ -42,19 +42,35 @@ fn main() {
     println!("### API Group and Version");
     println!();
     println!("- **API Group**: `5spot.finos.org`");
-    println!("- **API Version**: `v1alpha1`");
+    println!("- **API Version**: `v1beta1` (storage/current), `v1alpha1` (served, deprecated)");
     println!("- **Kind**: `ScheduledMachine`");
+    println!();
+    println!("> The CRD serves two versions (ADR 0007). `v1beta1` is the storage version and adds");
+    println!("> `spec.spotSchedule` plus an optional `spec.schedule`; `v1alpha1` is frozen and");
+    println!(
+        "> deprecated (existing `5spot.finos.org/v1alpha1` manifests continue to apply but have"
+    );
+    println!(
+        "> neither field). Conversion strategy is `None` — versions round-trip losslessly because"
+    );
+    println!("> `v1beta1` is a superset.");
     println!();
     println!("### Example");
     println!();
     println!("```yaml");
-    println!("apiVersion: 5spot.finos.org/v1alpha1");
+    println!("apiVersion: 5spot.finos.org/v1beta1");
     println!("kind: ScheduledMachine");
     println!("metadata:");
     println!("  name: example-spot-machine");
     println!("  namespace: default");
     println!("spec:");
     println!("  clusterName: my-cluster");
+    println!("  # Optional: delegate the active/inactive decision to an external provider");
+    println!("  # (ADR 0006). AND-composed with `schedule` when both are present.");
+    println!("  spotSchedule:");
+    println!("    apiVersion: spotschedules.5spot.finos.org/v1alpha1");
+    println!("    kind: CapitalMarketsSchedule");
+    println!("    name: nyse-equities");
     println!("  schedule:");
     println!("    daysOfWeek:");
     println!("      - mon-fri");
@@ -100,9 +116,16 @@ fn main() {
     println!();
     println!("### Spec Fields");
     println!();
+    println!("> **At least one of `schedule` / `spotSchedule` is required** (CEL-enforced). When");
+    println!("> both are set the machine is active only when the time window **and** the provider");
+    println!("> both agree (logical AND); `killSwitch` always overrides.");
+    println!();
     println!("#### schedule");
     println!();
-    println!("Machine scheduling configuration.");
+    println!(
+        "Inline time-based scheduling configuration. **Optional since `v1beta1`** — a machine"
+    );
+    println!("may instead delegate its decision to a `spotSchedule` provider.");
     println!();
     println!("- **daysOfWeek** (required, array of strings): Days when machine should be active.");
     println!("  Supports ranges (`mon-fri`) and combinations (`mon-wed,fri-sun`).");
@@ -115,6 +138,31 @@ fn main() {
     println!();
     println!(
         "- **enabled** (optional, boolean, default: `true`): Whether the schedule is enabled."
+    );
+    println!();
+    println!("#### spotSchedule");
+    println!();
+    println!("Reference to an external spot-schedule provider resource that owns this machine's");
+    println!("active/inactive decision (ADR 0006). The 5-Spot controller watches the referenced");
+    println!(
+        "object and reads only its duck-typed `status.active` (and `Ready` condition) — never"
+    );
+    println!("the provider `spec`, and it never writes the provider object. Composed with");
+    println!("`schedule` via logical AND when both are present.");
+    println!();
+    println!(
+        "- **apiVersion** (required, string): `group/version` of the provider. The group MUST"
+    );
+    println!("  be `spotschedules.5spot.finos.org` (CEL-pinned); any served version is accepted.");
+    println!("- **kind** (required, string): Provider kind, e.g. `CapitalMarketsSchedule`.");
+    println!(
+        "- **name** (required, string): Provider object name in **this machine's namespace**."
+    );
+    println!("  Cross-namespace references are not supported.");
+    println!();
+    println!("See the [Spot Schedule Provider Contract](spot-schedule-contract.md) for the full");
+    println!(
+        "contract a provider implements, and the `CapitalMarketsSchedule` reference provider."
     );
     println!();
     println!("#### clusterName");

@@ -290,12 +290,13 @@ mod tests {
         use serde_json::json;
 
         let spec = ScheduledMachineSpec {
-            schedule: ScheduleSpec {
+            schedule: Some(ScheduleSpec {
                 days_of_week: vec!["mon-fri".to_string()],
                 hours_of_day: vec!["9-17".to_string()],
                 timezone: "UTC".to_string(),
                 enabled: true,
-            },
+            }),
+            spot_schedule: None,
             cluster_name: "test-cluster".to_string(),
             bootstrap_spec: EmbeddedResource(json!({
                 "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
@@ -513,12 +514,13 @@ mod tests {
     fn base_spec() -> ScheduledMachineSpec {
         use serde_json::json;
         ScheduledMachineSpec {
-            schedule: ScheduleSpec {
+            schedule: Some(ScheduleSpec {
                 days_of_week: vec!["mon-fri".to_string()],
                 hours_of_day: vec!["9-17".to_string()],
                 timezone: "UTC".to_string(),
                 enabled: true,
-            },
+            }),
+            spot_schedule: None,
             cluster_name: "test-cluster".to_string(),
             bootstrap_spec: EmbeddedResource(json!({
                 "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
@@ -1156,12 +1158,13 @@ mod tests {
         use serde_json::json;
 
         let spec = ScheduledMachineSpec {
-            schedule: ScheduleSpec {
+            schedule: Some(ScheduleSpec {
                 days_of_week: vec!["mon-fri".to_string()],
                 hours_of_day: vec!["9-17".to_string()],
                 timezone: "UTC".to_string(),
                 enabled: true,
-            },
+            }),
+            spot_schedule: None,
             cluster_name: "alpha".to_string(),
             bootstrap_spec: EmbeddedResource(json!({
                 "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
@@ -1625,5 +1628,239 @@ mod tests {
             Some(true),
             "metadata must preserve unknown fields so namespace/name can be rejected, not pruned"
         );
+    }
+
+    // ========================================================================
+    // spec.spotSchedule + multi-version (ADR 0006 / ADR 0007)
+    // ========================================================================
+
+    fn spot_schedule_ref() -> SpotScheduleRef {
+        SpotScheduleRef {
+            api_version: "spotschedules.5spot.finos.org/v1alpha1".to_string(),
+            kind: "CapitalMarketsSchedule".to_string(),
+            name: "nyse-equities".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_spot_schedule_ref_round_trips() {
+        let original = spot_schedule_ref();
+        let json = serde_json::to_value(&original).unwrap();
+        // camelCase on the wire.
+        assert_eq!(
+            json.get("apiVersion").and_then(serde_json::Value::as_str),
+            Some("spotschedules.5spot.finos.org/v1alpha1")
+        );
+        let parsed: SpotScheduleRef = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn test_spot_schedule_ref_group_extraction() {
+        let r = spot_schedule_ref();
+        assert_eq!(r.group(), "spotschedules.5spot.finos.org");
+        assert!(r.is_spot_schedule_group());
+    }
+
+    #[test]
+    fn test_spot_schedule_ref_group_rejects_foreign_group() {
+        let r = SpotScheduleRef {
+            api_version: "evil.example.com/v1".to_string(),
+            kind: "Foo".to_string(),
+            name: "bar".to_string(),
+        };
+        assert_eq!(r.group(), "evil.example.com");
+        assert!(!r.is_spot_schedule_group());
+    }
+
+    #[test]
+    fn test_spot_schedule_ref_group_no_slash_returns_whole() {
+        // A version-less apiVersion (rejected by the schema CEL) degrades to the
+        // whole string for group(), which then fails the group check.
+        let r = SpotScheduleRef {
+            api_version: "spotschedules.5spot.finos.org".to_string(),
+            kind: "Foo".to_string(),
+            name: "bar".to_string(),
+        };
+        assert_eq!(r.group(), "spotschedules.5spot.finos.org");
+        assert!(r.is_spot_schedule_group());
+    }
+
+    #[test]
+    fn test_spot_schedule_ref_denies_unknown_fields() {
+        let json = serde_json::json!({
+            "apiVersion": "spotschedules.5spot.finos.org/v1alpha1",
+            "kind": "CapitalMarketsSchedule",
+            "name": "x",
+            "namespace": "other"
+        });
+        // deny_unknown_fields: a stray `namespace` is a hard error, not ignored.
+        assert!(serde_json::from_value::<SpotScheduleRef>(json).is_err());
+    }
+
+    #[test]
+    fn test_api_version_schema_pins_group_via_cel() {
+        let schema = serde_json::to_value(spot_schedule_api_version_schema(
+            &mut schemars::SchemaGenerator::default(),
+        ))
+        .unwrap();
+        let rule = schema
+            .pointer("/x-kubernetes-validations/0/rule")
+            .and_then(serde_json::Value::as_str);
+        assert_eq!(
+            rule,
+            Some("self.startsWith('spotschedules.5spot.finos.org/')")
+        );
+    }
+
+    #[test]
+    fn test_effective_schedule_returns_inline_when_set() {
+        let mut spec = base_spec();
+        spec.schedule = Some(ScheduleSpec {
+            days_of_week: vec!["sat".to_string()],
+            hours_of_day: vec!["0-23".to_string()],
+            timezone: "UTC".to_string(),
+            enabled: true,
+        });
+        let effective = spec.effective_schedule();
+        assert!(effective.enabled);
+        assert_eq!(effective.days_of_week, vec!["sat".to_string()]);
+    }
+
+    #[test]
+    fn test_effective_schedule_is_inactive_placeholder_when_absent() {
+        let mut spec = base_spec();
+        spec.schedule = None;
+        spec.spot_schedule = Some(spot_schedule_ref());
+        let effective = spec.effective_schedule();
+        // spotSchedule-only machine: time-based evaluator must see "disabled".
+        assert!(!effective.enabled);
+        assert!(effective.days_of_week.is_empty());
+        assert!(effective.hours_of_day.is_empty());
+    }
+
+    #[test]
+    fn test_spot_schedule_only_spec_omits_schedule_on_wire() {
+        let mut spec = base_spec();
+        spec.schedule = None;
+        spec.spot_schedule = Some(spot_schedule_ref());
+        let json = serde_json::to_value(&spec).unwrap();
+        // schedule is skipped when None; spotSchedule is present.
+        assert!(json.get("schedule").is_none());
+        assert!(json.get("spotSchedule").is_some());
+        let parsed: ScheduledMachineSpec = serde_json::from_value(json).unwrap();
+        assert!(parsed.schedule.is_none());
+        assert_eq!(parsed.spot_schedule, Some(spot_schedule_ref()));
+    }
+
+    #[test]
+    fn test_scheduled_machine_crd_is_v1beta1() {
+        use kube::CustomResourceExt;
+        let crd = ScheduledMachine::crd();
+        assert_eq!(crd.spec.versions.len(), 1, "derive emits a single version");
+        assert_eq!(crd.spec.versions[0].name, "v1beta1");
+        assert!(crd.spec.versions[0].storage);
+    }
+
+    #[test]
+    fn test_v1alpha1_crd_is_frozen_and_deprecated() {
+        use kube::CustomResourceExt;
+        let crd = v1alpha1::ScheduledMachine::crd();
+        assert_eq!(crd.spec.versions[0].name, "v1alpha1");
+        assert_eq!(crd.spec.versions[0].deprecated, Some(true));
+    }
+
+    #[test]
+    fn test_merged_scheduledmachine_has_single_storage_version() {
+        use kube::core::crd::merge_crds;
+        use kube::CustomResourceExt;
+
+        let merged = merge_crds(
+            vec![ScheduledMachine::crd(), v1alpha1::ScheduledMachine::crd()],
+            "v1beta1",
+        )
+        .expect("merge succeeds");
+
+        // Both served versions are present.
+        let names: Vec<&str> = merged
+            .spec
+            .versions
+            .iter()
+            .map(|v| v.name.as_str())
+            .collect();
+        assert!(names.contains(&"v1alpha1"));
+        assert!(names.contains(&"v1beta1"));
+
+        // Exactly one storage version, and it is v1beta1.
+        let storage: Vec<&str> = merged
+            .spec
+            .versions
+            .iter()
+            .filter(|v| v.storage)
+            .map(|v| v.name.as_str())
+            .collect();
+        assert_eq!(storage, vec!["v1beta1"], "exactly one storage version");
+
+        // No conversion webhook configured => strategy None (default).
+        let conversion_is_webhook = merged
+            .spec
+            .conversion
+            .as_ref()
+            .is_some_and(|c| c.strategy == "Webhook");
+        assert!(
+            !conversion_is_webhook,
+            "conversion strategy must not be Webhook"
+        );
+    }
+
+    // ========================================================================
+    // CapitalMarketsSchedule reference provider (ADR 0006)
+    // ========================================================================
+
+    #[test]
+    fn test_capital_markets_schedule_spec_round_trips() {
+        let spec = CapitalMarketsScheduleSpec {
+            timezone: "America/New_York".to_string(),
+            sessions: vec![TradingSession {
+                days_of_week: vec!["mon-fri".to_string()],
+                hours_of_day: vec!["9-16".to_string()],
+            }],
+            holidays: vec!["2026-12-25".to_string()],
+            early_closes: vec![EarlyClose {
+                date: "2026-11-27".to_string(),
+                close_hour: 13,
+            }],
+        };
+        let json = serde_json::to_value(&spec).unwrap();
+        assert_eq!(
+            json.pointer("/earlyCloses/0/closeHour")
+                .and_then(serde_json::Value::as_u64),
+            Some(13)
+        );
+        let parsed: CapitalMarketsScheduleSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.sessions.len(), 1);
+        assert_eq!(parsed.holidays, vec!["2026-12-25".to_string()]);
+    }
+
+    #[test]
+    fn test_capital_markets_schedule_status_active_is_the_contract() {
+        let status = CapitalMarketsScheduleStatus {
+            active: true,
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(
+            json.get("active").and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn test_capital_markets_schedule_crd_group_and_version() {
+        use kube::CustomResourceExt;
+        let crd = CapitalMarketsSchedule::crd();
+        assert_eq!(crd.spec.group, "spotschedules.5spot.finos.org");
+        assert_eq!(crd.spec.names.kind, "CapitalMarketsSchedule");
+        assert_eq!(crd.spec.versions[0].name, "v1alpha1");
     }
 }

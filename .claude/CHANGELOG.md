@@ -9,6 +9,67 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-06-13 16:30] - Spot-schedule provider API: CRD scaffolding + ScheduledMachine v1beta1 (Phase 1)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/crd.rs`: `ScheduledMachine` bumped to **`v1beta1`** (storage) — `schedule`
+  is now `Option<ScheduleSpec>` and a new `spot_schedule: Option<SpotScheduleRef>`
+  field is added (ADR 0006). New `SpotScheduleRef` type (group-pinned `apiVersion`
+  via `x-kubernetes-validations` CEL, `deny_unknown_fields`, same-namespace
+  `name`). New `ScheduledMachineSpec::effective_schedule()` accessor +
+  `ScheduleSpec::inactive_placeholder()` (a spotSchedule-only machine evaluates
+  inactive until the Phase 2 resolver lands). New frozen, **deprecated**
+  `pub mod v1alpha1` ScheduledMachine (served for back-compat; superset relation
+  keeps `conversion: None` lossless — ADR 0007). New reference provider type
+  `CapitalMarketsSchedule` (group `spotschedules.5spot.finos.org/v1alpha1`):
+  spec (timezone/sessions/holidays/earlyCloses) + duck-typed
+  `status.active`/conditions/observedGeneration.
+- `src/constants.rs`: `API_VERSION`/`API_VERSION_FULL` → `v1beta1` (controller's
+  storage version, used for owner refs); new `API_VERSION_LEGACY`,
+  `SPOT_SCHEDULE_API_GROUP`, `SPOT_SCHEDULE_API_VERSION`,
+  `CONDITION_TYPE_SPOT_SCHEDULE_RESOLVED`, and the four
+  `REASON_SPOT_SCHEDULE_*` resolution reasons.
+- `src/bin/crdgen.rs`: rewritten to `merge_crds(v1alpha1, v1beta1, storage=v1beta1)`
+  for `ScheduledMachine` (+ inject the at-least-one-of `schedule`/`spotSchedule`
+  CEL into the v1beta1 spec schema) and emit the `CapitalMarketsSchedule` CRD;
+  now writes both files under `deploy/crds/` directly. `Makefile` `crds` target
+  updated (no stdout redirect).
+- `src/bin/crddoc.rs`: documents the v1beta1/v1alpha1 versioning, the
+  `spotSchedule` field, and the at-least-one-of rule; `docs/src/reference/api.md`
+  regenerated.
+- `src/reconcilers/scheduled_machine.rs`: route `spec.schedule` reads through
+  `effective_schedule()` (optional schedule); call the new
+  `validate_activation_source` in `reconcile_inner`'s defence-in-depth block.
+- `src/reconcilers/helpers.rs`: new `validate_activation_source` — runtime mirror
+  of the CRD spec-level CEL (at least one of `schedule`/`spotSchedule`, plus the
+  `spotschedules.5spot.finos.org` group pin), so the invariant holds even
+  without the apiserver CEL (pre-1.25, pre-existing stored objects, direct API
+  writes). The CRD CEL is structural-schema validation (apiserver-enforced), not
+  a VAP — this is the belt-and-braces runtime guard.
+- `deploy/crds/scheduledmachine.yaml` (multi-version, regenerated) +
+  `deploy/crds/capitalmarketsschedule.yaml` (NEW).
+- `examples/scheduledmachine-spot-schedule.yaml`,
+  `examples/capitalmarketsschedule.yaml`: NEW.
+- Tests: `src/crd_tests.rs` adds SpotScheduleRef round-trip/group-pin,
+  effective_schedule, spotSchedule-only round-trip, multi-version single-storage
+  invariant, and CapitalMarketsSchedule coverage; all SM-spec literals across
+  `*_tests.rs` + `tests/` updated for `Option` schedule + `spot_schedule`.
+- Docs: `docs/src/installation/crds.md`, `docs/src/reference/spot-schedule-contract.md`.
+
+### Why
+Phase 1 of the spot-schedule provider roadmap: introduce the `spec.spotSchedule`
+contract surface and the reference provider CRD, landed on a new `ScheduledMachine`
+`v1beta1` version (first exercise of the ADR 0007 multi-version machinery). The
+controller-side resolver/watch follow in later phases.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (apply regenerated CRDs: `kubectl apply -f deploy/crds/`)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-06-13 14:00] - ADR 0006/0007 + CALM: pluggable spot-schedule provider contract (Phase 0)
 
 **Author:** Erick Bourgeois

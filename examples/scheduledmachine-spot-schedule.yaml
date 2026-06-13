@@ -1,0 +1,59 @@
+# Example ScheduledMachine driven by an external spot-schedule provider
+# (spec.spotSchedule) — ADR 0006.
+#
+# This machine delegates its active/inactive decision to a
+# CapitalMarketsSchedule provider object named "nyse-equities" in the SAME
+# namespace (see examples/capitalmarketsschedule.yaml). The 5-Spot controller
+# watches that provider and reads only its duck-typed `status.active`.
+#
+# Because BOTH spec.schedule and spec.spotSchedule are set here, the machine is
+# active only when the time window AND the provider both agree (logical AND):
+# "the market is open (provider) AND it is 09:00-17:00 local (schedule)".
+# Drop the `schedule` block to let the provider decide alone (a spotSchedule-
+# only machine). At least one of schedule / spotSchedule is required.
+#
+# NOTE: this manifest uses 5spot.finos.org/v1beta1 — spec.spotSchedule does NOT
+# exist on the deprecated v1alpha1 version.
+
+apiVersion: 5spot.finos.org/v1beta1
+kind: ScheduledMachine
+metadata:
+  name: trading-floor-rack-7
+  namespace: capital-markets
+spec:
+  clusterName: my-k0s-cluster
+
+  # Delegate the active/inactive decision to an exchange-calendar provider.
+  # The group MUST be spotschedules.5spot.finos.org (CEL-enforced); any served
+  # version is accepted. The object must live in this SM's namespace.
+  spotSchedule:
+    apiVersion: spotschedules.5spot.finos.org/v1alpha1
+    kind: CapitalMarketsSchedule
+    name: nyse-equities
+
+  # Optional inline schedule, AND-composed with the provider above.
+  schedule:
+    daysOfWeek:
+      - mon-fri
+    hoursOfDay:
+      - "9-17"
+    timezone: America/New_York
+    enabled: true
+
+  bootstrapSpec:
+    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    kind: K0sWorkerConfig
+    spec:
+      version: v1.30.0+k0s.0
+
+  infrastructureSpec:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: RemoteMachine
+    spec:
+      address: 192.168.1.100
+      port: 22
+      user: admin
+
+  priority: 50
+  gracefulShutdownTimeout: 5m
+  nodeDrainTimeout: 5m

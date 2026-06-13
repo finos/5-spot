@@ -520,6 +520,10 @@ async fn reconcile_inner(
     // the reclaim-agent projection.
     super::helpers::validate_cluster_name(&resource.spec.cluster_name)?;
     super::helpers::validate_kill_if_commands(resource.spec.kill_if_commands.as_deref())?;
+    super::helpers::validate_activation_source(
+        resource.spec.schedule.as_ref(),
+        resource.spec.spot_schedule.as_ref(),
+    )?;
 
     // Get current status
     let current_phase = resource
@@ -555,8 +559,11 @@ async fn reconcile_inner(
         return Ok(action);
     }
 
-    // Evaluate schedule
-    let should_be_active = evaluate_schedule(&resource.spec.schedule, None)?;
+    // Evaluate schedule. `effective_schedule()` yields the inline schedule, or
+    // an inactive placeholder for a spotSchedule-only machine (the provider
+    // verdict is composed in by the spot-schedule resolver — roadmap Phase 2).
+    let schedule = resource.spec.effective_schedule();
+    let should_be_active = evaluate_schedule(&schedule, None)?;
 
     // Record schedule evaluation metric
     record_schedule_evaluation(should_be_active);
@@ -569,9 +576,9 @@ async fn reconcile_inner(
         resource = %name,
         namespace = %namespace,
         should_be_active = should_be_active,
-        enabled = resource.spec.schedule.enabled,
+        enabled = schedule.enabled,
         phase = ?current_phase,
-        timezone = %resource.spec.schedule.timezone,
+        timezone = %schedule.timezone,
         "Schedule evaluated"
     );
 
@@ -716,7 +723,7 @@ async fn handle_pending_phase(
     let name = resource.name_any();
 
     // Guard clause: if schedule is disabled
-    if !resource.spec.schedule.enabled {
+    if !resource.spec.effective_schedule().enabled {
         info!(resource = %name, namespace = %namespace, "Schedule disabled");
         update_phase(
             &ctx,
@@ -802,7 +809,7 @@ async fn handle_active_phase(
     let name = resource.name_any();
 
     // Guard clause: schedule disabled
-    if !resource.spec.schedule.enabled {
+    if !resource.spec.effective_schedule().enabled {
         info!(resource = %name, namespace = %namespace, "Schedule disabled - initiating shutdown");
         update_phase_with_grace_period(
             &ctx,
@@ -1282,7 +1289,7 @@ async fn handle_inactive_phase(
     let name = resource.name_any();
 
     // Guard clause: schedule disabled
-    if !resource.spec.schedule.enabled {
+    if !resource.spec.effective_schedule().enabled {
         return Ok(Action::requeue(Duration::from_secs(TIMER_REQUEUE_SECS)));
     }
 
@@ -1328,7 +1335,7 @@ async fn handle_disabled_phase(
     let name = resource.name_any();
 
     // Guard clause: schedule enabled again
-    if resource.spec.schedule.enabled {
+    if resource.spec.effective_schedule().enabled {
         info!(resource = %name, namespace = %namespace, "Schedule re-enabled");
         update_phase(
             &ctx,

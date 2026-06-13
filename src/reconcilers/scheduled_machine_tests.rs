@@ -15,12 +15,13 @@ mod tests {
 
     fn create_test_spec() -> crate::crd::ScheduledMachineSpec {
         crate::crd::ScheduledMachineSpec {
-            schedule: crate::crd::ScheduleSpec {
+            schedule: Some(crate::crd::ScheduleSpec {
                 days_of_week: vec!["mon-fri".to_string()],
                 hours_of_day: vec!["9-17".to_string()],
                 timezone: "UTC".to_string(),
                 enabled: true,
-            },
+            }),
+            spot_schedule: None,
             cluster_name: "test-cluster".to_string(),
             bootstrap_spec: crate::crd::EmbeddedResource(json!({
                 "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",

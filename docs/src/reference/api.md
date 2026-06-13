@@ -8,19 +8,31 @@ automatically added to and removed from a k0smotron cluster based on a time sche
 ### API Group and Version
 
 - **API Group**: `5spot.finos.org`
-- **API Version**: `v1alpha1`
+- **API Version**: `v1beta1` (storage/current), `v1alpha1` (served, deprecated)
 - **Kind**: `ScheduledMachine`
+
+> The CRD serves two versions (ADR 0007). `v1beta1` is the storage version and adds
+> `spec.spotSchedule` plus an optional `spec.schedule`; `v1alpha1` is frozen and
+> deprecated (existing `5spot.finos.org/v1alpha1` manifests continue to apply but have
+> neither field). Conversion strategy is `None` — versions round-trip losslessly because
+> `v1beta1` is a superset.
 
 ### Example
 
 ```yaml
-apiVersion: 5spot.finos.org/v1alpha1
+apiVersion: 5spot.finos.org/v1beta1
 kind: ScheduledMachine
 metadata:
   name: example-spot-machine
   namespace: default
 spec:
   clusterName: my-cluster
+  # Optional: delegate the active/inactive decision to an external provider
+  # (ADR 0006). AND-composed with `schedule` when both are present.
+  spotSchedule:
+    apiVersion: spotschedules.5spot.finos.org/v1alpha1
+    kind: CapitalMarketsSchedule
+    name: nyse-equities
   schedule:
     daysOfWeek:
       - mon-fri
@@ -66,9 +78,14 @@ spec:
 
 ### Spec Fields
 
+> **At least one of `schedule` / `spotSchedule` is required** (CEL-enforced). When
+> both are set the machine is active only when the time window **and** the provider
+> both agree (logical AND); `killSwitch` always overrides.
+
 #### schedule
 
-Machine scheduling configuration.
+Inline time-based scheduling configuration. **Optional since `v1beta1`** — a machine
+may instead delegate its decision to a `spotSchedule` provider.
 
 - **daysOfWeek** (required, array of strings): Days when machine should be active.
   Supports ranges (`mon-fri`) and combinations (`mon-wed,fri-sun`).
@@ -80,6 +97,23 @@ Machine scheduling configuration.
   Must be a valid IANA timezone (e.g., `America/New_York`, `Europe/London`).
 
 - **enabled** (optional, boolean, default: `true`): Whether the schedule is enabled.
+
+#### spotSchedule
+
+Reference to an external spot-schedule provider resource that owns this machine's
+active/inactive decision (ADR 0006). The 5-Spot controller watches the referenced
+object and reads only its duck-typed `status.active` (and `Ready` condition) — never
+the provider `spec`, and it never writes the provider object. Composed with
+`schedule` via logical AND when both are present.
+
+- **apiVersion** (required, string): `group/version` of the provider. The group MUST
+  be `spotschedules.5spot.finos.org` (CEL-pinned); any served version is accepted.
+- **kind** (required, string): Provider kind, e.g. `CapitalMarketsSchedule`.
+- **name** (required, string): Provider object name in **this machine's namespace**.
+  Cross-namespace references are not supported.
+
+See the [Spot Schedule Provider Contract](spot-schedule-contract.md) for the full
+contract a provider implements, and the `CapitalMarketsSchedule` reference provider.
 
 #### clusterName
 

@@ -4,10 +4,11 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Spot Schedule Provider Contract
 
-> **Status:** Draft skeleton (Phase 0 of the spot-schedule provider roadmap).
-> The contract is **Accepted** in [ADR 0006](https://github.com/finos/5-spot)
-> but the implementation lands across later phases. This page is the
-> authoritative specification a provider author implements against.
+> **Status:** Phase 1 — the API types exist (`ScheduledMachine.spec.spotSchedule`
+> on `v1beta1`, the `CapitalMarketsSchedule` reference provider CRD), but the
+> controller-side **resolver and watch** land in later roadmap phases. The
+> contract is **Accepted** in [ADR 0006](https://github.com/finos/5-spot). This
+> page is the authoritative specification a provider author implements against.
 
 A **spot-schedule provider** is any Kubernetes custom resource in the
 `spotschedules.5spot.finos.org` API group that tells 5-Spot whether a

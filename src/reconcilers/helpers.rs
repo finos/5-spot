@@ -1108,6 +1108,47 @@ pub fn validate_api_group(
     Ok(())
 }
 
+/// Validate that a `ScheduledMachine` declares at least one activation source —
+/// `spec.schedule` or `spec.spotSchedule` — and that a `spotSchedule` reference
+/// targets the pinned provider group.
+///
+/// This mirrors the CRD's spec-level CEL rules
+/// (`has(self.schedule) || has(self.spotSchedule)` and the
+/// `spotschedules.5spot.finos.org` group pin). The kube-apiserver enforces
+/// those CEL rules at admission on clusters >= 1.25 — note this is **CRD
+/// structural-schema validation, not a ValidatingAdmissionPolicy**, so it holds
+/// without VAP enabled. This runtime guard keeps the invariant defence-in-depth
+/// regardless: it still holds on a pre-CEL apiserver, for objects stored before
+/// the rule was added (the apiserver does not re-validate on read), and against
+/// direct API writes — matching the runtime `validate_*` posture the controller
+/// already applies for `clusterName` and `killIfCommands`.
+///
+/// # Errors
+/// [`ReconcilerError::ValidationError`] if neither activation source is set, or
+/// if `spotSchedule.apiVersion`'s group is not `spotschedules.5spot.finos.org`.
+pub fn validate_activation_source(
+    schedule: Option<&crate::crd::ScheduleSpec>,
+    spot_schedule: Option<&crate::crd::SpotScheduleRef>,
+) -> Result<(), ReconcilerError> {
+    if schedule.is_none() && spot_schedule.is_none() {
+        return Err(ReconcilerError::ValidationError(
+            "at least one of spec.schedule or spec.spotSchedule must be set".to_string(),
+        ));
+    }
+
+    if let Some(reference) = spot_schedule {
+        if !reference.is_spot_schedule_group() {
+            return Err(ReconcilerError::ValidationError(format!(
+                "spec.spotSchedule.apiVersion group must be '{}', got '{}'",
+                crate::constants::SPOT_SCHEDULE_API_GROUP,
+                reference.group()
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 // ============================================================================
 // CAPI Resource Creation
 // ============================================================================

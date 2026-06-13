@@ -174,8 +174,8 @@ run-local: ## Run operator locally
 
 crds: ## Generate CRD YAML files from Rust types
 	@echo "Generating CRD YAML files from src/crd.rs..."
-	@cargo run --quiet --bin crdgen > deploy/crds/scheduledmachine.yaml
-	@echo "✓ CRD YAML file generated: deploy/crds/scheduledmachine.yaml"
+	@cargo run --quiet --bin crdgen
+	@echo "✓ CRD YAML files generated under deploy/crds/"
 
 crddoc: ## Generate API documentation from CRD types
 	@echo "Generating API documentation..."

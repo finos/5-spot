@@ -71,12 +71,13 @@ current-context: child
                 ..Default::default()
             },
             spec: ScheduledMachineSpec {
-                schedule: ScheduleSpec {
+                schedule: Some(ScheduleSpec {
                     days_of_week: vec!["mon-fri".to_string()],
                     hours_of_day: vec!["9-17".to_string()],
                     timezone: "UTC".to_string(),
                     enabled: true,
-                },
+                }),
+                spot_schedule: None,
                 cluster_name: cluster_name.to_string(),
                 bootstrap_spec: EmbeddedResource(serde_json::json!({
                     "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",

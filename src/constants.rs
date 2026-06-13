@@ -24,11 +24,34 @@
 /// API group for 5-Spot CRDs
 pub const API_GROUP: &str = "5spot.finos.org";
 
-/// API version for 5-Spot CRDs
-pub const API_VERSION: &str = "v1alpha1";
+/// Storage / served API version the controller operates on for
+/// `ScheduledMachine`. The CRD serves **two** versions (ADR 0007): the frozen,
+/// deprecated [`API_VERSION_LEGACY`] (`v1alpha1`) and this one — the storage
+/// version — which is the superset carrying `spec.spotSchedule` and the
+/// optional `spec.schedule`. The controller reads/writes objects at this
+/// version; `conversion.strategy: None` relabels older stored objects to it.
+pub const API_VERSION: &str = "v1beta1";
 
-/// Full API version string
-pub const API_VERSION_FULL: &str = "5spot.finos.org/v1alpha1";
+/// Full API version string (`group/version`) for the storage version the
+/// controller operates on.
+pub const API_VERSION_FULL: &str = "5spot.finos.org/v1beta1";
+
+/// The frozen, deprecated legacy served version of `ScheduledMachine`. Kept
+/// served for backward compatibility (existing manifests using
+/// `5spot.finos.org/v1alpha1` continue to apply); it carries neither
+/// `spec.spotSchedule` nor an optional `spec.schedule`. See ADR 0007.
+pub const API_VERSION_LEGACY: &str = "v1alpha1";
+
+/// API group for the pluggable spot-schedule provider contract (ADR 0006).
+/// A `ScheduledMachine.spec.spotSchedule` reference's `apiVersion` group is
+/// CEL-pinned to exactly this value; any served version of a provider in this
+/// group is accepted (resolution keys off group + kind, never a pinned
+/// version — ADR 0007).
+pub const SPOT_SCHEDULE_API_GROUP: &str = "spotschedules.5spot.finos.org";
+
+/// Initial served version of the reference provider CRDs in
+/// [`SPOT_SCHEDULE_API_GROUP`] (e.g. `CapitalMarketsSchedule`).
+pub const SPOT_SCHEDULE_API_VERSION: &str = "v1alpha1";
 
 // ============================================================================
 // Resource Names
@@ -339,6 +362,21 @@ pub const CONDITION_TYPE_NODE_TAINTED: &str = "NodeTainted";
 /// set it to `Unknown`.
 pub const CONDITION_TYPE_CHILD_CLUSTER_REACHABLE: &str = "ChildClusterReachable";
 
+/// `SpotScheduleResolved` condition type — tracks whether the
+/// `spec.spotSchedule` provider reference (ADR 0006) resolved into a usable
+/// `status.active` verdict. `True` once the referenced provider object was
+/// read and reported a `Ready`, `active` status; `False` whenever the
+/// reference is **unresolved** — the provider CRD is not installed, the named
+/// object is absent, it exposes no `status.active`, or its `Ready` condition
+/// is `False`/missing. On `False`, 5-Spot holds the last known resolved state
+/// (fail-inactive when never resolved) rather than flapping the machine. The
+/// `reason` is one of [`REASON_SPOT_SCHEDULE_PROVIDER_CRD_NOT_INSTALLED`],
+/// [`REASON_SPOT_SCHEDULE_PROVIDER_NOT_FOUND`],
+/// [`REASON_SPOT_SCHEDULE_STATUS_ACTIVE_MISSING`],
+/// [`REASON_SPOT_SCHEDULE_PROVIDER_NOT_READY`], or
+/// [`REASON_SPOT_SCHEDULE_RESOLVED`].
+pub const CONDITION_TYPE_SPOT_SCHEDULE_RESOLVED: &str = "SpotScheduleResolved";
+
 // ============================================================================
 // Condition Statuses
 // ============================================================================
@@ -423,6 +461,31 @@ pub const REASON_NO_NODE_YET: &str = "NoNodeYet";
 /// an entry in `spec.nodeTaints`. The controller refuses to overwrite and
 /// surfaces this condition so the operator can reconcile ownership.
 pub const REASON_TAINT_OWNERSHIP_CONFLICT: &str = "TaintOwnershipConflict";
+
+// ----------------------------------------------------------------------------
+// Spot-schedule provider resolution reasons (ADR 0006)
+// ----------------------------------------------------------------------------
+
+/// Reason for `SpotScheduleResolved=True`: the referenced provider object was
+/// read and reported a `Ready`, well-formed `status.active`.
+pub const REASON_SPOT_SCHEDULE_RESOLVED: &str = "Resolved";
+
+/// Reason for `SpotScheduleResolved=False`: no CRD for the referenced
+/// `spec.spotSchedule` group/kind is installed in the cluster.
+pub const REASON_SPOT_SCHEDULE_PROVIDER_CRD_NOT_INSTALLED: &str = "ProviderCRDNotInstalled";
+
+/// Reason for `SpotScheduleResolved=False`: the CRD is installed but the named
+/// provider object does not exist in the `ScheduledMachine`'s namespace.
+pub const REASON_SPOT_SCHEDULE_PROVIDER_NOT_FOUND: &str = "ProviderNotFound";
+
+/// Reason for `SpotScheduleResolved=False`: the provider object exists but
+/// exposes no `status.active` boolean (contract not satisfied).
+pub const REASON_SPOT_SCHEDULE_STATUS_ACTIVE_MISSING: &str = "StatusActiveMissing";
+
+/// Reason for `SpotScheduleResolved=False`: the provider object's
+/// `status.conditions[type=Ready]` is `False` or absent, so its `status.active`
+/// is treated as unresolved rather than authoritative.
+pub const REASON_SPOT_SCHEDULE_PROVIDER_NOT_READY: &str = "ProviderNotReady";
 
 /// Server-side-apply field manager used when the controller patches Node
 /// `spec.taints`. Distinct from other field managers so a `kubectl describe

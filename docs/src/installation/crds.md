@@ -12,10 +12,32 @@ The `ScheduledMachine` CRD is the primary resource type for 5-Spot.
 kubectl apply -f deploy/crds/scheduledmachine.yaml
 ```
 
+Or apply the whole directory (also installs the spot-schedule provider CRD
+below):
+
+```bash
+kubectl apply -f deploy/crds/
+```
+
 Or from the repository:
 
 ```bash
 kubectl apply -f https://raw.githubusercontent.com/finos/5-spot/main/deploy/crds/scheduledmachine.yaml
+```
+
+The `ScheduledMachine` CRD serves two versions (ADR 0007): `v1beta1` (storage /
+current, adds `spec.spotSchedule` and an optional `spec.schedule`) and
+`v1alpha1` (served but **deprecated** — existing manifests keep working).
+Conversion strategy is `None`.
+
+## CapitalMarketsSchedule CRD (spot-schedule provider)
+
+The reference spot-schedule provider CRD
+(`capitalmarketsschedules.spotschedules.5spot.finos.org`, ADR 0006). Install it
+if you use `ScheduledMachine.spec.spotSchedule`:
+
+```bash
+kubectl apply -f deploy/crds/capitalmarketsschedule.yaml
 ```
 
 ### Verify Installation
@@ -47,8 +69,11 @@ See the [API Reference](../reference/api.md) for complete field documentation.
 If building from source, generate CRDs using:
 
 ```bash
-cargo run --bin crdgen > deploy/crds/scheduledmachine.yaml
+cargo run --bin crdgen
 ```
+
+This writes both `deploy/crds/scheduledmachine.yaml` and
+`deploy/crds/capitalmarketsschedule.yaml`.
 
 ## Upgrading CRDs
 

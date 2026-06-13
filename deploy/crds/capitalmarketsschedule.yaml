@@ -1,0 +1,184 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: capitalmarketsschedules.spotschedules.5spot.finos.org
+spec:
+  group: spotschedules.5spot.finos.org
+  names:
+    categories: []
+    kind: CapitalMarketsSchedule
+    plural: capitalmarketsschedules
+    shortNames:
+    - cms
+    singular: capitalmarketsschedule
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.active
+      name: Active
+      type: boolean
+    - jsonPath: .spec.timezone
+      name: Timezone
+      type: string
+    - jsonPath: .status.nextTransitionTime
+      name: NextTransition
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for CapitalMarketsScheduleSpec via `CustomResource`
+        properties:
+          spec:
+            description: |-
+              Reference spot-schedule provider (ADR 0006) modelling a capital-markets
+              **exchange calendar**: trading sessions, statutory holidays, and early
+              closes evaluated in a configured timezone. The provider controller (roadmap
+              Phase 5) reconciles this `spec` into the duck-typed
+              [`status.active`](CapitalMarketsScheduleStatus::active) boolean that a
+              `ScheduledMachine.spec.spotSchedule` consumes; 5-Spot's controller reads
+              only that status, never this spec.
+            properties:
+              earlyCloses:
+                default: []
+                description: Early-close overrides for specific dates.
+                items:
+                  description: |-
+                    An early-close override: on `date` the market closes at the end of
+                    `closeHour` instead of its normal session end.
+                  properties:
+                    closeHour:
+                      description: Last active hour (0–23) on that date.
+                      maximum: 23.0
+                      minimum: 0.0
+                      type: integer
+                    date:
+                      description: Calendar date in `YYYY-MM-DD` (ISO-8601) form.
+                      pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}$
+                      type: string
+                  required:
+                  - closeHour
+                  - date
+                  type: object
+                type: array
+              holidays:
+                default: []
+                description: |-
+                  Calendar dates (`YYYY-MM-DD`) on which the market is fully closed,
+                  overriding any session.
+                items:
+                  pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}$
+                  type: string
+                maxItems: 366
+                type: array
+              sessions:
+                default: []
+                description: |-
+                  Trading sessions during which the market is open. Empty means the
+                  provider is never active on the session axis (still subject to
+                  holidays / early closes).
+                items:
+                  description: |-
+                    A single trading session window, expressed with the same day/hour range
+                    syntax as [`ScheduleSpec`] (`mon-fri`, `9-17`, …). The market is "in
+                    session" when the current time falls inside any session.
+                  properties:
+                    daysOfWeek:
+                      default: []
+                      description: Days of the week this session runs (e.g. `["mon-fri"]`).
+                      items:
+                        type: string
+                      type: array
+                    hoursOfDay:
+                      default: []
+                      description: Hours of the day this session is open (e.g. `["9-16"]`).
+                      items:
+                        type: string
+                      type: array
+                  type: object
+                type: array
+              timezone:
+                default: UTC
+                description: |-
+                  IANA timezone the sessions, holidays, and early closes are evaluated in
+                  (e.g. `America/New_York`). Defaults to `UTC`.
+                maxLength: 64
+                pattern: ^[A-Za-z][A-Za-z0-9_+\-/]*$
+                type: string
+            type: object
+          status:
+            description: |-
+              Runtime status of a [`CapitalMarketsSchedule`]. Satisfies the spot-schedule
+              provider contract (ADR 0006): the authoritative signal is
+              [`active`](Self::active); `conditions[type=Ready]`, `observedGeneration`,
+              and `lastTransitionTime` are the recommended observability surface.
+            nullable: true
+            properties:
+              active:
+                default: false
+                description: |-
+                  **The contract field.** `true` ⇒ a `ScheduledMachine` referencing this
+                  object should be active; `false` ⇒ it should be inactive.
+                type: boolean
+              conditions:
+                default: []
+                description: |-
+                  Standard Kubernetes conditions. A `Ready` condition is recommended so
+                  consumers can distinguish "computed and current" from "stale/unhealthy"
+                  (the latter is treated as *unresolved* by 5-Spot, not inactive).
+                items:
+                  properties:
+                    lastTransitionTime:
+                      description: Last transition time (RFC3339 format)
+                      type: string
+                    message:
+                      description: Human-readable message
+                      type: string
+                    reason:
+                      description: One-word reason in CamelCase
+                      type: string
+                    status:
+                      description: 'Status: "True", "False", or "Unknown"'
+                      enum:
+                      - 'True'
+                      - 'False'
+                      - Unknown
+                      type: string
+                    type:
+                      description: Type of condition (e.g., "Ready", "`MachineReady`", "`ReferencesValid`")
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              lastTransitionTime:
+                description: When `active` last transitioned (RFC3339).
+                nullable: true
+                type: string
+              nextTransitionTime:
+                description: |-
+                  When `active` is next expected to transition (RFC3339) — the next
+                  session/holiday boundary. Lets the provider requeue exactly at the
+                  boundary instead of polling.
+                nullable: true
+                type: string
+              observedGeneration:
+                description: The `metadata.generation` this status reflects, for staleness detection.
+                format: int64
+                nullable: true
+                type: integer
+            type: object
+        required:
+        - spec
+        title: CapitalMarketsSchedule
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

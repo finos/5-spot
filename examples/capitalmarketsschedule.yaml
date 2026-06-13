@@ -1,0 +1,50 @@
+# Example CapitalMarketsSchedule — the reference spot-schedule provider
+# (ADR 0006). It models an exchange calendar (trading sessions, statutory
+# holidays, early closes) in a configured timezone and publishes the duck-typed
+# status.active boolean that a ScheduledMachine.spec.spotSchedule consumes.
+#
+# The provider controller (roadmap Phase 5) computes status.active from this
+# spec; 5-Spot's controller reads only the status, never this spec. This object
+# must live in the SAME namespace as the ScheduledMachine that references it.
+
+apiVersion: spotschedules.5spot.finos.org/v1alpha1
+kind: CapitalMarketsSchedule
+metadata:
+  name: nyse-equities
+  namespace: capital-markets
+spec:
+  # All session windows, holidays, and early closes are evaluated in this zone.
+  timezone: America/New_York
+
+  # The market is "in session" when now falls inside any session window.
+  sessions:
+    - daysOfWeek:
+        - mon-fri
+      hoursOfDay:
+        - "9-16"
+
+  # Statutory market holidays (fully closed), YYYY-MM-DD.
+  holidays:
+    - "2026-01-01" # New Year's Day
+    - "2026-07-03" # Independence Day (observed)
+    - "2026-12-25" # Christmas Day
+
+  # Early-close days: the market closes at the end of `closeHour`.
+  earlyCloses:
+    - date: "2026-11-27" # day after Thanksgiving
+      closeHour: 13
+    - date: "2026-12-24" # Christmas Eve
+      closeHour: 13
+# status is written by the provider controller, e.g.:
+#
+# status:
+#   active: true
+#   observedGeneration: 4
+#   lastTransitionTime: "2026-06-13T13:30:00Z"
+#   nextTransitionTime: "2026-06-13T20:00:00Z"
+#   conditions:
+#     - type: Ready
+#       status: "True"
+#       reason: SessionOpen
+#       message: "NYSE equities regular session open"
+#       lastTransitionTime: "2026-06-13T13:30:00Z"

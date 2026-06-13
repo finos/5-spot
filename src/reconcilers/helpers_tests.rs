@@ -1932,12 +1932,13 @@ mod tests {
                     "spec": {}
                 })),
                 machine_template: None,
-                schedule: crate::crd::ScheduleSpec {
+                schedule: Some(crate::crd::ScheduleSpec {
                     days_of_week: vec!["mon-fri".to_string()],
                     hours_of_day: vec!["9-17".to_string()],
                     timezone: "UTC".to_string(),
                     enabled: true,
-                },
+                }),
+                spot_schedule: None,
                 priority: 50,
                 graceful_shutdown_timeout: "5m".to_string(),
                 node_drain_timeout: "5m".to_string(),
@@ -3755,12 +3756,13 @@ mod tests {
                     "spec": {}
                 })),
                 machine_template: None,
-                schedule: crate::crd::ScheduleSpec {
+                schedule: Some(crate::crd::ScheduleSpec {
                     days_of_week: vec!["mon-fri".to_string()],
                     hours_of_day: vec!["9-17".to_string()],
                     timezone: "UTC".to_string(),
                     enabled: true,
-                },
+                }),
+                spot_schedule: None,
                 priority: 50,
                 graceful_shutdown_timeout: graceful_shutdown_timeout.to_string(),
                 node_drain_timeout: "5m".to_string(),
@@ -3963,6 +3965,67 @@ mod tests {
         let cmds = vec!["java".to_string(), String::new()];
         let err = validate_kill_if_commands(Some(&cmds)).unwrap_err();
         assert!(err.to_string().contains("must not be empty"));
+    }
+
+    // ========================================================================
+    // validate_activation_source — at least one of schedule/spotSchedule
+    // (runtime mirror of the CRD spec-level CEL, defence-in-depth)
+    // ========================================================================
+
+    fn sample_schedule() -> crate::crd::ScheduleSpec {
+        crate::crd::ScheduleSpec {
+            days_of_week: vec!["mon-fri".to_string()],
+            hours_of_day: vec!["9-17".to_string()],
+            timezone: "UTC".to_string(),
+            enabled: true,
+        }
+    }
+
+    fn sample_spot_schedule_ref() -> crate::crd::SpotScheduleRef {
+        crate::crd::SpotScheduleRef {
+            api_version: "spotschedules.5spot.finos.org/v1alpha1".to_string(),
+            kind: "CapitalMarketsSchedule".to_string(),
+            name: "nyse-equities".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_validate_activation_source_schedule_only_ok() {
+        let schedule = sample_schedule();
+        assert!(validate_activation_source(Some(&schedule), None).is_ok());
+    }
+
+    #[test]
+    fn test_validate_activation_source_spot_schedule_only_ok() {
+        let reference = sample_spot_schedule_ref();
+        assert!(validate_activation_source(None, Some(&reference)).is_ok());
+    }
+
+    #[test]
+    fn test_validate_activation_source_both_ok() {
+        let schedule = sample_schedule();
+        let reference = sample_spot_schedule_ref();
+        assert!(validate_activation_source(Some(&schedule), Some(&reference)).is_ok());
+    }
+
+    #[test]
+    fn test_validate_activation_source_neither_rejected() {
+        let err = validate_activation_source(None, None).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("at least one of spec.schedule or spec.spotSchedule"));
+    }
+
+    #[test]
+    fn test_validate_activation_source_rejects_foreign_provider_group() {
+        let reference = crate::crd::SpotScheduleRef {
+            api_version: "evil.example.com/v1".to_string(),
+            kind: "Foo".to_string(),
+            name: "bar".to_string(),
+        };
+        let err = validate_activation_source(None, Some(&reference)).unwrap_err();
+        assert!(err.to_string().contains("spotschedules.5spot.finos.org"));
+        assert!(err.to_string().contains("evil.example.com"));
     }
 
     #[test]
