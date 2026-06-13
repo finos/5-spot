@@ -244,6 +244,7 @@ nav:
 
   - Reference:
       - API Reference: reference/api.md
+      - Spot Schedule Provider Contract: reference/spot-schedule-contract.md
       - CLI Reference: reference/cli.md
       - Changelog: changelog.md
       - License: license.md

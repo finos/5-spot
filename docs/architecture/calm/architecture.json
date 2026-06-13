@@ -310,13 +310,40 @@
       "node-type": "data-asset",
       "name": "Per-Node Kata Config ConfigMap",
       "description": "Source ConfigMap or Secret on the workload cluster, in spec.kata.namespace (default 5spot-system), holding the Kata containerd drop-in. Platform-/Flux-managed — 5-Spot never creates, writes, or deletes it. The controller resolves it read-only (existence check) and the kata config agent GETs it by exact name each poll tick, keyed by the 5spot.finos.org/kata-config-ref Node annotation. If absent, delivery fails fast with a status reason and the Node is not opted in (ADR 0002)."
+    },
+    {
+      "unique-id": "service-spot-schedule-provider",
+      "node-type": "service",
+      "name": "Spot Schedule Provider (external)",
+      "description": "Third-party controller implementing the spotschedules.5spot.finos.org provider contract (ADR 0006). Reconciles a provider CRD (reference implementation: CapitalMarketsSchedule — exchange sessions, statutory holidays, early closes) and publishes a single duck-typed status.active boolean plus a Ready condition. 5-Spot treats it as an UNTRUSTED INPUT: it can start/stop the ScheduledMachines that reference it (same blast radius as editing spec.schedule.enabled), bounded to same-namespace SMs that named it. 5-Spot never reads the provider spec and never writes the provider object.",
+      "controls": {
+        "least-privilege": {
+          "description": "A reference provider's own controller holds update,patch on its OWN kind's /status subresource only (a separate Role, not 5-Spot's ClusterRole). It needs no access to ScheduledMachine or 5-Spot resources.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["AC-3", "AC-6"],
+                "evidence": "docs/src/reference/spot-schedule-contract.md, docs/adr/0006-pluggable-spot-schedule-provider-contract.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "data-asset-spot-schedule-cr",
+      "node-type": "data-asset",
+      "name": "Spot Schedule Provider Custom Resource",
+      "description": "Namespaced CRD in the spotschedules.5spot.finos.org group (e.g. CapitalMarketsSchedule), stored in the management cluster API. Owned by the external provider controller, which writes status.active (the authoritative active/inactive signal), a Ready condition, observedGeneration, and lastTransitionTime. Referenced by ScheduledMachine.spec.spotSchedule (apiVersion/kind/name, same namespace). Multi-version per ADR 0007 (served versions, single storage version, conversion strategy None)."
     }
   ],
 
   "relationships": [
     {
       "unique-id": "rel-mgmt-cluster-contains-controller",
-      "description": "The management cluster hosts the 5-Spot controller, the Kubernetes API, and the CAPI provider controllers.",
+      "description": "The management cluster hosts the 5-Spot controller, the Kubernetes API, the CAPI provider controllers, and any external spot-schedule provider controllers (ADR 0006).",
       "relationship-type": {
         "deployed-in": {
           "container": "ecosystem-management-cluster",
@@ -325,7 +352,8 @@
             "service-kubernetes-api",
             "service-capi-core",
             "service-capi-bootstrap-provider",
-            "service-capi-infrastructure-provider"
+            "service-capi-infrastructure-provider",
+            "service-spot-schedule-provider"
           ]
         }
       }
@@ -649,6 +677,59 @@
           "nodes": ["data-asset-kata-config-configmap"]
         }
       }
+    },
+    {
+      "unique-id": "rel-spot-schedule-cr-stored-in-api",
+      "description": "Spot-schedule provider custom resources (spotschedules.5spot.finos.org) are persisted by the management cluster API server in etcd, in the referencing ScheduledMachine's namespace.",
+      "relationship-type": {
+        "composed-of": {
+          "container": "service-kubernetes-api",
+          "nodes": ["data-asset-spot-schedule-cr"]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-provider-writes-spot-schedule-status",
+      "description": "The external provider controller reconciles its own CRD and PATCHes status.active (plus a Ready condition, observedGeneration, lastTransitionTime) onto the spot-schedule custom resource via the management cluster API. It writes only its own kind's /status subresource.",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "service-spot-schedule-provider" },
+          "destination": {
+            "node": "service-kubernetes-api",
+            "interfaces": ["kube-api-https"]
+          }
+        }
+      },
+      "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-controller-spot-schedule-watch",
+      "description": "Controller watches the spot-schedule provider custom resource named by ScheduledMachine.spec.spotSchedule and reads its duck-typed status.active (and Ready condition). Event-driven via a dynamic per-GVK watch (Api<DynamicObject> resolved through kube discovery) mapped back to referencing ScheduledMachines through an in-memory reverse index; provider status.active transitions trigger SM reconciles at watch latency. Read-only: 5-Spot never writes the provider object. ADR 0006 §5.",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "service-five-spot-controller" },
+          "destination": {
+            "node": "service-kubernetes-api",
+            "interfaces": ["kube-api-https"]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "least-privilege-readonly-group-pinned": {
+          "description": "Controller RBAC grants get,list,watch ONLY on spotschedules.5spot.finos.org/* — no write to any provider resource. A CEL XValidation on spec.spotSchedule.apiVersion pins the group to exactly spotschedules.5spot.finos.org (any served version accepted, ADR 0007), rejecting references to any other group at admission. References are same-namespace only. Providers are untrusted inputs whose blast radius (flapping the SMs that reference them) equals editing spec.schedule.enabled; mitigations are audited via the SpotScheduleResolved condition and transition-rate metrics.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["AC-3", "AC-4", "AC-6", "SI-10"],
+                "evidence": "docs/adr/0006-pluggable-spot-schedule-provider-contract.md, docs/src/security/threat-model.md"
+              }
+            }
+          ]
+        }
+      }
     }
   ],
 
@@ -848,6 +929,49 @@
           ]
         }
       }
+    },
+    {
+      "unique-id": "flow-spot-schedule-activation",
+      "name": "Spot Schedule Activation (provider-driven active/inactive)",
+      "description": "A ScheduledMachine with spec.spotSchedule delegates its active/inactive decision to an external provider's duck-typed status.active. The controller watches the provider CR event-driven and composes the provider verdict with the inline spec.schedule (logical AND when both are set; killSwitch always wins). An unresolved/unready provider never flaps machines: the controller surfaces SpotScheduleResolved=False and holds last-known state (fail-inactive when never resolved). ADR 0006.",
+      "transitions": [
+        {
+          "sequence-number": 1,
+          "relationship-unique-id": "rel-provider-writes-spot-schedule-status",
+          "description": "External provider controller evaluates its own spec (e.g. exchange calendar/holidays/early-closes) and PATCHes status.active (and the Ready condition) onto its CR. 5-Spot never reads the provider spec — only this status."
+        },
+        {
+          "sequence-number": 2,
+          "relationship-unique-id": "rel-controller-spot-schedule-watch",
+          "description": "Controller's dynamic watch on the provider GVK fires; the reverse index maps the event to the referencing ScheduledMachine(s) and enqueues them. The resolver reads status.active and the Ready condition defensively (missing CRD/object/status or Ready=False ⇒ Unresolved, surfaced as SpotScheduleResolved=False, not inactive).",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 3,
+          "relationship-unique-id": "rel-controller-kube-api",
+          "description": "Controller composes the provider verdict with evaluate_schedule (AND when spec.schedule is also set; killSwitch overrides). If the composite verdict is active and the machine is not yet up, it proceeds into flow-schedule-activation (create bootstrap/infra + CAPI Machine)."
+        },
+        {
+          "sequence-number": 4,
+          "relationship-unique-id": "rel-controller-kube-api",
+          "description": "On a provider transition to status.active=false (composite verdict inactive), the controller proceeds into flow-schedule-deactivation (cordon, drain within nodeDrainTimeout, delete the CAPI Machine). Provider Unresolved does NOT trigger this — last-known state is held."
+        }
+      ],
+      "controls": {
+        "untrusted-provider-failsafe": {
+          "description": "Providers are untrusted inputs. Group-pinned read-only RBAC (get,list,watch on spotschedules.5spot.finos.org/* only), same-namespace-only references, and the CEL group pin bound the blast radius to SMs that named the provider. Unresolved references hold last-known state and fail inactive when never resolved, so a missing/unready/compromised provider degrades to a loud SpotScheduleResolved=False status rather than flapping machines. Transition-rate metrics + an alert detect flapping.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["AC-4", "AC-6", "SI-10", "AU-2"],
+                "evidence": "docs/adr/0006-pluggable-spot-schedule-provider-contract.md, docs/src/security/threat-model.md"
+              }
+            }
+          ]
+        }
+      }
     }
   ],
 
@@ -882,6 +1006,7 @@
 
   "adrs": [
     "../../adr/0002-kata-config-delivery-via-spec-kata.md",
-    "../../adr/0003-in-pod-host-service-restart-via-nsenter.md"
+    "../../adr/0003-in-pod-host-service-restart-via-nsenter.md",
+    "../../adr/0006-pluggable-spot-schedule-provider-contract.md"
   ]
 }

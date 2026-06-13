@@ -9,6 +9,54 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-06-13 14:00] - ADR 0006/0007 + CALM: pluggable spot-schedule provider contract (Phase 0)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0006-pluggable-spot-schedule-provider-contract.md`: NEW — accept a
+  duck-typed external provider contract. `ScheduledMachine.spec.spotSchedule`
+  (`apiVersion`/`kind`/`name`, same namespace) delegates the active/inactive
+  decision to a CRD in the new `spotschedules.5spot.finos.org` group; 5-Spot
+  reads only `status.active` (+ `Ready`), never the provider spec, never writes
+  it. `spec.schedule` becomes optional (CEL: at least one of schedule/
+  spotSchedule); both set ⇒ logical AND; `killSwitch` overrides. Unresolved
+  references hold last-known state (fail-inactive when never resolved) and
+  surface `SpotScheduleResolved=False` — no flapping. Event-driven dynamic
+  per-GVK watch + reverse index. Providers are untrusted inputs (read-only,
+  group-pinned RBAC; same-namespace only).
+- `docs/adr/0007-crd-multi-version-and-conversion.md`: NEW — CRDs are
+  multi-version-capable (one Rust struct per served version, single
+  `storage: true`), `conversion.strategy: None` with additive-only evolution;
+  resolvers/watchers key off group+kind, never a pinned `apiVersion`. The first
+  breaking change is the trigger for a webhook (superseding ADR). No CALM impact
+  (generation/versioning policy). Applies to `ScheduledMachine` and the new
+  provider group.
+- `docs/adr/README.md`: index rows for ADR 0006 and 0007.
+- `docs/architecture/calm/architecture.json`: NEW node
+  `service-spot-schedule-provider` (external, untrusted) + data-asset
+  `data-asset-spot-schedule-cr`; relationships `rel-spot-schedule-cr-stored-in-api`,
+  `rel-provider-writes-spot-schedule-status`, `rel-controller-spot-schedule-watch`
+  (read-only, group-pinned least-privilege control); flow
+  `flow-spot-schedule-activation`. `make calm-validate` clean (0/0/0);
+  `make calm-diagrams` re-rendered `docs/src/architecture/{system,flows}.md`.
+- `docs/src/reference/spot-schedule-contract.md`: NEW — provider contract
+  skeleton (reference, status table, AND composition, unresolved behavior,
+  versioning policy); added to `docs/mkdocs.yml` Reference nav.
+
+### Why
+Phase 0 (ADD gate) of the spot-schedule provider roadmap: record and visualize
+the architecture before any code, so activation semantics (capital-markets
+calendars, PromQL emitters, change-freeze gates) can be implemented out-of-tree
+against a stable, versioned public contract. Team-approved to proceed
+2026-06-13.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-06-10 11:30] - ADR 0005: remove spec.kata.destPath — fixed host path, H-1 gate closed
 
 **Author:** Erick Bourgeois
