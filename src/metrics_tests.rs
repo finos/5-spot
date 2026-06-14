@@ -23,6 +23,27 @@ fn test_record_schedule_evaluation() {
 }
 
 #[test]
+fn test_record_spot_schedule_resolution() {
+    record_spot_schedule_resolution("capital-markets", "CapitalMarketsSchedule", "active");
+    record_spot_schedule_resolution("capital-markets", "CapitalMarketsSchedule", "inactive");
+    record_spot_schedule_resolution("capital-markets", "CapitalMarketsSchedule", "unresolved");
+}
+
+#[test]
+fn test_record_spot_schedule_resolution_error() {
+    record_spot_schedule_resolution_error(
+        "capital-markets",
+        "CapitalMarketsSchedule",
+        "ProviderNotFound",
+    );
+}
+
+#[test]
+fn test_record_spot_schedule_transition() {
+    record_spot_schedule_transition("capital-markets", "CapitalMarketsSchedule");
+}
+
+#[test]
 fn test_set_machines_by_phase() {
     set_machines_by_phase("Active", 5.0);
     set_machines_by_phase("Inactive", 3.0);

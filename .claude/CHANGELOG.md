@@ -9,6 +9,150 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-06-14 14:30] - Spot-schedule RBAC + admission + threat model (Phase 4)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `deploy/deployment/rbac/clusterrole.yaml`: NEW rule — `get;list;watch` on
+  `spotschedules.5spot.finos.org` `*` (read-only, no write). Unblocks the Phase 3
+  provider watch; least-privilege per ADR 0006 §6 (providers are untrusted
+  inputs the controller never writes).
+- `deploy/admission/validatingadmissionpolicy.yaml`: **security fix** —
+  `matchConstraints.apiVersions` now covers `v1beta1` as well as `v1alpha1`.
+  Since Phase 1 made `v1beta1` the served/storage version, every `v1beta1`
+  ScheduledMachine (i.e. every `spotSchedule` machine) was **bypassing the
+  entire VAP** — the bootstrap/infra allowlist and privilege-escalation guards
+  included. Also: the four schedule rules are now guarded with
+  `!has(object.spec.schedule) || …` (schedule is optional since v1beta1, so a
+  valid spotSchedule-only machine is no longer wrongly rejected), and NEW rules
+  7a (at least one of schedule/spotSchedule) + 7b (spotSchedule group pin)
+  mirror the CRD CEL and `validate_activation_source()`.
+- `docs/src/security/threat-model.md`: NEW actor (spot-schedule provider,
+  untrusted), threat T8a (provider-driven activation control — mitigated:
+  read-only RBAC, same-namespace, group-pinned, auditable) and D5 (provider
+  flapping — partially mitigated: back-off + lifecycle timers + transition
+  metric/alert).
+- `docs/src/security/admission-validation.md`: documented the dual-version
+  match, the optional-schedule guard, and rules 7a/7b.
+- `docs/src/operations/monitoring.md`: suggested `SpotScheduleProviderFlapping`
+  and `SpotScheduleProviderUnresolved` Prometheus alerts.
+- `docs/architecture/calm/architecture.json`: `rel-controller-spot-schedule-watch`
+  least-privilege control evidence now cites the implemented ClusterRole + VAP.
+  `make calm-validate` clean.
+
+### Why
+Phase 4: realize ADR 0006 §6's least-privilege, providers-are-untrusted posture
+in the deployed manifests, and bring the threat model current. The VAP
+version-match fix also closes an admission-bypass regression that Phase 1's
+v1beta1 bump introduced.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (re-apply ClusterRole + ValidatingAdmissionPolicy)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-06-14 11:00] - Spot-schedule dynamic event-driven provider watch (Phase 3)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/spot_schedule_watch.rs`: NEW. `ReverseIndex` (pure:
+  `(gvk, ns, name)` → referencing `ScheduledMachine`s, with per-SM record so a
+  changed/removed `spec.spotSchedule` updates precisely) + `provider_key_for`.
+  `SpotScheduleWatchManager` owns the index and lazily runs **one
+  `kube::runtime::watcher` stream per referenced provider GVK** (event-driven,
+  not polling); `sync_watchers` reconciles the running watcher set against the
+  index's referenced GVKs (spawn new, abort orphaned). Per-GVK task resolves the
+  `ApiResource` via `discovery::pinned_kind` with back-off
+  (`SPOT_SCHEDULE_DISCOVERY_RETRY_SECS`, handles CRD-installed-late and
+  CRD-deleted-while-watched), maps each provider event back through the index,
+  and enqueues the referencing SMs.
+- `src/main.rs`: a standalone `ScheduledMachine` reflector feeds SM apply/delete
+  into the manager (index rebuilt from the reflector's initial list on restart —
+  nothing stored outside Kubernetes); a second `Controller::reconcile_on`
+  consumes the manager's mpsc so provider `status.active` flips trigger SM
+  reconciles at watch latency.
+- `src/constants.rs`: `SPOT_SCHEDULE_EVENT_CHANNEL_CAP`,
+  `SPOT_SCHEDULE_DISCOVERY_RETRY_SECS`.
+- `src/reconcilers/mod.rs`: export the watch types + `compose_should_be_active`.
+- Tests: `spot_schedule_watch_tests.rs` (13 — ReverseIndex register/replace/
+  deregister/lookup/gvks, `provider_key_for`, manager observe/forget watcher
+  lifecycle incl. shared-GVK and watcher-stop-on-last-deref);
+  `tests/integration_spot_schedule.rs` (4 — create→active, flip→inactive,
+  delete→unresolved+hold/fail-inactive across a mock kube API, and the watch
+  index→reconcile mapping). 658 lib tests green.
+- Docs: contract page status → Phase 3.
+
+### Why
+Phase 3 of the spot-schedule provider roadmap: remove the Phase-2 pull latency.
+Provider status transitions are now a reconcile **trigger** (a true watch over
+the `spotschedules.5spot.finos.org` group), not something re-checked only on the
+controller's own timer — satisfying the project's watch-not-poll rule. Realizes
+the `rel-controller-spot-schedule-watch` relationship + `flow-spot-schedule-activation`
+already modeled in CALM at Phase 0 (no ADR/CALM change).
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (new controller image; RBAC for
+      `spotschedules.5spot.finos.org` get/list/watch lands in Phase 4)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-06-13 18:45] - Spot-schedule resolver + composition + status surface (Phase 2)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/spot_schedule.rs`: NEW resolver module. `SpotScheduleVerdict`
+  enum (`Active`/`Inactive`/`Unresolved`); pure `verdict_from_status` (duck-typed
+  `status.active` + `Ready` extraction); async `resolve_spot_schedule`
+  (`discovery::pinned_kind` + `get_opt`). Transient API errors propagate (retry);
+  CRD-not-installed / object-absent / status-missing / not-Ready are `Unresolved`
+  verdicts, never errors or panics. **Ready semantics finalized:** absent `Ready`
+  ⇒ `active` authoritative; present non-`True` `Ready` ⇒ unresolved (resolves an
+  internal inconsistency in ADR 0006 §4 / contract table — both updated).
+- `src/reconcilers/helpers.rs`: NEW `compose_should_be_active` — AND composition
+  of the inline schedule and the provider verdict, with hold-last-state on
+  Unresolved (fail-inactive when never resolved). `killSwitch` precedence is
+  upstream.
+- `src/crd.rs`: replaced Phase-1 `effective_schedule()` with `is_enabled()` (a
+  spotSchedule-only machine is always enabled; the provider governs activity).
+  NEW `SpotScheduleStatus` + `ScheduledMachineStatus.spot_schedule` field (the
+  durable hold-last-state surface: `resolved`/`active`/`reason`/`message`/
+  `providerGeneration`/`lastTransitionTime`).
+- `src/reconcilers/scheduled_machine.rs`: `reconcile_inner` now evaluates the
+  optional inline schedule, resolves the provider (pull-on-reconcile), composes
+  `should_be_active`, records metrics, and patches `status.spotSchedule`
+  (`persist_spot_schedule_status`, a `/status` merge patch that coexists with the
+  phase/condition writes). Handler `enabled` guards use `is_enabled()`.
+- `src/metrics.rs`: NEW `fivespot_spot_schedule_resolutions_total{namespace,kind,result}`,
+  `_resolution_errors_total{namespace,kind,reason}`,
+  `_transitions_total{namespace,kind}` (+ record fns; bounded cardinality, never
+  keyed by name).
+- `deploy/crds/scheduledmachine.yaml` regenerated (status.spotSchedule);
+  `docs/src/reference/api.md` regenerated.
+- Tests: `spot_schedule_tests.rs` (verdict truth table + 3 mock-client resolve
+  paths), `helpers_tests.rs` (12-case composition truth table),
+  `scheduled_machine_tests.rs` (persist `/status` patch), `metrics_tests.rs`,
+  `crd_tests.rs` (status round-trip + is_enabled). 645 lib tests green.
+- Docs: ADR 0006 + contract page `Ready` clarification; contract page status →
+  Phase 2; `docs/src/operations/monitoring.md` spot-schedule metrics table.
+
+### Why
+Phase 2 of the spot-schedule provider roadmap: make a `spec.spotSchedule`
+reference actually drive the machine's active/inactive decision (pull-on-reconcile),
+with the ADR-specified hold-last-state fail-safe and an observable status surface.
+The event-driven watch (Phase 3) and the reference-provider controller (Phase 5)
+build on this.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (apply regenerated CRDs + new controller image)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-06-13 16:30] - Spot-schedule provider API: CRD scaffolding + ScheduledMachine v1beta1 (Phase 1)
 
 **Author:** Erick Bourgeois

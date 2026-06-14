@@ -1308,4 +1308,76 @@ mod tests {
 
         watcher.await.unwrap();
     }
+
+    // ========================================================================
+    // persist_spot_schedule_status — status.spotSchedule patch (ADR 0006)
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_persist_spot_schedule_status_patches_status_subresource() {
+        use crate::reconcilers::spot_schedule::SpotScheduleVerdict;
+
+        let (svc, mut handle) = mock::pair::<Request<Body>, Response<Body>>();
+        let client = kube::Client::new(svc, "capital-markets");
+        let ctx = Context::new(client, 0, 1);
+
+        let srv = tokio::spawn(async move {
+            let (req, send) = handle
+                .next_request()
+                .await
+                .expect("expected patch_status call");
+            assert_eq!(req.method(), http::Method::PATCH);
+            assert!(
+                req.uri().path().ends_with("/status"),
+                "should target /status subresource, got: {}",
+                req.uri().path()
+            );
+            let body = serde_json::to_vec(&json!({
+                "apiVersion": "5spot.finos.org/v1beta1",
+                "kind": "ScheduledMachine",
+                "metadata": { "name": "sm", "namespace": "capital-markets", "resourceVersion": "2" },
+                "spec": {
+                    "clusterName": "test",
+                    "spotSchedule": {
+                        "apiVersion": "spotschedules.5spot.finos.org/v1alpha1",
+                        "kind": "CapitalMarketsSchedule",
+                        "name": "nyse-equities"
+                    },
+                    "bootstrapSpec": {
+                        "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
+                        "kind": "K0sWorkerConfig",
+                        "spec": {}
+                    },
+                    "infrastructureSpec": {
+                        "apiVersion": "infrastructure.cluster.x-k8s.io/v1beta1",
+                        "kind": "RemoteMachine",
+                        "spec": {}
+                    }
+                }
+            }))
+            .unwrap();
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            );
+        });
+
+        let verdict = SpotScheduleVerdict::Active {
+            provider_generation: Some(3),
+        };
+        crate::reconcilers::scheduled_machine::persist_spot_schedule_status(
+            &ctx,
+            "capital-markets",
+            "sm",
+            &verdict,
+            None,
+        )
+        .await
+        .expect("persist should succeed");
+
+        srv.await.unwrap();
+    }
 }

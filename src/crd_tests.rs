@@ -1714,7 +1714,7 @@ mod tests {
     }
 
     #[test]
-    fn test_effective_schedule_returns_inline_when_set() {
+    fn test_is_enabled_follows_inline_schedule_enabled() {
         let mut spec = base_spec();
         spec.schedule = Some(ScheduleSpec {
             days_of_week: vec!["sat".to_string()],
@@ -1722,21 +1722,24 @@ mod tests {
             timezone: "UTC".to_string(),
             enabled: true,
         });
-        let effective = spec.effective_schedule();
-        assert!(effective.enabled);
-        assert_eq!(effective.days_of_week, vec!["sat".to_string()]);
+        assert!(spec.is_enabled());
+
+        spec.schedule = Some(ScheduleSpec {
+            days_of_week: vec![],
+            hours_of_day: vec![],
+            timezone: "UTC".to_string(),
+            enabled: false,
+        });
+        assert!(!spec.is_enabled());
     }
 
     #[test]
-    fn test_effective_schedule_is_inactive_placeholder_when_absent() {
+    fn test_is_enabled_true_for_spot_schedule_only_machine() {
         let mut spec = base_spec();
         spec.schedule = None;
         spec.spot_schedule = Some(spot_schedule_ref());
-        let effective = spec.effective_schedule();
-        // spotSchedule-only machine: time-based evaluator must see "disabled".
-        assert!(!effective.enabled);
-        assert!(effective.days_of_week.is_empty());
-        assert!(effective.hours_of_day.is_empty());
+        // No inline schedule ⇒ always enabled; the provider governs activity.
+        assert!(spec.is_enabled());
     }
 
     #[test]
@@ -1862,5 +1865,34 @@ mod tests {
         assert_eq!(crd.spec.group, "spotschedules.5spot.finos.org");
         assert_eq!(crd.spec.names.kind, "CapitalMarketsSchedule");
         assert_eq!(crd.spec.versions[0].name, "v1alpha1");
+    }
+
+    #[test]
+    fn test_spot_schedule_status_round_trips() {
+        let status = SpotScheduleStatus {
+            resolved: true,
+            active: Some(true),
+            reason: Some("Resolved".to_string()),
+            message: None,
+            provider_generation: Some(4),
+            last_transition_time: Some("2026-06-13T13:30:00+00:00".to_string()),
+        };
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(
+            json.get("providerGeneration")
+                .and_then(serde_json::Value::as_i64),
+            Some(4)
+        );
+        // message is None ⇒ omitted on the wire.
+        assert!(json.get("message").is_none());
+        let parsed: SpotScheduleStatus = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, status);
+    }
+
+    #[test]
+    fn test_scheduled_machine_status_spot_schedule_omitted_when_none() {
+        let status = ScheduledMachineStatus::default();
+        let json = serde_json::to_value(&status).unwrap();
+        assert!(json.get("spotSchedule").is_none());
     }
 }

@@ -76,9 +76,19 @@ The binding can be scoped to specific namespaces if needed — see
 
 ## Validation Rules
 
-The policy contains 13 CEL validation rules.  Every rule must pass for the
-request to be admitted.  Rules are evaluated against `object` (the incoming
-resource) in the order listed.
+The policy's `matchConstraints` cover **both served `ScheduledMachine`
+versions** — `v1alpha1` and `v1beta1` (ADR 0007). This matters: a version
+omitted from `apiVersions` would **bypass every rule below**, so when `v1beta1`
+became the storage/current version it was added here.
+
+Because `spec.schedule` is **optional** since `v1beta1` (a machine may instead
+delegate to a `spotSchedule` provider, ADR 0006), every schedule rule is guarded
+with `!has(object.spec.schedule) || …` so a valid `spotSchedule`-only machine is
+not rejected. The "at least one activation source" and provider group-pin rules
+(7a / 7b below) backstop that.
+
+Every rule must pass for the request to be admitted.  Rules are evaluated
+against `object` (the incoming resource) in the order listed.
 
 | # | Field(s) | Rule | Error message |
 |---|---|---|---|
@@ -88,6 +98,8 @@ resource) in the order listed.
 | 4 | `spec.schedule` | Both `daysOfWeek` and `hoursOfDay` must be non-empty | `both daysOfWeek and hoursOfDay must be non-empty` |
 | 5 | `spec.schedule.daysOfWeek[]` | Each item matches `mon\|tue\|…` with optional range/combo | `must be day names or ranges (e.g. 'mon', 'mon-fri', 'mon-wed,fri-sun')` |
 | 6 | `spec.schedule.hoursOfDay[]` | Each item matches `\d{1,2}(-\d{1,2})?` with optional combo | `must be hours or ranges (e.g. '9', '9-17', '0-9,18-23')` |
+| 7a | `spec.schedule` / `spec.spotSchedule` | At least one must be set | `at least one of spec.schedule or spec.spotSchedule must be set` |
+| 7b | `spec.spotSchedule.apiVersion` | Group must be `spotschedules.5spot.finos.org` (when `spotSchedule` is set) | `spec.spotSchedule.apiVersion group must be spotschedules.5spot.finos.org` |
 | 7 | `spec.bootstrapSpec.apiVersion` | Must contain `/` — core API versions (`v1`) are rejected | `must use a namespaced API group` |
 | 8 | `spec.bootstrapSpec.apiVersion` | Group must be `bootstrap.cluster.x-k8s.io` or `k0smotron.io` | `must be from an allowed group` |
 | 9 | `spec.bootstrapSpec.kind` | Must not be empty | `spec.bootstrapSpec.kind must not be empty` |

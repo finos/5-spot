@@ -4028,6 +4028,133 @@ mod tests {
         assert!(err.to_string().contains("evil.example.com"));
     }
 
+    // ========================================================================
+    // compose_should_be_active — AND composition, hold-last-state (ADR 0006 §3/§4)
+    // ========================================================================
+
+    use crate::reconcilers::spot_schedule::SpotScheduleVerdict;
+
+    fn active_verdict() -> SpotScheduleVerdict {
+        SpotScheduleVerdict::Active {
+            provider_generation: Some(1),
+        }
+    }
+    fn inactive_verdict() -> SpotScheduleVerdict {
+        SpotScheduleVerdict::Inactive {
+            provider_generation: Some(1),
+        }
+    }
+    fn unresolved_verdict() -> SpotScheduleVerdict {
+        SpotScheduleVerdict::Unresolved {
+            reason: crate::constants::REASON_SPOT_SCHEDULE_PROVIDER_NOT_FOUND,
+            message: "gone".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_compose_schedule_only_active() {
+        assert!(compose_should_be_active(Some(true), None, None));
+    }
+
+    #[test]
+    fn test_compose_schedule_only_inactive() {
+        assert!(!compose_should_be_active(Some(false), None, None));
+    }
+
+    #[test]
+    fn test_compose_spot_only_active() {
+        // No inline schedule ⇒ time axis unconstrained; provider decides.
+        assert!(compose_should_be_active(
+            None,
+            Some(&active_verdict()),
+            None
+        ));
+    }
+
+    #[test]
+    fn test_compose_spot_only_inactive() {
+        assert!(!compose_should_be_active(
+            None,
+            Some(&inactive_verdict()),
+            None
+        ));
+    }
+
+    #[test]
+    fn test_compose_and_both_active() {
+        assert!(compose_should_be_active(
+            Some(true),
+            Some(&active_verdict()),
+            None
+        ));
+    }
+
+    #[test]
+    fn test_compose_and_schedule_open_provider_inactive() {
+        assert!(!compose_should_be_active(
+            Some(true),
+            Some(&inactive_verdict()),
+            None
+        ));
+    }
+
+    #[test]
+    fn test_compose_and_schedule_closed_provider_active() {
+        assert!(!compose_should_be_active(
+            Some(false),
+            Some(&active_verdict()),
+            None
+        ));
+    }
+
+    #[test]
+    fn test_compose_unresolved_holds_last_active() {
+        // hold-last-state: provider unreadable but was active ⇒ stay active.
+        assert!(compose_should_be_active(
+            None,
+            Some(&unresolved_verdict()),
+            Some(true)
+        ));
+    }
+
+    #[test]
+    fn test_compose_unresolved_holds_last_inactive() {
+        assert!(!compose_should_be_active(
+            None,
+            Some(&unresolved_verdict()),
+            Some(false)
+        ));
+    }
+
+    #[test]
+    fn test_compose_unresolved_never_resolved_fails_inactive() {
+        // never resolved (no last-known) ⇒ fail-inactive.
+        assert!(!compose_should_be_active(
+            None,
+            Some(&unresolved_verdict()),
+            None
+        ));
+    }
+
+    #[test]
+    fn test_compose_unresolved_held_active_but_schedule_closed() {
+        // schedule axis still closes the machine even while holding provider state.
+        assert!(!compose_should_be_active(
+            Some(false),
+            Some(&unresolved_verdict()),
+            Some(true)
+        ));
+    }
+
+    #[test]
+    fn test_compose_unresolved_held_active_and_schedule_open() {
+        assert!(compose_should_be_active(
+            Some(true),
+            Some(&unresolved_verdict()),
+            Some(true)
+        ));
+    }
+
     #[test]
     fn test_check_grace_period_elapsed_no_grace_condition_returns_true() {
         // No condition with reason=GracePeriodActive → conservatively true so

@@ -148,6 +148,7 @@ flowchart LR
 | **Compromised controller pod** | Has the controller's service account | Lateral movement to CAPI resources, node disruption |
 | **Rogue operator** | Internal user with broad kubectl access | Misuse kill switch, drain nodes during business hours |
 | **Supply chain attacker** | Can inject into upstream crates (kube-rs, serde, etc.) | RCE inside controller, credential theft |
+| **Spot-schedule provider (untrusted CRD)** | Owns `status.active` of a `spotschedules.5spot.finos.org` object referenced by a ScheduledMachine | Flap the referenced machines on/off — effectively the same control surface as `spec.schedule.enabled` |
 
 ---
 
@@ -172,6 +173,7 @@ flowchart LR
 | T6 | **Timezone log injection** — user injects newlines/control chars into timezone field to poison structured logs | Low | Low | **Mitigated (2026-04-08)** — CRD schema enforces `pattern: ^[A-Za-z][A-Za-z0-9_+\-/]*$` and `maxLength: 64` |
 | T7 | **Duration overflow** — user sets `gracefulShutdownTimeout: "9999999999999h"` causing integer overflow | Medium | High | **Mitigated (2026-04-08)** — `checked_mul` + `MAX_DURATION_SECS = 86400` cap |
 | T8 | User updates ScheduledMachine spec after machine is active, changing `clusterName` mid-lifecycle | Medium | Medium | **Residual risk** — spec changes trigger reconciliation; no immutability enforcement on `clusterName` |
+| T8a | **Provider-driven activation control** — a compromised or buggy spot-schedule provider flips `status.active`, starting/stopping the machines that reference it | Medium | Medium | **Mitigated (2026-06-14)** — blast radius equals editing `spec.schedule.enabled` and is bounded to **same-namespace** SMs that explicitly named the provider (cross-namespace refs are forbidden by design); controller RBAC is **read-only** (`get/list/watch`) on `spotschedules.5spot.finos.org` — it can never write a provider object; the provider group is CEL-pinned at the CRD field, in the VAP (rule 7b), and at reconcile (`validate_activation_source()`). Auditable via `status.spotSchedule` (resolved/reason/message) + `fivespot_spot_schedule_*` metrics (ADR 0006) |
 
 #### Repudiation
 | ID | Threat | Likelihood | Impact | Status |
@@ -193,6 +195,7 @@ flowchart LR
 | D2 | **Finalizer hang** — drain operation never completes, blocking namespace deletion indefinitely | Medium | High | **Mitigated (2026-04-08)** — `tokio::time::timeout(600s)` wraps finalizer cleanup |
 | D3 | Attacker crafts extremely long `daysOfWeek`/`hoursOfDay` arrays to slow admission validation | Low | Low | **Mitigated** — admission policy validates each item individually; Kubernetes limits CR size |
 | D4 | User triggers kill switch repeatedly causing rapid machine add/remove cycles (thrashing) | Low | Medium | Accepted — kill switch is write-once-by-design; no automatic reactivation |
+| D5 | **Provider flapping** — a spot-schedule provider toggles `status.active` rapidly, churning expensive machine create/delete cycles | Low | Medium | **Partially mitigated (2026-06-14)** — transitions are bounded by the controller's reconcile back-off and the machine lifecycle's own grace/drain timers; `fivespot_spot_schedule_transitions_total` exposes the flap rate for alerting (see [monitoring](../operations/monitoring.md)). A per-SM `minimumStateDuration` debounce is recorded as future work in ADR 0006 |
 
 #### Elevation of Privilege
 | ID | Threat | Likelihood | Impact | Status |

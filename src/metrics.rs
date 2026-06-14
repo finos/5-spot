@@ -198,6 +198,64 @@ pub static SCHEDULE_EVALUATIONS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
     })
 });
 
+/// Spot-schedule provider resolutions, labelled by namespace, provider kind,
+/// and result (`active` | `inactive` | `unresolved`). Cardinality is bounded by
+/// namespace × kind × 3 — deliberately **not** keyed by the (unbounded) provider
+/// or SM name (ADR 0006 metrics note).
+pub static SPOT_SCHEDULE_RESOLUTIONS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
+    register_counter_vec!(
+        "fivespot_spot_schedule_resolutions_total",
+        "Total spot-schedule provider resolutions by namespace, kind, and result",
+        &["namespace", "kind", "result"]
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_spot_schedule_resolutions_total: {e}");
+        fallback_counter_vec(
+            "fivespot_spot_schedule_resolutions_total",
+            "Total spot-schedule provider resolutions by namespace, kind, and result",
+            &["namespace", "kind", "result"],
+        )
+    })
+});
+
+/// Spot-schedule provider *unresolved* resolutions, labelled by namespace,
+/// provider kind, and reason (a `REASON_SPOT_SCHEDULE_*` value). The signal an
+/// operator alerts on when a provider-driven machine is holding last-state.
+pub static SPOT_SCHEDULE_RESOLUTION_ERRORS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
+    register_counter_vec!(
+        "fivespot_spot_schedule_resolution_errors_total",
+        "Total unresolved spot-schedule provider resolutions by namespace, kind, and reason",
+        &["namespace", "kind", "reason"]
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_spot_schedule_resolution_errors_total: {e}");
+        fallback_counter_vec(
+            "fivespot_spot_schedule_resolution_errors_total",
+            "Total unresolved spot-schedule provider resolutions by namespace, kind, and reason",
+            &["namespace", "kind", "reason"],
+        )
+    })
+});
+
+/// Spot-schedule provider active⇄inactive transitions, labelled by namespace and
+/// provider kind. A high rate is the flapping signal called out in the threat
+/// model.
+pub static SPOT_SCHEDULE_TRANSITIONS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
+    register_counter_vec!(
+        "fivespot_spot_schedule_transitions_total",
+        "Total spot-schedule active/inactive transitions by namespace and kind",
+        &["namespace", "kind"]
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_spot_schedule_transitions_total: {e}");
+        fallback_counter_vec(
+            "fivespot_spot_schedule_transitions_total",
+            "Total spot-schedule active/inactive transitions by namespace and kind",
+            &["namespace", "kind"],
+        )
+    })
+});
+
 /// Number of machines with kill switch activated
 pub static KILL_SWITCH_ACTIVATIONS_TOTAL: LazyLock<Gauge> = LazyLock::new(|| {
     register_gauge!(
@@ -578,6 +636,29 @@ pub fn record_schedule_evaluation(is_active: bool) {
     let result = if is_active { "active" } else { "inactive" };
     SCHEDULE_EVALUATIONS_TOTAL
         .with_label_values(&[result])
+        .inc();
+}
+
+/// Record a spot-schedule resolution outcome. `result` is `active`, `inactive`,
+/// or `unresolved`.
+pub fn record_spot_schedule_resolution(namespace: &str, kind: &str, result: &str) {
+    SPOT_SCHEDULE_RESOLUTIONS_TOTAL
+        .with_label_values(&[namespace, kind, result])
+        .inc();
+}
+
+/// Record an unresolved spot-schedule resolution, by `reason`
+/// (a `REASON_SPOT_SCHEDULE_*` value).
+pub fn record_spot_schedule_resolution_error(namespace: &str, kind: &str, reason: &str) {
+    SPOT_SCHEDULE_RESOLUTION_ERRORS_TOTAL
+        .with_label_values(&[namespace, kind, reason])
+        .inc();
+}
+
+/// Record a spot-schedule active⇄inactive transition.
+pub fn record_spot_schedule_transition(namespace: &str, kind: &str) {
+    SPOT_SCHEDULE_TRANSITIONS_TOTAL
+        .with_label_values(&[namespace, kind])
         .inc();
 }
 

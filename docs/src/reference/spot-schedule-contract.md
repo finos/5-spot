@@ -4,11 +4,15 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Spot Schedule Provider Contract
 
-> **Status:** Phase 1 — the API types exist (`ScheduledMachine.spec.spotSchedule`
-> on `v1beta1`, the `CapitalMarketsSchedule` reference provider CRD), but the
-> controller-side **resolver and watch** land in later roadmap phases. The
-> contract is **Accepted** in [ADR 0006](https://github.com/finos/5-spot). This
-> page is the authoritative specification a provider author implements against.
+> **Status:** Phase 3 — the controller resolves a `spec.spotSchedule` reference,
+> folds the provider verdict into the machine's active/inactive decision
+> (`status.spotSchedule`), **and now watches referenced providers event-driven**:
+> a provider's `status.active` flip wakes the referencing machines at watch
+> latency (a dynamic per-GVK `watcher` stream, not polling). The
+> reference-provider **controller** that computes
+> `CapitalMarketsSchedule.status.active` lands in Phase 5. The contract is
+> **Accepted** in [ADR 0006](https://github.com/finos/5-spot). This page is the
+> authoritative specification a provider author implements against.
 
 A **spot-schedule provider** is any Kubernetes custom resource in the
 `spotschedules.5spot.finos.org` API group that tells 5-Spot whether a
@@ -57,7 +61,7 @@ spec:
 | `status` field | Required | Type | Meaning |
 |---|:--:|---|---|
 | `active` | **yes** | bool | **The decision.** `true` ⇒ the referencing machine should be up; `false` ⇒ it should be down. |
-| `conditions[type=Ready]` | recommended | condition | Provider health. `Ready=False` (or absent) ⇒ 5-Spot treats the reference as **unresolved**, *not* inactive (see [Unresolved behavior](#unresolved-behavior)). |
+| `conditions[type=Ready]` | recommended | condition | Provider health. A *present* `Ready` whose status is **not `True`** ⇒ 5-Spot treats the reference as **unresolved**, *not* inactive (see [Unresolved behavior](#unresolved-behavior)). An **absent** `Ready` ⇒ `status.active` is taken as authoritative (`Ready` is recommended, not required). |
 | `observedGeneration` | recommended | int64 | The `metadata.generation` the status reflects; lets 5-Spot detect stale status. |
 | `lastTransitionTime` | recommended | RFC 3339 string | When `active` last flipped; used for observability and flap detection. |
 

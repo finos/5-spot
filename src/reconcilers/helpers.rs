@@ -165,6 +165,40 @@ pub fn evaluate_schedule(
     Ok(allowed_hours.contains(&current_hour))
 }
 
+/// Fold the time-based schedule result and the spot-schedule provider verdict
+/// into the final should-be-active decision (ADR 0006 §3).
+///
+/// - `schedule_active` is `Some(bool)` from [`evaluate_schedule`] when an inline
+///   `spec.schedule` is set, or `None` for a `spotSchedule`-only machine (no
+///   time constraint ⇒ the schedule axis is treated as "in window").
+/// - `verdict` is the resolved provider verdict when `spec.spotSchedule` is set,
+///   or `None` (no provider constraint).
+/// - `last_known_spot_active` is `status.spotSchedule.active` — the value held
+///   while the provider is **Unresolved** (hold-last-state; `None` /
+///   never-resolved ⇒ fail-inactive).
+///
+/// The two axes compose with logical **AND**. `killSwitch` precedence is handled
+/// earlier in the reconcile loop (terminal) and is not an input here. At least
+/// one of `schedule_active` / `verdict` is always `Some` in practice
+/// (`validate_activation_source` rejects a machine with neither source).
+#[must_use]
+pub fn compose_should_be_active(
+    schedule_active: Option<bool>,
+    verdict: Option<&crate::reconcilers::spot_schedule::SpotScheduleVerdict>,
+    last_known_spot_active: Option<bool>,
+) -> bool {
+    use crate::reconcilers::spot_schedule::SpotScheduleVerdict;
+
+    let schedule_component = schedule_active.unwrap_or(true);
+    let spot_component = match verdict {
+        None | Some(SpotScheduleVerdict::Active { .. }) => true,
+        Some(SpotScheduleVerdict::Inactive { .. }) => false,
+        // Hold last known state while unresolved; never-resolved ⇒ fail-inactive.
+        Some(SpotScheduleVerdict::Unresolved { .. }) => last_known_spot_active.unwrap_or(false),
+    };
+    schedule_component && spot_component
+}
+
 // ============================================================================
 // ============================================================================
 // Finalizer management
