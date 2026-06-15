@@ -70,7 +70,7 @@ warp = { version = "0.4", default-features = false, features = ["server"] }
 toml = "1.1"
 # SHA-256 for the kata-config agent's content/drift hashing and (Phase 4)
 # the applied-hash node annotation. RustCrypto, pure-Rust, no system deps.
-sha2 = "0.10"
+sha2 = "0.11"
 
 # Linux-only — used by the reclaim-agent's rung 2 netlink proc connector
 # subscriber (`src/netlink_proc.rs`). The portable byte parsers in that
