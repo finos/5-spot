@@ -1,0 +1,87 @@
+# CapitalMarketsSchedule reference spot-schedule provider (ADR 0006, Phase 5).
+#
+# A standalone controller that reconciles CapitalMarketsSchedule objects and
+# publishes status.active from a declarative exchange calendar. Same hardened
+# posture as the 5-Spot controller (non-root, read-only rootfs, all caps
+# dropped, seccomp RuntimeDefault, distroless image). It makes no host or
+# network calls beyond the Kubernetes API.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spot-schedule-capital-markets
+  namespace: 5spot-system
+  labels:
+    app: spot-schedule-capital-markets
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: spot-schedule-provider
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spot-schedule-capital-markets
+  template:
+    metadata:
+      labels:
+        app: spot-schedule-capital-markets
+        app.kubernetes.io/name: 5spot
+        app.kubernetes.io/component: spot-schedule-provider
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: spot-schedule-capital-markets
+      securityContext:
+        fsGroup: 65534
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: provider
+          # Pin to a released version tag — NEVER use :latest (Trivy KSV-0013).
+          image: ghcr.io/finos/5-spot:v0.1.0
+          imagePullPolicy: IfNotPresent
+          command: ["spot-schedule-capital-markets"]
+          env:
+            - name: RUST_LOG
+              value: "info"
+            - name: RUST_LOG_FORMAT
+              value: "json"
+            - name: METRICS_PORT
+              value: "8080"
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            limits:
+              cpu: 200m
+              memory: 128Mi
+            requests:
+              cpu: 50m
+              memory: 64Mi

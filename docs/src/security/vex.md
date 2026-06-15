@@ -159,6 +159,63 @@ Validate locally with `make vex-validate`.
 
 ---
 
+## Auto-VEX is signed off before submission
+
+The auto-VEX statements (`auto-vex-presence`, `auto-vex-reachability`)
+are machine-authored **suppressions** — each tells downstream scanners
+to stop reporting a CVE. To keep a human in the loop *before* those
+suppressions land in an artifact, 5-Spot requires the auto-VEX to be
+**generated, reviewed, and committed before submission**, and enforces
+it with a byte-exact CI gate (see
+[ADR 0008](https://github.com/finos/5-spot/blob/main/docs/adr/0008-autovex-presubmission-gate.md)).
+This mirrors the `make crds` → `git diff` contract used for generated
+CRD YAML.
+
+### The committed baseline
+
+Two directories are version-controlled:
+
+- **`.vex/snapshot/`** — a point-in-time freeze of the generator
+  *inputs*: `grype.json` (Grype report), `sbom-*.json` (CycloneDX
+  SBOMs), `symbols.txt` (`nm -D --undefined-only` of the release
+  binary), and `timestamp.txt` (the canonical RFC-3339 UTC sign-off
+  timestamp).
+- **`.vex/auto/`** — the canonical generator *output*:
+  `vex.auto-presence.json` and `vex.auto-reachability.json`.
+
+Because the generators are deterministic (CVE-sorted output) and the
+volatile document fields (`@id`, `author`, `timestamp`) are pinned to
+canonical constants, the output is a **pure, byte-reproducible function
+of the committed snapshot**. That is what lets the gate be a plain
+`git diff --exit-code`.
+
+### The workflow
+
+```sh
+make vex-auto        # regenerate .vex/auto/* from .vex/snapshot/
+git diff .vex/auto   # READ the suppressions you are about to sign off
+git add .vex/snapshot .vex/auto && git commit   # sign off
+```
+
+On every pull request and push, the `validate-autovex` job in
+`build.yaml` runs `make vex-auto-check` (`make vex-auto` +
+`git diff --exit-code -- .vex/auto`). If the committed output no longer
+matches a fresh regeneration, the build **hard-fails** with a diff and
+instructions to run `make vex-auto`, review, and commit.
+
+### Scope of the gate
+
+This gate proves the committed output matches the committed **inputs**
+— that a human ran the generators and signed off on exactly these
+suppressions. It does **not** detect drift between the frozen snapshot
+and the *live* vulnerability landscape; refreshing the snapshot
+(`.vex/snapshot/README.md`) when dependencies or base images change is a
+maintainer responsibility, and a future scheduled live-scan job is the
+intended complement. The Security team's release-time counter-signature
+(see "Trust model" below) remains the downstream safety net.
+
+---
+
 ## What we automate, and what stays human
 
 The VEX document is a trust claim, not a compliance artifact. If 5-Spot

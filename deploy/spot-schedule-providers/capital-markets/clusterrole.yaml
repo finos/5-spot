@@ -1,0 +1,25 @@
+# Least-privilege ClusterRole for the CapitalMarketsSchedule provider.
+#
+# The provider watches CapitalMarketsSchedule objects (which live in tenant
+# namespaces alongside the ScheduledMachines that reference them) and writes ONLY
+# their /status subresource. It never reads or writes any other resource, and
+# never writes the CapitalMarketsSchedule spec — operators/GitOps own the
+# calendar spec; the provider owns only the computed status (ADR 0006 §6: the
+# provider's own controller holds update/patch on its kind's /status).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spot-schedule-capital-markets
+  labels:
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: spot-schedule-provider
+rules:
+  # Watch the calendar objects across all namespaces (read-only on the spec).
+  - apiGroups: ["spotschedules.5spot.finos.org"]
+    resources: ["capitalmarketsschedules"]
+    verbs: ["get", "list", "watch"]
+
+  # Publish the computed status.active (and conditions / transition times).
+  - apiGroups: ["spotschedules.5spot.finos.org"]
+    resources: ["capitalmarketsschedules/status"]
+    verbs: ["get", "update", "patch"]

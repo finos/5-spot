@@ -108,6 +108,28 @@ annotations), **not** by the controller:
 See the [Kata config delivery concept](../concepts/kata-config-delivery.md)
 for the architecture and the restart-loop guard these metrics observe.
 
+#### CapitalMarketsSchedule provider
+
+Exposed by the `spot-schedule-capital-markets` provider controller on its own
+`:8080/metrics` (ADR 0006, Phase 5) — **not** by the main 5-Spot controller.
+Labels are bounded by `namespace` × provider object `name` (provider objects are
+operator-authored exchange calendars, a small set).
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `fivespot_capital_markets_active` | Gauge | `namespace`, `name` | Current active state of each `CapitalMarketsSchedule` (1 = market open, 0 = closed) |
+| `fivespot_capital_markets_transitions_total` | Counter | `namespace`, `name` | Active⇄closed transitions; a high rate would indicate a misconfigured calendar |
+
+```yaml
+# Provider has not published an active state recently (controller down / RBAC).
+- alert: CapitalMarketsScheduleStale
+  expr: absent(fivespot_capital_markets_active)
+  for: 15m
+  labels: { severity: warning }
+  annotations:
+    summary: "No CapitalMarketsSchedule provider metrics — is the provider running?"
+```
+
 ### Labels
 
 Common labels across metrics:

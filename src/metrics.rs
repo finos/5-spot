@@ -198,6 +198,44 @@ pub static SCHEDULE_EVALUATIONS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
     })
 });
 
+/// Current active state of each `CapitalMarketsSchedule` provider object (1 =
+/// market open, 0 = closed), labelled by namespace + name. Cardinality is
+/// bounded by the (small) number of provider objects — these are operator-
+/// authored exchange calendars, not per-machine resources.
+pub static CAPITAL_MARKETS_ACTIVE: LazyLock<GaugeVec> = LazyLock::new(|| {
+    register_gauge_vec!(
+        "fivespot_capital_markets_active",
+        "Current active state of each CapitalMarketsSchedule (1=open, 0=closed)",
+        &["namespace", "name"]
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_capital_markets_active: {e}");
+        fallback_gauge_vec(
+            "fivespot_capital_markets_active",
+            "Current active state of each CapitalMarketsSchedule (1=open, 0=closed)",
+            &["namespace", "name"],
+        )
+    })
+});
+
+/// `CapitalMarketsSchedule` active⇄closed transitions, labelled by namespace +
+/// name. A high rate would indicate a misconfigured calendar.
+pub static CAPITAL_MARKETS_TRANSITIONS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
+    register_counter_vec!(
+        "fivespot_capital_markets_transitions_total",
+        "Total CapitalMarketsSchedule active/closed transitions",
+        &["namespace", "name"]
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_capital_markets_transitions_total: {e}");
+        fallback_counter_vec(
+            "fivespot_capital_markets_transitions_total",
+            "Total CapitalMarketsSchedule active/closed transitions",
+            &["namespace", "name"],
+        )
+    })
+});
+
 /// Number of machines with kill switch activated
 pub static KILL_SWITCH_ACTIVATIONS_TOTAL: LazyLock<Gauge> = LazyLock::new(|| {
     register_gauge!(
@@ -578,6 +616,20 @@ pub fn record_schedule_evaluation(is_active: bool) {
     let result = if is_active { "active" } else { "inactive" };
     SCHEDULE_EVALUATIONS_TOTAL
         .with_label_values(&[result])
+        .inc();
+}
+
+/// Set the current active state of a `CapitalMarketsSchedule` provider object.
+pub fn set_capital_markets_active(namespace: &str, name: &str, active: bool) {
+    CAPITAL_MARKETS_ACTIVE
+        .with_label_values(&[namespace, name])
+        .set(if active { 1.0 } else { 0.0 });
+}
+
+/// Record a `CapitalMarketsSchedule` active⇄closed transition.
+pub fn record_capital_markets_transition(namespace: &str, name: &str) {
+    CAPITAL_MARKETS_TRANSITIONS_TOTAL
+        .with_label_values(&[namespace, name])
         .inc();
 }
 

@@ -56,6 +56,9 @@ spec:
 ### schedule
 
 Defines when the machine should be active using day and hour ranges.
+**Optional since `v1beta1`**: a machine may instead delegate activation to an
+external provider via [`spotSchedule`](#spotschedule) — at least one of
+`schedule` / `spotSchedule` must be set.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -65,6 +68,22 @@ Defines when the machine should be active using day and hour ranges.
 | `enabled` | `bool` | No | `true` | Whether the schedule is enabled. |
 
 *At least one of `daysOfWeek` or `hoursOfDay` must be non-empty.
+
+### spotSchedule
+
+Delegates the active/inactive decision to an external **provider** resource
+(ADR 0006) — see [Spot Schedules](spot-schedule.md) for the concept and the
+[provider contract](../reference/spot-schedule-contract.md) for the spec.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `apiVersion` | `string` | Yes | `group/version`; group **must** be `spotschedules.5spot.finos.org`. |
+| `kind` | `string` | Yes | Provider kind, e.g. `CapitalMarketsSchedule`. |
+| `name` | `string` | Yes | Provider object name, in **this machine's namespace**. |
+
+When both `schedule` and `spotSchedule` are set, the machine is active only when
+the time window **and** the provider both agree (logical AND); `killSwitch`
+always wins.
 
 #### Day Format
 

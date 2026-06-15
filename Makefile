@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
 # SPDX-License-Identifier: Apache-2.0
 
-.PHONY: help install build build-debug build-linux-amd64 build-linux-arm64 build-macos-arm64 prepare-binaries-linux-amd64 prepare-binaries-linux-arm64 test test-lib lint format clean crds crddoc docs docs-serve docs-clean docs-rustdoc calm-diagrams calm-validate run-local docker-build docker-build-amd64 docker-build-arm64 docker-build-chainguard docker-push docker-buildx docker-buildx-chainguard gitleaks gitleaks-install install-git-hooks security-scan-local sbom audit vexctl-install vex-validate vex-assemble vex-auto-presence vex-auto-reachability kind-install kind-create kind-delete kind-load kind-deploy kind-example kind-setup kind-status
+.PHONY: help install build build-debug build-linux-amd64 build-linux-arm64 build-macos-arm64 prepare-binaries-linux-amd64 prepare-binaries-linux-arm64 test test-lib lint format clean crds crddoc docs docs-serve docs-clean docs-rustdoc calm-diagrams calm-validate run-local docker-build docker-build-amd64 docker-build-arm64 docker-build-chainguard docker-push docker-buildx docker-buildx-chainguard gitleaks gitleaks-install install-git-hooks security-scan-local sbom audit vexctl-install vex-validate vex-assemble vex-auto-presence vex-auto-reachability vex-auto vex-auto-check kind-install kind-create kind-delete kind-load kind-deploy kind-example kind-setup kind-status
 
 # CALM (FINOS Common Architecture Language Model) configuration
 CALM_CLI_VERSION ?= 1.37.0
@@ -597,6 +597,72 @@ vex-auto-reachability: ## Run auto-vex-reachability over $(GRYPE_JSON) + symbols
 		--output vex.auto-reachability.json
 	@rm -f /tmp/avr-symbols.txt
 	@echo "✓ wrote vex.auto-reachability.json"
+
+# ============================================================
+# Auto-VEX pre-submission gate (ADR 0008)
+# ============================================================
+# `make vex-auto` regenerates the canonical, signed-off auto-VEX documents
+# from the frozen snapshot under .vex/snapshot/. Output is a PURE function of
+# committed files: the snapshot inputs plus pinned --id/--author/--timestamp
+# (timestamp read from .vex/snapshot/timestamp.txt). That byte-stability is
+# what lets `make vex-auto-check` enforce the gate with a plain
+# `git diff --exit-code` in CI. See docs/src/security/vex.md and
+# docs/adr/0008-autovex-presubmission-gate.md.
+
+SNAPSHOT_DIR        ?= .vex/snapshot
+AUTOVEX_DIR         ?= .vex/auto
+SNAPSHOT_GRYPE      ?= $(SNAPSHOT_DIR)/grype.json
+SNAPSHOT_SBOMS      ?= $(wildcard $(SNAPSHOT_DIR)/sbom-*.json)
+SNAPSHOT_SYMBOLS    ?= $(SNAPSHOT_DIR)/symbols.txt
+SNAPSHOT_TIMESTAMP  ?= $(SNAPSHOT_DIR)/timestamp.txt
+# Canonical, run-independent document @ids. These are pinned (not CI-run URLs)
+# precisely so local and CI regeneration produce byte-identical output.
+AUTOVEX_PRESENCE_ID ?= https://github.com/finos/5-spot/.vex/auto/presence
+AUTOVEX_REACH_ID    ?= https://github.com/finos/5-spot/.vex/auto/reachability
+
+vex-auto: ## Regenerate canonical auto-VEX (.vex/auto/*) from the frozen .vex/snapshot/ (ADR 0008)
+	@test -f "$(SNAPSHOT_GRYPE)" || { \
+		echo "ERROR: missing $(SNAPSHOT_GRYPE). See $(SNAPSHOT_DIR)/README.md to capture a snapshot."; exit 1; }
+	@test -n "$(strip $(SNAPSHOT_SBOMS))" || { \
+		echo "ERROR: no $(SNAPSHOT_DIR)/sbom-*.json found. See $(SNAPSHOT_DIR)/README.md."; exit 1; }
+	@test -f "$(SNAPSHOT_SYMBOLS)" || { \
+		echo "ERROR: missing $(SNAPSHOT_SYMBOLS). See $(SNAPSHOT_DIR)/README.md."; exit 1; }
+	@test -f "$(SNAPSHOT_TIMESTAMP)" || { \
+		echo "ERROR: missing $(SNAPSHOT_TIMESTAMP) (canonical sign-off timestamp)."; exit 1; }
+	@mkdir -p "$(AUTOVEX_DIR)"
+	@ts="$$(tr -d '[:space:]' < $(SNAPSHOT_TIMESTAMP))"; \
+	cargo run --quiet --bin auto-vex-presence -- \
+		--grype-json "$(SNAPSHOT_GRYPE)" \
+		$(foreach s,$(SNAPSHOT_SBOMS),--sbom "$(s)") \
+		--vex-dir .vex \
+		--product-purl "$(PRODUCT_PURL)" \
+		--id "$(AUTOVEX_PRESENCE_ID)" \
+		--author "auto-vex-presence" \
+		--timestamp "$$ts" \
+		--output "$(AUTOVEX_DIR)/vex.auto-presence.json"; \
+	cargo run --quiet --bin auto-vex-reachability -- \
+		--grype-json "$(SNAPSHOT_GRYPE)" \
+		--binary-symbols "$(SNAPSHOT_SYMBOLS)" \
+		--affected-functions "$(AFFECTED_FUNCTIONS)" \
+		--vex-dir .vex \
+		--product-purl "$(PRODUCT_PURL)" \
+		--id "$(AUTOVEX_REACH_ID)" \
+		--author "auto-vex-reachability" \
+		--timestamp "$$ts" \
+		--output "$(AUTOVEX_DIR)/vex.auto-reachability.json"
+	@echo "✓ regenerated $(AUTOVEX_DIR)/vex.auto-presence.json and vex.auto-reachability.json"
+
+vex-auto-check: vex-auto ## Fail if committed auto-VEX is stale vs a fresh regeneration (CI gate, ADR 0008)
+	@if ! git diff --quiet -- "$(AUTOVEX_DIR)"; then \
+		echo ""; \
+		echo "✗ Auto-VEX is out of date — committed $(AUTOVEX_DIR)/* does not match a fresh regeneration."; \
+		echo "  The auto-VEX suppressions must be generated and reviewed BEFORE submission."; \
+		echo "  Fix: run 'make vex-auto', review the diff in $(AUTOVEX_DIR)/, and commit it."; \
+		echo ""; \
+		git --no-pager diff -- "$(AUTOVEX_DIR)"; \
+		exit 1; \
+	fi
+	@echo "✓ auto-VEX is up to date (committed $(AUTOVEX_DIR)/* matches regeneration)"
 
 # ============================================================
 # Kind Cluster (local testing for ScheduledMachine)

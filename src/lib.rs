@@ -29,6 +29,7 @@ pub mod labels;
 pub mod loop_protection;
 pub mod metrics;
 pub mod netlink_proc;
+pub mod providers;
 pub mod reclaim_agent;
 pub mod reconcilers;
 

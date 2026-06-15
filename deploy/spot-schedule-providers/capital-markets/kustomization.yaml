@@ -1,0 +1,13 @@
+# CapitalMarketsSchedule reference spot-schedule provider (ADR 0006, Phase 5).
+#
+# The CapitalMarketsSchedule CRD itself ships under deploy/crds/ — apply that
+# first (or it is pulled in by the top-level deploy). This kustomization installs
+# the provider controller: its ServiceAccount, least-privilege ClusterRole +
+# binding (read CapitalMarketsSchedule, write only its /status), and Deployment.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - serviceaccount.yaml
+  - clusterrole.yaml
+  - clusterrolebinding.yaml
+  - deployment.yaml

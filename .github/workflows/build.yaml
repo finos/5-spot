@@ -160,6 +160,38 @@ jobs:
         run: make vex-validate
 
   # ─────────────────────────────────────────────────────────────────────────────
+  # Auto-VEX pre-submission gate — PR + push (ADR 0008).
+  # The auto-VEX suppressions must be generated, reviewed, and signed off
+  # (committed) BEFORE submission. This job regenerates .vex/auto/* from the
+  # frozen .vex/snapshot/ with pinned @id/author/timestamp and byte-exact diffs
+  # the result against the committed output. A mismatch hard-fails the build:
+  # the contributor must run `make vex-auto`, review the suppressions, and commit.
+  # This is the upstream human checkpoint; the Security team's release-time
+  # counter-signature (see docs/src/security/vex.md) remains the downstream net.
+  # ─────────────────────────────────────────────────────────────────────────────
+  validate-autovex:
+    name: 🔏 Validate Auto-VEX Sign-off
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    needs: [verify-commits]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (moving ref — re-pin quarterly)
+
+      - name: Cache cargo dependencies
+        uses: firestoned/github-actions/rust/cache-cargo@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+
+      # Regenerate .vex/auto/* from the committed .vex/snapshot/ and fail if the
+      # committed output is stale. Output is byte-deterministic (pinned
+      # @id/author/timestamp + CVE-sorted generators), so a plain git diff is the
+      # whole gate.
+      - name: Verify committed auto-VEX matches a fresh regeneration
+        run: make vex-auto-check
+
+  # ─────────────────────────────────────────────────────────────────────────────
   # Extract version — all events; downstream build jobs depend on this.
   # format/clippy are independent PR quality checks and do not gate the build.
   # ─────────────────────────────────────────────────────────────────────────────

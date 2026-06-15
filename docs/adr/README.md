@@ -43,3 +43,4 @@ refactors) need neither. When unsure, **write the ADR.**
 | [0005](./0005-remove-kata-destpath-fixed-host-path.md) | Remove `spec.kata.destPath`; fix the host path to `/etc/k0s/containerd.d/kata.toml` | Accepted |
 | [0006](./0006-pluggable-spot-schedule-provider-contract.md) | Pluggable spot-schedule provider contract via `spec.spotSchedule` and the `spotschedules.5spot.finos.org` API group | Accepted |
 | [0007](./0007-crd-multi-version-and-conversion.md) | CRD multi-version support with `None` conversion and additive-only evolution | Accepted |
+| [0008](./0008-autovex-presubmission-gate.md) | Auto-VEX generated and signed off before submission, enforced by a byte-exact CI gate | Accepted |

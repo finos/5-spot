@@ -1,0 +1,8 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/finos/5-spot/.vex/auto/presence",
+  "author": "auto-vex-presence",
+  "timestamp": "2026-06-14T00:00:00Z",
+  "version": 1,
+  "statements": []
+}

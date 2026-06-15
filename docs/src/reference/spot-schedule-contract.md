@@ -4,11 +4,12 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # Spot Schedule Provider Contract
 
-> **Status:** Phase 1 — the API types exist (`ScheduledMachine.spec.spotSchedule`
-> on `v1beta1`, the `CapitalMarketsSchedule` reference provider CRD), but the
-> controller-side **resolver and watch** land in later roadmap phases. The
-> contract is **Accepted** in [ADR 0006](https://github.com/finos/5-spot). This
-> page is the authoritative specification a provider author implements against.
+> **Status:** Stable contract, **Accepted** in
+> [ADR 0006](https://github.com/finos/5-spot). The `CapitalMarketsSchedule`
+> reference provider ships in-repo (see the
+> [provider guide](../guides/capital-markets-schedule.md)). This page is the
+> authoritative specification a provider author implements against — implement
+> the `status` contract below and 5-Spot will consume your provider.
 
 A **spot-schedule provider** is any Kubernetes custom resource in the
 `spotschedules.5spot.finos.org` API group that tells 5-Spot whether a
@@ -57,7 +58,7 @@ spec:
 | `status` field | Required | Type | Meaning |
 |---|:--:|---|---|
 | `active` | **yes** | bool | **The decision.** `true` ⇒ the referencing machine should be up; `false` ⇒ it should be down. |
-| `conditions[type=Ready]` | recommended | condition | Provider health. `Ready=False` (or absent) ⇒ 5-Spot treats the reference as **unresolved**, *not* inactive (see [Unresolved behavior](#unresolved-behavior)). |
+| `conditions[type=Ready]` | recommended | condition | Provider health. A **present** `Ready` whose status is *not* `True` ⇒ 5-Spot treats the reference as **unresolved**, *not* inactive (see [Unresolved behavior](#unresolved-behavior)). An **absent** `Ready` ⇒ `status.active` is taken as authoritative. Set `Ready=True` when your `active` is current, and `Ready=False` to say "don't trust my `active` right now" without flapping the machine. |
 | `observedGeneration` | recommended | int64 | The `metadata.generation` the status reflects; lets 5-Spot detect stale status. |
 | `lastTransitionTime` | recommended | RFC 3339 string | When `active` last flipped; used for observability and flap detection. |
 
@@ -77,8 +78,11 @@ status:
       observedGeneration: 4
 ```
 
-> **TODO (Phase 2/6):** finalize the exact `conditions` schema 5-Spot keys off
-> (reason vocabulary, whether `observedGeneration` staleness is enforced).
+5-Spot keys off **only** `status.active` and the `Ready` condition's `status`
+field (`"True"` / `"False"` / `"Unknown"`). The condition `reason` / `message`
+are free-form and surfaced for observability; pick any CamelCase `reason`. The
+`observedGeneration` is recommended for your own staleness detection but 5-Spot
+does not currently reject stale status on it.
 
 ## Composition with `spec.schedule`
 
@@ -94,8 +98,9 @@ killSwitch  >  (schedule AND spotSchedule)  >  schedule-only / spotSchedule-only
 ## Unresolved behavior
 
 A reference is **Unresolved** when the provider CRD is not installed, the named
-object is absent, it exposes no `status.active`, or its `Ready` condition is
-`False`/missing. On Unresolved, 5-Spot:
+object is absent, it exposes no `status.active`, or it carries a `Ready`
+condition whose status is *not* `True` (an absent `Ready` is **not**
+unresolved — `active` is then authoritative). On Unresolved, 5-Spot:
 
 - sets a `SpotScheduleResolved=False` condition on the `ScheduledMachine` with
   a precise reason (`ProviderCRDNotInstalled`, `ProviderNotFound`,
@@ -126,13 +131,59 @@ rely on 5-Spot reading anything beyond the table above.
 
 ## Reference provider: `CapitalMarketsSchedule`
 
-The in-repo reference implementation (roadmap Phase 5) reconciles a declarative
-exchange calendar (sessions, statutory holidays, early closes, timezone) into
-`status.active`, requeuing at the next session/holiday boundary (event-driven —
-a single timed requeue at the calendar transition, not a poll loop).
+The in-repo reference implementation reconciles a declarative exchange calendar
+(sessions, statutory holidays, early closes, timezone) into `status.active`,
+requeuing at the next session/holiday boundary (event-driven — a single timed
+requeue at the calendar transition, not a poll loop). See the
+[CapitalMarketsSchedule provider guide](../guides/capital-markets-schedule.md)
+for install + authoring, and
+[`examples/capitalmarketsschedule.yaml`](https://github.com/finos/5-spot/blob/main/examples/capitalmarketsschedule.yaml).
 
-> **TODO (Phase 5/6):** link the `CapitalMarketsSchedule` API reference, the
-> guide, and a worked minimal "hello-world" provider example here.
+## Implementing your own provider
+
+A provider is **any** namespaced CRD in the `spotschedules.5spot.finos.org`
+group whose controller writes `status.active`. The smallest possible one is a
+manual on/off toggle — a worked "hello-world":
+
+1. **Define the CRD** (`manualschedules.spotschedules.5spot.finos.org`), with a
+   trivial spec and the duck-typed status:
+
+   ```yaml
+   # spec: { enabled: bool }   status: { active: bool, conditions: [...] }
+   ```
+
+2. **Write the controller** — for each `ManualSchedule`, copy `spec.enabled`
+   into `status.active`, set `Ready=True`, and (recommended) `observedGeneration`
+   + `lastTransitionTime`. The whole reconcile is a status patch:
+
+   ```jsonc
+   PATCH /apis/spotschedules.5spot.finos.org/v1alpha1/namespaces/<ns>/manualschedules/<name>/status
+   { "status": {
+       "active": <spec.enabled>,
+       "observedGeneration": <metadata.generation>,
+       "conditions": [{ "type": "Ready", "status": "True",
+                        "reason": "Reconciled", "message": "ok",
+                        "lastTransitionTime": "<now>" }] } }
+   ```
+
+3. **Grant least privilege** — the provider's ServiceAccount needs only
+   `get;list;watch` on `manualschedules` and `update;patch` on
+   `manualschedules/status`. It never touches `ScheduledMachine` or any 5-Spot
+   resource.
+
+4. **Reference it** from a machine:
+
+   ```yaml
+   spec:
+     spotSchedule:
+       apiVersion: spotschedules.5spot.finos.org/v1alpha1
+       kind: ManualSchedule
+       name: trading-desk-override
+   ```
+
+That is the entire contract — `status.active` plus an optional `Ready`. The
+[`CapitalMarketsSchedule`](https://github.com/finos/5-spot/tree/main/src/providers/capital_markets.rs)
+controller is the same shape with a calendar instead of a toggle.
 
 ## See also
 

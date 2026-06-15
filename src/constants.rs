@@ -487,6 +487,30 @@ pub const REASON_SPOT_SCHEDULE_STATUS_ACTIVE_MISSING: &str = "StatusActiveMissin
 /// is treated as unresolved rather than authoritative.
 pub const REASON_SPOT_SCHEDULE_PROVIDER_NOT_READY: &str = "ProviderNotReady";
 
+// ----------------------------------------------------------------------------
+// CapitalMarketsSchedule reference provider (ADR 0006, Phase 5)
+// ----------------------------------------------------------------------------
+
+/// How many hours ahead the provider scans (hour-by-hour) for the next calendar
+/// transition. 8 days comfortably spans a weekend plus a holiday stretch so the
+/// requeue lands on the real next session boundary in almost all cases.
+pub const PROVIDER_TRANSITION_HORIZON_HOURS: i64 = 8 * 24;
+
+/// Requeue interval used when no transition is found within the horizon (e.g. a
+/// schedule with no sessions, or a long closure). A bounded re-evaluation, not a
+/// steady-state poll — most reconciles requeue at the next session boundary.
+pub const PROVIDER_FALLBACK_REQUEUE_SECS: u64 = 6 * 3600;
+
+/// Back-off requeue after a provider reconcile error (calendar/timezone parse or
+/// status-patch failure).
+pub const PROVIDER_ERROR_REQUEUE_SECS: u64 = 30;
+
+/// `Ready` condition reason published by the provider when the market is open.
+pub const REASON_CAPITAL_MARKETS_SESSION_OPEN: &str = "SessionOpen";
+
+/// `Ready` condition reason published by the provider when the market is closed.
+pub const REASON_CAPITAL_MARKETS_SESSION_CLOSED: &str = "SessionClosed";
+
 /// Server-side-apply field manager used when the controller patches Node
 /// `spec.taints`. Distinct from other field managers so a `kubectl describe
 /// node` shows ownership clearly.
