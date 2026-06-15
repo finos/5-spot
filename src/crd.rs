@@ -264,6 +264,21 @@ fn default_enabled() -> bool {
 }
 
 impl ScheduleSpec {
+    /// An inactive placeholder schedule (`enabled: false`, no windows) used as
+    /// the effective schedule for a `spotSchedule`-only `ScheduledMachine`
+    /// (one with no inline `spec.schedule`). `enabled: false` makes the
+    /// time-based evaluator return "not active", so a provider-only machine is
+    /// inert until the spot-schedule resolver composes the provider verdict.
+    #[must_use]
+    pub fn inactive_placeholder() -> Self {
+        Self {
+            days_of_week: Vec::new(),
+            hours_of_day: Vec::new(),
+            timezone: default_timezone(),
+            enabled: false,
+        }
+    }
+
     /// Get the set of active weekday numbers (0=Monday, 6=Sunday)
     ///
     /// # Errors
