@@ -9,6 +9,33 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-06-15 10:30] - Restore dropped spot-schedule metric functions (build fix)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/metrics.rs`: Added the three spot-schedule metric definitions and
+  `record_*` functions that a `main` merge dropped while keeping their call sites
+  in `scheduled_machine.rs` and their tests in `metrics_tests.rs`:
+  `SPOT_SCHEDULE_RESOLUTIONS_TOTAL` / `record_spot_schedule_resolution`,
+  `SPOT_SCHEDULE_RESOLUTION_ERRORS_TOTAL` / `record_spot_schedule_resolution_error`,
+  `SPOT_SCHEDULE_TRANSITIONS_TOTAL` / `record_spot_schedule_transition`.
+
+### Why
+The crate failed to compile (`E0425: cannot find function …`) after the
+`spot-schdule-phase5` merge — the metric implementations were lost but their
+callers and unit tests survived. This restores them (the tests were already the
+RED spec), unblocking every CI job, including the new `validate-autovex` gate
+which compiles the crate via `cargo run`.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
 ## [2026-06-15 10:00] - Spot-schedule docs: contract finalization + concept page (Phase 6)
 
 **Author:** Erick Bourgeois
@@ -86,48 +113,6 @@ resolver/watch.
 - [ ] Breaking change
 - [x] Requires cluster rollout (apply `deploy/spot-schedule-providers/capital-markets/`)
 - [ ] Config change only
-- [ ] Documentation only
-
----
-
-<<<<<<< Updated upstream
-=======
-## [2026-06-14 16:00] - Auto-VEX pre-submission sign-off gate (ADR 0008)
-
-**Author:** Erick Bourgeois
-
-### Changed
-- `docs/adr/0008-autovex-presubmission-gate.md`: NEW ADR — commit a frozen
-  snapshot of auto-VEX inputs + canonical output; enforce with a byte-exact CI
-  gate (PR hard-fail). No CALM impact (CI/CD policy). Index updated in
-  `docs/adr/README.md`.
-- `Makefile`: NEW `vex-auto` (regenerate `.vex/auto/*` from `.vex/snapshot/` with
-  pinned `--id`/`--author`/`--timestamp`) and `vex-auto-check`
-  (`vex-auto` + `git diff --exit-code -- .vex/auto`) targets; added both to
-  `.PHONY`.
-- `.vex/snapshot/`: NEW frozen generator inputs (`grype.json`, `sbom-bootstrap.json`,
-  `symbols.txt`, `timestamp.txt`) + `README.md` documenting the sign-off contract
-  and how to refresh from a real CI capture. Seeded as a valid empty bootstrap.
-- `.vex/auto/`: NEW committed canonical output (`vex.auto-presence.json`,
-  `vex.auto-reachability.json`) — the human-signed-off baseline.
-- `.github/workflows/build.yaml`: NEW `validate-autovex` job — runs
-  `make vex-auto-check` on `pull_request` + `push`, hard-failing when committed
-  auto-VEX is stale.
-- `docs/src/security/vex.md`: NEW "Auto-VEX is signed off before submission"
-  section documenting the committed baseline, workflow, and gate scope.
-
-### Why
-Auto-VEX statements are machine-authored suppressions that previously appeared
-only in CI artifacts and were merged into the signed release VEX with no human
-review until the Security team's post-hoc counter-signature. This adds an
-**upstream** checkpoint: maintainers run the generators, review the suppressions,
-and commit them (sign-off) before submission; CI refuses any change whose
-committed auto-VEX no longer matches a fresh, deterministic regeneration.
-
-### Impact
-- [ ] Breaking change
-- [ ] Requires cluster rollout
-- [x] Config change only (CI gate + repo convention)
 - [ ] Documentation only
 
 ---
@@ -276,7 +261,6 @@ build on this.
 - [ ] Config change only
 - [ ] Documentation only
 
->>>>>>> Stashed changes
 ## [2026-06-13 16:30] - Spot-schedule provider API: CRD scaffolding + ScheduledMachine v1beta1 (Phase 1)
 
 **Author:** Erick Bourgeois

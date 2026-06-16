@@ -673,6 +673,47 @@ spec:
                   (Pending, ShuttingDown, Inactive, Disabled, Terminated, Error) is
                   reported as `False`.
                 type: boolean
+              spotSchedule:
+                description: |-
+                  Spot-schedule provider resolution state (ADR 0006), present only when
+                  `spec.spotSchedule` is set. Carries the last resolved/held provider
+                  `active` value (the input to hold-last-state composition), the
+                  resolution reason/message, and the provider's observed generation.
+                nullable: true
+                properties:
+                  active:
+                    description: |-
+                      Last known provider `status.active`. Held across an unresolved reconcile
+                      (hold-last-state); `None` until the provider first resolves.
+                    nullable: true
+                    type: boolean
+                  lastTransitionTime:
+                    description: When `active` last transitioned (RFC3339).
+                    nullable: true
+                    type: string
+                  message:
+                    description: Human-readable resolution detail.
+                    nullable: true
+                    type: string
+                  providerGeneration:
+                    description: The provider's `status.observedGeneration` at the last resolution.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  reason:
+                    description: Machine-readable resolution reason (a `REASON_SPOT_SCHEDULE_*` value).
+                    nullable: true
+                    type: string
+                  resolved:
+                    description: |-
+                      Whether the referenced provider resolved into an authoritative verdict
+                      this reconcile. `false` mirrors a `SpotScheduleResolved=False`
+                      condition — the provider CRD is absent, the object is missing, it
+                      exposes no `status.active`, or it is not `Ready`.
+                    type: boolean
+                required:
+                - resolved
+                type: object
             type: object
         required:
         - spec
@@ -1204,6 +1245,47 @@ spec:
                   (Pending, ShuttingDown, Inactive, Disabled, Terminated, Error) is
                   reported as `False`.
                 type: boolean
+              spotSchedule:
+                description: |-
+                  Spot-schedule provider resolution state (ADR 0006), present only when
+                  `spec.spotSchedule` is set. Carries the last resolved/held provider
+                  `active` value (the input to hold-last-state composition), the
+                  resolution reason/message, and the provider's observed generation.
+                nullable: true
+                properties:
+                  active:
+                    description: |-
+                      Last known provider `status.active`. Held across an unresolved reconcile
+                      (hold-last-state); `None` until the provider first resolves.
+                    nullable: true
+                    type: boolean
+                  lastTransitionTime:
+                    description: When `active` last transitioned (RFC3339).
+                    nullable: true
+                    type: string
+                  message:
+                    description: Human-readable resolution detail.
+                    nullable: true
+                    type: string
+                  providerGeneration:
+                    description: The provider's `status.observedGeneration` at the last resolution.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  reason:
+                    description: Machine-readable resolution reason (a `REASON_SPOT_SCHEDULE_*` value).
+                    nullable: true
+                    type: string
+                  resolved:
+                    description: |-
+                      Whether the referenced provider resolved into an authoritative verdict
+                      this reconcile. `false` mirrors a `SpotScheduleResolved=False`
+                      condition — the provider CRD is absent, the object is missing, it
+                      exposes no `status.active`, or it is not `Ready`.
+                    type: boolean
+                required:
+                - resolved
+                type: object
             type: object
         required:
         - spec

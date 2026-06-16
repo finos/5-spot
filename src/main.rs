@@ -21,7 +21,7 @@ use five_spot::constants::{
     CAPI_GROUP, CAPI_MACHINE_API_VERSION, CAPI_RESOURCE_MACHINES, CHILD_NODE_EVENT_CHANNEL_CAP,
     DEFAULT_LEASE_DURATION_SECS, DEFAULT_LEASE_GRACE_SECS, DEFAULT_LEASE_NAME,
     DEFAULT_LEASE_NAMESPACE, DEFAULT_LEASE_RENEW_DEADLINE_SECS, DEFAULT_LEASE_RETRY_PERIOD_SECS,
-    HEALTH_PORT, K8S_API_TIMEOUT_SECS, METRICS_PORT,
+    HEALTH_PORT, K8S_API_TIMEOUT_SECS, METRICS_PORT, SPOT_SCHEDULE_EVENT_CHANNEL_CAP,
 };
 use five_spot::crd::ScheduledMachine;
 use five_spot::health::{start_health_server, HealthState};
@@ -29,7 +29,7 @@ use five_spot::labels::LABEL_SCHEDULED_MACHINE;
 use five_spot::metrics::init_controller_info;
 use five_spot::reconcilers::{
     error_policy, machine_to_scheduled_machine, node_to_scheduled_machines_via_machine,
-    reconcile_scheduled_machine, ChildNodeWatchManager, Context,
+    reconcile_scheduled_machine, ChildNodeWatchManager, Context, SpotScheduleWatchManager,
 };
 use futures::{StreamExt, TryStreamExt};
 use k8s_openapi::api::core::v1::Node;
@@ -345,6 +345,37 @@ async fn main() -> Result<()> {
         .child_clients
         .set_hook(Arc::new(child_watch_manager));
 
+    // Dynamic spot-schedule provider watches (ADR 0006, Phase 3) — event-driven,
+    // not polling. A standalone ScheduledMachine reflector feeds every SM
+    // apply/delete into the manager, which maintains a reverse index
+    // ((gvk, ns, name) → SMs) and lazily runs one `kube::runtime::watcher`
+    // stream per referenced provider GVK. Provider `status.active` flips arrive
+    // as watch events, are mapped back to the referencing SMs, and flow over
+    // this mpsc into the Controller's second `reconcile_on` below. On restart
+    // the reflector's initial list rebuilds the index from cluster state.
+    let (spot_schedule_tx, spot_schedule_rx) =
+        tokio::sync::mpsc::channel(SPOT_SCHEDULE_EVENT_CHANNEL_CAP);
+    let spot_schedule_watch = SpotScheduleWatchManager::new(client.clone(), spot_schedule_tx);
+    let spot_schedule_reflector_api = Api::<ScheduledMachine>::all(client.clone());
+    tokio::spawn(async move {
+        let mut stream = watcher::watcher(spot_schedule_reflector_api, Config::default()).boxed();
+        while let Some(event) = stream.next().await {
+            match event {
+                Ok(watcher::Event::Apply(sm) | watcher::Event::InitApply(sm)) => {
+                    spot_schedule_watch.observe_scheduled_machine(&sm);
+                }
+                Ok(watcher::Event::Delete(sm)) => {
+                    spot_schedule_watch.forget_scheduled_machine(&sm);
+                }
+                Ok(watcher::Event::Init | watcher::Event::InitDone) => {}
+                Err(e) => {
+                    warn!(error = %e, "ScheduledMachine reflector (spot-schedule index) error; kube-runtime will reconnect");
+                }
+            }
+        }
+        error!("ScheduledMachine reflector for spot-schedule index terminated");
+    });
+
     let controller = Controller::new(scheduled_machines, Config::default());
 
     controller
@@ -365,6 +396,9 @@ async fn main() -> Result<()> {
             )
         })
         .reconcile_on(tokio_stream::wrappers::ReceiverStream::new(child_node_rx))
+        .reconcile_on(tokio_stream::wrappers::ReceiverStream::new(
+            spot_schedule_rx,
+        ))
         .shutdown_on_signal()
         .run(reconcile_scheduled_machine, error_policy, context)
         .for_each(|res| async move {

@@ -69,6 +69,40 @@ All metrics use the `fivespot_` prefix. The full list lives in
 | `fivespot_errors_total` | Counter | `error_type` | Errors by type |
 | `fivespot_finalizer_cleanup_timeouts_total` | Counter | — | Finalizer cleanup timeouts (force-removed; possible orphans) |
 
+#### Spot-schedule providers
+
+Emitted only for `ScheduledMachine`s with a `spec.spotSchedule` reference
+(ADR 0006). Labels are bounded by `namespace` × provider `kind` — never the
+(unbounded) provider or machine name.
+
+| Metric | Type | Labels | Description |
+| ------ | ---- | ------ | ----------- |
+| `fivespot_spot_schedule_resolutions_total` | Counter | `namespace`, `kind`, `result` | Provider resolutions; `result={active\|inactive\|unresolved}` |
+| `fivespot_spot_schedule_resolution_errors_total` | Counter | `namespace`, `kind`, `reason` | Unresolved resolutions by `reason` (`ProviderCRDNotInstalled`, `ProviderNotFound`, `StatusActiveMissing`, `ProviderNotReady`) — the hold-last-state signal to alert on |
+| `fivespot_spot_schedule_transitions_total` | Counter | `namespace`, `kind` | Provider `active`⇄`inactive` transitions; a high rate is the flapping signal |
+
+Suggested alerts (threat-model D5 flapping + hold-last-state visibility):
+
+```yaml
+# Provider flapping — many active⇄inactive transitions churn machine
+# create/delete. Tune the threshold to your machine provisioning cost.
+- alert: SpotScheduleProviderFlapping
+  expr: sum by (namespace, kind) (rate(fivespot_spot_schedule_transitions_total[15m])) > 0.2
+  for: 15m
+  labels: { severity: warning }
+  annotations:
+    summary: "Spot-schedule provider {{ $labels.kind }} is flapping in {{ $labels.namespace }}"
+
+# A provider has been unresolvable for a while — referencing machines are
+# holding last-known state (or fail-inactive if never resolved).
+- alert: SpotScheduleProviderUnresolved
+  expr: sum by (namespace, kind, reason) (rate(fivespot_spot_schedule_resolution_errors_total[10m])) > 0
+  for: 10m
+  labels: { severity: warning }
+  annotations:
+    summary: "Spot-schedule provider {{ $labels.kind }} unresolved ({{ $labels.reason }}) in {{ $labels.namespace }}"
+```
+
 #### Node drain & eviction
 
 | Metric | Type | Labels | Description |

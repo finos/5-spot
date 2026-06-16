@@ -55,6 +55,7 @@ use crate::metrics::{
     record_error, record_reconciliation_failure, record_reconciliation_success,
     record_schedule_evaluation, KILL_SWITCH_ACTIVATIONS_TOTAL,
 };
+use crate::reconcilers::spot_schedule;
 
 // ============================================================================
 // Context for reconciliation
@@ -559,11 +560,48 @@ async fn reconcile_inner(
         return Ok(action);
     }
 
-    // Evaluate schedule. `effective_schedule()` yields the inline schedule, or
-    // an inactive placeholder for a spotSchedule-only machine (the provider
-    // verdict is composed in by the spot-schedule resolver — roadmap Phase 2).
-    let schedule = resource.spec.effective_schedule();
-    let should_be_active = evaluate_schedule(&schedule, None)?;
+    // Evaluate the inline time window. `None` means there is no inline
+    // `spec.schedule` (a spotSchedule-only machine) — the time axis is then
+    // unconstrained and the provider governs activity.
+    let schedule_active = match &resource.spec.schedule {
+        Some(schedule) => Some(evaluate_schedule(schedule, None)?),
+        None => None,
+    };
+
+    // Hold-last-state input: the provider-active value persisted last reconcile.
+    let last_known_spot_active = resource
+        .status
+        .as_ref()
+        .and_then(|status| status.spot_schedule.as_ref())
+        .and_then(|spot| spot.active);
+
+    // Resolve the spot-schedule provider verdict (pull-on-reconcile; the
+    // event-driven watch lands in roadmap Phase 3). A transient API error
+    // propagates so the reconciler retries; "unresolved" is a verdict, not an
+    // error, and drives hold-last-state composition.
+    let spot_verdict = if let Some(reference) = &resource.spec.spot_schedule {
+        let verdict =
+            spot_schedule::resolve_spot_schedule(&ctx.client, &namespace, reference).await?;
+        record_spot_schedule_metrics(
+            &namespace,
+            &reference.kind,
+            &verdict,
+            last_known_spot_active,
+        );
+        persist_spot_schedule_status(&ctx, &namespace, &name, &verdict, last_known_spot_active)
+            .await?;
+        Some(verdict)
+    } else {
+        None
+    };
+
+    // Compose the inline schedule and provider verdict (AND; killSwitch already
+    // handled above) into the single should-be-active decision.
+    let should_be_active = super::helpers::compose_should_be_active(
+        schedule_active,
+        spot_verdict.as_ref(),
+        last_known_spot_active,
+    );
 
     // Record schedule evaluation metric
     record_schedule_evaluation(should_be_active);
@@ -576,9 +614,9 @@ async fn reconcile_inner(
         resource = %name,
         namespace = %namespace,
         should_be_active = should_be_active,
-        enabled = schedule.enabled,
+        enabled = resource.spec.is_enabled(),
         phase = ?current_phase,
-        timezone = %schedule.timezone,
+        spot_schedule = spot_verdict.as_ref().map(spot_schedule::SpotScheduleVerdict::reason),
         "Schedule evaluated"
     );
 
@@ -596,6 +634,90 @@ async fn reconcile_inner(
         // PHASE_PENDING and unknown phases handled by default
         _ => handle_pending_phase(resource, ctx, should_be_active).await,
     }
+}
+
+/// Record spot-schedule resolution metrics for one reconcile: the resolution
+/// result, an error counter when unresolved, and a transition counter when the
+/// resolved `active` value differs from the previously held one.
+fn record_spot_schedule_metrics(
+    namespace: &str,
+    kind: &str,
+    verdict: &spot_schedule::SpotScheduleVerdict,
+    previous_active: Option<bool>,
+) {
+    use spot_schedule::SpotScheduleVerdict::{Active, Inactive, Unresolved};
+
+    let result = match verdict {
+        Active { .. } => "active",
+        Inactive { .. } => "inactive",
+        Unresolved { .. } => "unresolved",
+    };
+    crate::metrics::record_spot_schedule_resolution(namespace, kind, result);
+
+    if let Unresolved { reason, .. } = verdict {
+        crate::metrics::record_spot_schedule_resolution_error(namespace, kind, reason);
+    }
+
+    // A transition is a change in the resolved `active` value versus the last
+    // held one. Unresolved reconciles hold state and never count as transitions.
+    if let (Some(now), Some(before)) = (verdict.active(), previous_active) {
+        if now != before {
+            crate::metrics::record_spot_schedule_transition(namespace, kind);
+        }
+    }
+}
+
+/// Patch `status.spotSchedule` with the current resolution (ADR 0006).
+///
+/// `lastTransitionTime` is bumped only when the resolved `active` value changes
+/// versus `previous_active`; an unresolved reconcile holds the previous `active`
+/// (hold-last-state) and records `resolved=false` with the reason/message.
+///
+/// Uses a JSON Merge patch scoped to `status.spotSchedule`, so it neither
+/// clobbers nor is clobbered by the phase/condition writes in
+/// [`update_phase`](crate::reconcilers::helpers::update_phase).
+async fn persist_spot_schedule_status(
+    ctx: &Context,
+    namespace: &str,
+    name: &str,
+    verdict: &spot_schedule::SpotScheduleVerdict,
+    previous_active: Option<bool>,
+) -> Result<(), ReconcilerError> {
+    use kube::api::{Api, Patch, PatchParams};
+
+    // Hold last known active while unresolved; otherwise take the fresh value.
+    let active = verdict.active().or(previous_active);
+    let transitioned = matches!((verdict.active(), previous_active), (Some(now), Some(before)) if now != before)
+        || matches!((verdict.active(), previous_active), (Some(_), None));
+
+    let last_transition_time = if transitioned {
+        Some(chrono::Utc::now().to_rfc3339())
+    } else {
+        None
+    };
+
+    let mut spot_status = serde_json::json!({
+        "resolved": verdict.is_resolved(),
+        "reason": verdict.reason(),
+    });
+    if let Some(active) = active {
+        spot_status["active"] = serde_json::json!(active);
+    }
+    if let spot_schedule::SpotScheduleVerdict::Unresolved { message, .. } = verdict {
+        spot_status["message"] = serde_json::json!(message);
+    }
+    if let Some(generation) = verdict.provider_generation() {
+        spot_status["providerGeneration"] = serde_json::json!(generation);
+    }
+    if let Some(time) = last_transition_time {
+        spot_status["lastTransitionTime"] = serde_json::json!(time);
+    }
+
+    let patch = serde_json::json!({ "status": { "spotSchedule": spot_status } });
+    let api: Api<ScheduledMachine> = Api::namespaced(ctx.client.clone(), namespace);
+    api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await?;
+    Ok(())
 }
 
 /// Check whether the Node backing this `ScheduledMachine` carries a
@@ -723,7 +845,7 @@ async fn handle_pending_phase(
     let name = resource.name_any();
 
     // Guard clause: if schedule is disabled
-    if !resource.spec.effective_schedule().enabled {
+    if !resource.spec.is_enabled() {
         info!(resource = %name, namespace = %namespace, "Schedule disabled");
         update_phase(
             &ctx,
@@ -809,7 +931,7 @@ async fn handle_active_phase(
     let name = resource.name_any();
 
     // Guard clause: schedule disabled
-    if !resource.spec.effective_schedule().enabled {
+    if !resource.spec.is_enabled() {
         info!(resource = %name, namespace = %namespace, "Schedule disabled - initiating shutdown");
         update_phase_with_grace_period(
             &ctx,
@@ -1289,7 +1411,7 @@ async fn handle_inactive_phase(
     let name = resource.name_any();
 
     // Guard clause: schedule disabled
-    if !resource.spec.effective_schedule().enabled {
+    if !resource.spec.is_enabled() {
         return Ok(Action::requeue(Duration::from_secs(TIMER_REQUEUE_SECS)));
     }
 
@@ -1335,7 +1457,7 @@ async fn handle_disabled_phase(
     let name = resource.name_any();
 
     // Guard clause: schedule enabled again
-    if resource.spec.effective_schedule().enabled {
+    if resource.spec.is_enabled() {
         info!(resource = %name, namespace = %namespace, "Schedule re-enabled");
         update_phase(
             &ctx,

@@ -298,6 +298,19 @@ pub const MAX_RECONCILE_RETRIES: u32 = 10;
 /// steady-state ceiling.
 pub const CHILD_NODE_EVENT_CHANNEL_CAP: usize = 1024;
 
+/// Buffer size for the mpsc channel that carries
+/// `ObjectRef<ScheduledMachine>` from the dynamic spot-schedule provider
+/// watchers into the `Controller::reconcile_on` stream (ADR 0006, Phase 3).
+/// One channel is shared across every per-GVK provider watcher.
+pub const SPOT_SCHEDULE_EVENT_CHANNEL_CAP: usize = 1024;
+
+/// Back-off between retries when a spot-schedule provider watcher cannot yet
+/// resolve its `ApiResource` via discovery (the provider CRD is referenced but
+/// not installed) or its watch stream terminates (e.g. the CRD was deleted).
+/// kube-runtime reconnects transient watch errors internally; this back-off
+/// only governs the discovery re-resolution loop.
+pub const SPOT_SCHEDULE_DISCOVERY_RETRY_SECS: u64 = 30;
+
 /// Maximum number of cached child-cluster `kube::Client` instances kept in
 /// memory by [`crate::reconcilers::child_client::ChildClientCache`].
 ///

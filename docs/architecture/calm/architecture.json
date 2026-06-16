@@ -724,7 +724,7 @@
               "config": {
                 "framework": "NIST SP 800-53 Rev. 5",
                 "controls": ["AC-3", "AC-4", "AC-6", "SI-10"],
-                "evidence": "docs/adr/0006-pluggable-spot-schedule-provider-contract.md, docs/src/security/threat-model.md"
+                "evidence": "deploy/deployment/rbac/clusterrole.yaml (spotschedules.5spot.finos.org get/list/watch only), deploy/admission/validatingadmissionpolicy.yaml (rules 7a/7b), docs/adr/0006-pluggable-spot-schedule-provider-contract.md, docs/src/security/threat-model.md"
               }
             }
           ]

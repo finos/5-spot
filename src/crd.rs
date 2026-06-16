@@ -198,19 +198,19 @@ pub struct ScheduledMachineSpec {
 }
 
 impl ScheduledMachineSpec {
-    /// The effective inline schedule used by the time-based evaluator.
+    /// Whether this machine's activation is enabled at all.
     ///
-    /// When `spec.schedule` is set, returns it borrowed. When it is omitted (a
-    /// `spotSchedule`-only machine), returns an **inactive placeholder** so
-    /// [`crate::reconcilers::helpers::evaluate_schedule`] yields "not active".
-    /// The provider verdict is composed in by the spot-schedule resolver
-    /// (roadmap Phase 2); until then a `spotSchedule`-only machine stays
-    /// inactive but is a valid object.
+    /// A machine with an inline `spec.schedule` honours `schedule.enabled` (the
+    /// operator's master on/off). A `spotSchedule`-only machine has no such
+    /// flag and is always "enabled" — its active/inactive decision is governed
+    /// entirely by the provider, folded into the composed should-be-active
+    /// verdict (ADR 0006 §3). This is the gate the lifecycle phase handlers use
+    /// to decide whether a machine is administratively disabled.
     #[must_use]
-    pub fn effective_schedule(&self) -> std::borrow::Cow<'_, ScheduleSpec> {
+    pub fn is_enabled(&self) -> bool {
         match &self.schedule {
-            Some(schedule) => std::borrow::Cow::Borrowed(schedule),
-            None => std::borrow::Cow::Owned(ScheduleSpec::inactive_placeholder()),
+            Some(schedule) => schedule.enabled,
+            None => true,
         }
     }
 }
@@ -1001,6 +1001,48 @@ pub struct ScheduledMachineStatus {
     /// a `TaintOwnershipConflict` condition rather than overwritten.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub applied_node_taints: Vec<NodeTaint>,
+
+    /// Spot-schedule provider resolution state (ADR 0006), present only when
+    /// `spec.spotSchedule` is set. Carries the last resolved/held provider
+    /// `active` value (the input to hold-last-state composition), the
+    /// resolution reason/message, and the provider's observed generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spot_schedule: Option<SpotScheduleStatus>,
+}
+
+/// Resolution state of a `ScheduledMachine`'s `spec.spotSchedule` provider
+/// reference (ADR 0006). This is the durable surface the controller reads for
+/// hold-last-state composition and that operators inspect to see *why* a
+/// provider-driven machine is (in)active.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SpotScheduleStatus {
+    /// Whether the referenced provider resolved into an authoritative verdict
+    /// this reconcile. `false` mirrors a `SpotScheduleResolved=False`
+    /// condition — the provider CRD is absent, the object is missing, it
+    /// exposes no `status.active`, or it is not `Ready`.
+    pub resolved: bool,
+
+    /// Last known provider `status.active`. Held across an unresolved reconcile
+    /// (hold-last-state); `None` until the provider first resolves.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active: Option<bool>,
+
+    /// Machine-readable resolution reason (a `REASON_SPOT_SCHEDULE_*` value).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+
+    /// Human-readable resolution detail.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+
+    /// The provider's `status.observedGeneration` at the last resolution.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_generation: Option<i64>,
+
+    /// When `active` last transitioned (RFC3339).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_transition_time: Option<String>,
 }
 
 // ============================================================================

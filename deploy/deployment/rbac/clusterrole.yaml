@@ -28,6 +28,20 @@ rules:
     resources: ["scheduledmachines/finalizers"]
     verbs: ["update"]
 
+  # Spot-schedule provider resources (ADR 0006). The controller WATCHES and
+  # READS provider objects in the spotschedules.5spot.finos.org group to resolve
+  # `spec.spotSchedule` into a duck-typed status.active verdict — it never reads
+  # the provider spec semantics and NEVER writes a provider object. Resources is
+  # a wildcard because 5-Spot is provider-agnostic (CapitalMarketsSchedule today,
+  # any third-party provider kind tomorrow); verbs are deliberately read-only —
+  # providers are untrusted inputs whose blast radius is bounded to the
+  # same-namespace ScheduledMachines that reference them (ADR 0006 §6). The
+  # provider's OWN controller holds update/patch on its kind's /status (a
+  # separate Role it ships, not this ClusterRole).
+  - apiGroups: ["spotschedules.5spot.finos.org"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+
   # CAPI Machine management
   - apiGroups: ["cluster.x-k8s.io"]
     resources: ["machines", "machines/status"]
