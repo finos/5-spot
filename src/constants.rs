@@ -25,27 +25,19 @@
 pub const API_GROUP: &str = "5spot.finos.org";
 
 /// Storage / served API version the controller operates on for
-/// `ScheduledMachine`. The CRD serves **two** versions (ADR 0007): the frozen,
-/// deprecated [`API_VERSION_LEGACY`] (`v1alpha1`) and this one — the storage
-/// version — which is the superset carrying `spec.spotSchedule` and the
-/// optional `spec.schedule`. The controller reads/writes objects at this
-/// version; `conversion.strategy: None` relabels older stored objects to it.
+/// `ScheduledMachine`. Since ADR 0009 the CRD serves a **single** version
+/// `v1beta1`, in which `spec.schedule` is a required spot-schedule provider
+/// reference (the pre-release `v1alpha1` `ScheduledMachine` was dropped).
 pub const API_VERSION: &str = "v1beta1";
 
 /// Full API version string (`group/version`) for the storage version the
 /// controller operates on.
 pub const API_VERSION_FULL: &str = "5spot.finos.org/v1beta1";
 
-/// The frozen, deprecated legacy served version of `ScheduledMachine`. Kept
-/// served for backward compatibility (existing manifests using
-/// `5spot.finos.org/v1alpha1` continue to apply); it carries neither
-/// `spec.spotSchedule` nor an optional `spec.schedule`. See ADR 0007.
-pub const API_VERSION_LEGACY: &str = "v1alpha1";
-
 /// API group for the pluggable spot-schedule provider contract (ADR 0006).
-/// A `ScheduledMachine.spec.spotSchedule` reference's `apiVersion` group is
-/// CEL-pinned to exactly this value; any served version of a provider in this
-/// group is accepted (resolution keys off group + kind, never a pinned
+/// A `ScheduledMachine.spec.schedule` reference's `apiVersion` group is
+/// CEL-pinned to exactly this value (ADR 0009); any served version of a provider
+/// in this group is accepted (resolution keys off group + kind, never a pinned
 /// version — ADR 0007).
 pub const SPOT_SCHEDULE_API_GROUP: &str = "spotschedules.5spot.finos.org";
 
@@ -523,6 +515,14 @@ pub const REASON_CAPITAL_MARKETS_SESSION_OPEN: &str = "SessionOpen";
 
 /// `Ready` condition reason published by the provider when the market is closed.
 pub const REASON_CAPITAL_MARKETS_SESSION_CLOSED: &str = "SessionClosed";
+
+/// `Ready` condition reason published by the `TimeBasedSpotSchedule` provider
+/// when the current time falls inside the configured day/hour window (ADR 0009).
+pub const REASON_TIME_BASED_WINDOW_OPEN: &str = "WindowOpen";
+
+/// `Ready` condition reason published by the `TimeBasedSpotSchedule` provider
+/// when the current time is outside the window or the provider is disabled.
+pub const REASON_TIME_BASED_WINDOW_CLOSED: &str = "WindowClosed";
 
 /// Server-side-apply field manager used when the controller patches Node
 /// `spec.taints`. Distinct from other field managers so a `kubectl describe

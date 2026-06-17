@@ -1288,8 +1288,17 @@ jobs:
       - name: Cache cargo dependencies
         uses: firestoned/github-actions/rust/cache-cargo@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
 
+      # `make crds` writes one CRD per file under deploy/crds/ (crdgen itself
+      # only prints to stdout — the Makefile owns the file layout).
       - name: Regenerate CRDs
-        run: cargo run --quiet --bin crdgen > deploy/crds/scheduledmachine.yaml
+        run: make crds
+
+      # Pin every deploy/ image tag to the release tag so the packaged manifests
+      # reference the image variant just built and pushed (ghcr.io/finos/5-spot
+      # and the 5-spot-* agent images all share this tag). See `make
+      # set-image-version`.
+      - name: Pin deployment image versions to the release tag
+        run: make set-image-version VERSION=${{ needs.extract-version.outputs.tag_name }}
 
       - name: Package deploy manifests
         run: tar czf deploy-manifests.tar.gz deploy/

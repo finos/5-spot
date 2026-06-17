@@ -8,7 +8,7 @@
 //!
 //! ## Key types
 //! - [`ScheduledMachineSpec`] / [`ScheduledMachine`] — the top-level CR
-//! - [`ScheduleSpec`] — time-based schedule (days of week, hours, timezone)
+//! - [`TimeBasedSpotScheduleSpec`] — core spot-schedule provider (days of week, hours, timezone)
 //! - [`EmbeddedResource`] — inline bootstrap or infrastructure provider spec
 //! - [`ScheduledMachineStatus`] — runtime phase and condition tracking
 //! - [`Condition`] — standard Kubernetes status condition
@@ -35,35 +35,36 @@ use std::collections::{BTreeMap, HashSet};
     printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#,
     printcolumn = r#"{"name":"Ready","type":"boolean","jsonPath":".status.ready"}"#,
     printcolumn = r#"{"name":"InSchedule","type":"boolean","jsonPath":".status.inSchedule"}"#,
-    printcolumn = r#"{"name":"Enabled","type":"boolean","jsonPath":".spec.schedule.enabled"}"#,
-    printcolumn = r#"{"name":"Schedule Days","type":"string","jsonPath":".spec.schedule.daysOfWeek"}"#,
-    printcolumn = r#"{"name":"Schedule Hours","type":"string","jsonPath":".spec.schedule.hoursOfDay"}"#,
-    printcolumn = r#"{"name":"SpotSchedule","type":"string","jsonPath":".spec.spotSchedule.kind"}"#,
+    printcolumn = r#"{"name":"Enabled","type":"boolean","jsonPath":".spec.enabled"}"#,
+    printcolumn = r#"{"name":"Schedule","type":"string","jsonPath":".spec.schedule.kind"}"#,
     printcolumn = r#"{"name":"KillSwitch","type":"boolean","jsonPath":".spec.killSwitch"}"#,
     printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ScheduledMachineSpec {
-    /// Inline time-based scheduling configuration (days of week, hours,
-    /// timezone, enabled). **Optional since `v1beta1`** (ADR 0006): a machine
-    /// may instead delegate its active/inactive decision to an external
-    /// provider via [`spot_schedule`](Self::spot_schedule). At least one of
-    /// `schedule` / `spotSchedule` must be set (CEL-enforced). When both are
-    /// set the machine is active only when the time window **and** the provider
-    /// both agree (logical AND); `killSwitch` always overrides.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub schedule: Option<ScheduleSpec>,
-
-    /// Reference to an external spot-schedule provider resource that owns the
-    /// active/inactive decision for this machine (ADR 0006). The referenced
+    /// **Required** reference to the spot-schedule provider object that owns the
+    /// active/inactive decision for this machine (ADR 0009). The referenced
     /// object must live in **this `ScheduledMachine`'s namespace**, and its
-    /// `apiVersion` group must be `spotschedules.5spot.finos.org`
-    /// (CEL-enforced). 5-Spot reads only the provider's duck-typed
-    /// `status.active` (and `Ready` condition); it never reads the provider
-    /// `spec` and never writes the provider object. Composed with `schedule`
-    /// via logical AND when both are present.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub spot_schedule: Option<SpotScheduleRef>,
+    /// `apiVersion` group must be `spotschedules.5spot.finos.org` (CEL-enforced).
+    /// The default, first-party provider is
+    /// [`TimeBasedSpotSchedule`](TimeBasedSpotSchedule) (day/hour/timezone
+    /// windows — the reified former inline schedule); `CapitalMarketsSchedule`
+    /// and third-party providers are referenced the same way.
+    ///
+    /// 5-Spot reads only the provider's duck-typed `status.active` (and `Ready`
+    /// condition); it never reads the provider `spec` and never writes the
+    /// provider object. The provider verdict is the machine's should-be-active
+    /// decision; `spec.enabled` and `killSwitch` override it (see those fields).
+    pub schedule: SpotScheduleRef,
+
+    /// Administrative master switch for this machine (ADR 0009). When `false`
+    /// the machine is held **Disabled** regardless of what its `schedule`
+    /// provider reports — the SM-scoped on/off operators reach for, and the
+    /// loop-breaker the emergency-reclaim flow sets. Distinct from the provider's
+    /// own `status.active` (which answers "is it the active window right now?")
+    /// and from `killSwitch` (immediate, terminal teardown). Defaults to `true`.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
 
     /// Name of the CAPI cluster this machine belongs to.
     ///
@@ -198,20 +199,16 @@ pub struct ScheduledMachineSpec {
 }
 
 impl ScheduledMachineSpec {
-    /// Whether this machine's activation is enabled at all.
+    /// Whether this machine is administratively enabled (ADR 0009).
     ///
-    /// A machine with an inline `spec.schedule` honours `schedule.enabled` (the
-    /// operator's master on/off). A `spotSchedule`-only machine has no such
-    /// flag and is always "enabled" — its active/inactive decision is governed
-    /// entirely by the provider, folded into the composed should-be-active
-    /// verdict (ADR 0006 §3). This is the gate the lifecycle phase handlers use
-    /// to decide whether a machine is administratively disabled.
+    /// Reads the top-level `spec.enabled` master switch — the SM-scoped on/off
+    /// the lifecycle phase handlers use to decide whether a machine is
+    /// administratively **Disabled**. Independent of the `schedule` provider's
+    /// `status.active` (the active-window question) and of `killSwitch`
+    /// (immediate teardown).
     #[must_use]
     pub fn is_enabled(&self) -> bool {
-        match &self.schedule {
-            Some(schedule) => schedule.enabled,
-            None => true,
-        }
+        self.enabled
     }
 }
 
@@ -228,18 +225,38 @@ fn default_node_drain_timeout() -> String {
 }
 
 // ============================================================================
-// ScheduleSpec - Time-based scheduling
+// TimeBasedSpotSchedule - core/default spot-schedule provider CRD (ADR 0009)
 // ============================================================================
 
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+/// The **core, first-party** spot-schedule provider (ADR 0009): the reified
+/// former inline `ScheduledMachine.spec.schedule`. Its `spec` declares a
+/// day-of-week / hour-of-day window in a configured timezone; the provider
+/// controller (`src/providers/time_based.rs`) evaluates it and publishes the
+/// duck-typed [`status.active`](TimeBasedSpotScheduleStatus::active) a
+/// `ScheduledMachine.spec.schedule` consumes (ADR 0006 contract). 5-Spot's main
+/// controller reads only that status, never this spec.
+#[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[kube(
+    group = "spotschedules.5spot.finos.org",
+    version = "v1alpha1",
+    kind = "TimeBasedSpotSchedule",
+    namespaced,
+    shortname = "tbss",
+    status = "TimeBasedSpotScheduleStatus",
+    printcolumn = r#"{"name":"Active","type":"boolean","jsonPath":".status.active"}"#,
+    printcolumn = r#"{"name":"Enabled","type":"boolean","jsonPath":".spec.enabled"}"#,
+    printcolumn = r#"{"name":"Timezone","type":"string","jsonPath":".spec.timezone"}"#,
+    printcolumn = r#"{"name":"NextTransition","type":"string","jsonPath":".status.nextTransitionTime"}"#,
+    printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
+)]
 #[serde(rename_all = "camelCase")]
-pub struct ScheduleSpec {
-    /// Days of the week when machine should be active
+pub struct TimeBasedSpotScheduleSpec {
+    /// Days of the week when the schedule is active.
     /// Supports: individual days (mon), ranges (mon-fri), combinations (mon-wed,fri-sun)
     #[serde(default)]
     pub days_of_week: Vec<String>,
 
-    /// Hours when machine should be active (0-23)
+    /// Hours when the schedule is active (0-23)
     /// Supports: individual hours (9), ranges (9-17), combinations (0-9,18-23)
     #[serde(default)]
     pub hours_of_day: Vec<String>,
@@ -250,9 +267,44 @@ pub struct ScheduleSpec {
     #[schemars(schema_with = "timezone_schema")]
     pub timezone: String,
 
-    /// Whether the schedule is enabled
+    /// Provider-level enable switch. When `false`, `status.active` is always
+    /// `false` (the window is ignored). This is the *provider's* own toggle;
+    /// the SM-scoped administrative switch is `ScheduledMachine.spec.enabled`.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+}
+
+/// Runtime status of a [`TimeBasedSpotSchedule`]. Satisfies the spot-schedule
+/// provider contract (ADR 0006): the authoritative signal is
+/// [`active`](Self::active); `conditions[type=Ready]`, `observedGeneration`,
+/// and `lastTransitionTime`/`nextTransitionTime` are the recommended
+/// observability surface. Mirrors [`CapitalMarketsScheduleStatus`].
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TimeBasedSpotScheduleStatus {
+    /// **The contract field.** `true` ⇒ a `ScheduledMachine` referencing this
+    /// object should be active; `false` ⇒ it should be inactive.
+    #[serde(default)]
+    pub active: bool,
+
+    /// Standard Kubernetes conditions. A `Ready` condition is recommended so
+    /// consumers can distinguish "computed and current" from "stale/unhealthy".
+    #[serde(default)]
+    pub conditions: Vec<Condition>,
+
+    /// The `metadata.generation` this status reflects, for staleness detection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_generation: Option<i64>,
+
+    /// When `active` last transitioned (RFC3339).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_transition_time: Option<String>,
+
+    /// When `active` is next expected to transition (RFC3339) — the next
+    /// day/hour window boundary. Lets the provider requeue exactly at the
+    /// boundary instead of polling.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_transition_time: Option<String>,
 }
 
 fn default_timezone() -> String {
@@ -263,22 +315,7 @@ fn default_enabled() -> bool {
     true
 }
 
-impl ScheduleSpec {
-    /// An inactive placeholder schedule (`enabled: false`, no windows) used as
-    /// the effective schedule for a `spotSchedule`-only `ScheduledMachine`
-    /// (one with no inline `spec.schedule`). `enabled: false` makes the
-    /// time-based evaluator return "not active", so a provider-only machine is
-    /// inert until the spot-schedule resolver composes the provider verdict.
-    #[must_use]
-    pub fn inactive_placeholder() -> Self {
-        Self {
-            days_of_week: Vec::new(),
-            hours_of_day: Vec::new(),
-            timezone: default_timezone(),
-            enabled: false,
-        }
-    }
-
+impl TimeBasedSpotScheduleSpec {
     /// Get the set of active weekday numbers (0=Monday, 6=Sunday)
     ///
     /// # Errors
@@ -366,7 +403,7 @@ fn spot_schedule_api_version_schema(_: &mut schemars::SchemaGenerator) -> schema
         "x-kubernetes-validations": [
             {
                 "rule": "self.startsWith('spotschedules.5spot.finos.org/')",
-                "message": "spec.spotSchedule.apiVersion group must be spotschedules.5spot.finos.org"
+                "message": "spec.schedule.apiVersion group must be spotschedules.5spot.finos.org"
             }
         ]
     })
@@ -1380,8 +1417,8 @@ fn is_dns_subdomain(s: &str) -> bool {
 // ============================================================================
 
 /// A single trading session window, expressed with the same day/hour range
-/// syntax as [`ScheduleSpec`] (`mon-fri`, `9-17`, …). The market is "in
-/// session" when the current time falls inside any session.
+/// syntax as [`TimeBasedSpotScheduleSpec`] (`mon-fri`, `9-17`, …). The market is
+/// "in session" when the current time falls inside any session.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TradingSession {
@@ -1514,107 +1551,6 @@ fn iso_date_list_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
             "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
         }
     })
-}
-
-// ============================================================================
-// v1alpha1 - frozen, deprecated ScheduledMachine version (ADR 0007)
-// ============================================================================
-
-/// The frozen, **deprecated** `v1alpha1` version of `ScheduledMachine`.
-///
-/// Kept served for backward compatibility (existing
-/// `5spot.finos.org/v1alpha1` manifests continue to apply) but carries neither
-/// `spec.spotSchedule` nor an optional `spec.schedule`. The storage version is
-/// `v1beta1` (the top-level [`crate::crd::ScheduledMachineSpec`]); under
-/// `conversion.strategy: None` the API server relabels stored objects between
-/// versions losslessly because `v1beta1` is a superset. The controller operates
-/// exclusively on `v1beta1`; this module exists solely so `crdgen` can merge
-/// both served versions into one CRD. See ADR 0007.
-pub mod v1alpha1 {
-    use super::{
-        cluster_name_schema, default_graceful_shutdown_timeout, default_node_drain_timeout,
-        default_priority, kill_if_commands_schema, EmbeddedResource, KataConfig,
-        KubeconfigSecretRef, MachineTemplateSpec, NodeTaint, ScheduleSpec, ScheduledMachineStatus,
-    };
-    use kube::CustomResource;
-    use schemars::JsonSchema;
-    use serde::{Deserialize, Serialize};
-
-    /// Frozen `v1alpha1` spec — identical to the original `ScheduledMachine`
-    /// shape before `spec.spotSchedule` was introduced. `schedule` is
-    /// **required** here (it predates the optional-schedule relaxation).
-    #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
-    #[kube(
-        group = "5spot.finos.org",
-        version = "v1alpha1",
-        kind = "ScheduledMachine",
-        namespaced,
-        shortname = "sm",
-        status = "ScheduledMachineStatus",
-        deprecated = "5spot.finos.org/v1alpha1 ScheduledMachine is deprecated; migrate to v1beta1 (adds spec.spotSchedule)",
-        printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#,
-        printcolumn = r#"{"name":"Ready","type":"boolean","jsonPath":".status.ready"}"#,
-        printcolumn = r#"{"name":"InSchedule","type":"boolean","jsonPath":".status.inSchedule"}"#,
-        printcolumn = r#"{"name":"Enabled","type":"boolean","jsonPath":".spec.schedule.enabled"}"#,
-        printcolumn = r#"{"name":"Schedule Days","type":"string","jsonPath":".spec.schedule.daysOfWeek"}"#,
-        printcolumn = r#"{"name":"Schedule Hours","type":"string","jsonPath":".spec.schedule.hoursOfDay"}"#,
-        printcolumn = r#"{"name":"KillSwitch","type":"boolean","jsonPath":".spec.killSwitch"}"#,
-        printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
-    )]
-    #[serde(rename_all = "camelCase")]
-    pub struct ScheduledMachineSpec {
-        /// Machine scheduling configuration (required in `v1alpha1`).
-        pub schedule: ScheduleSpec,
-
-        /// Name of the CAPI cluster this machine belongs to.
-        #[schemars(schema_with = "cluster_name_schema")]
-        pub cluster_name: String,
-
-        /// Inline bootstrap configuration spec (e.g., `K0sWorkerConfig`).
-        pub bootstrap_spec: EmbeddedResource,
-
-        /// Inline infrastructure configuration spec (e.g., `RemoteMachine`).
-        pub infrastructure_spec: EmbeddedResource,
-
-        /// Optional configuration for the created CAPI Machine.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub machine_template: Option<MachineTemplateSpec>,
-
-        /// Priority for machine scheduling (higher values = higher priority).
-        #[serde(default = "default_priority")]
-        pub priority: u8,
-
-        /// Timeout for graceful machine shutdown (e.g., "5m", "10s").
-        #[serde(default = "default_graceful_shutdown_timeout")]
-        pub graceful_shutdown_timeout: String,
-
-        /// Timeout for draining the node before deletion (e.g., "5m", "10m").
-        #[serde(default = "default_node_drain_timeout")]
-        pub node_drain_timeout: String,
-
-        /// When true, immediately removes the machine from cluster.
-        #[serde(default)]
-        pub kill_switch: bool,
-
-        /// User-defined taints applied to the Kubernetes Node once it is Ready.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        pub node_taints: Vec<NodeTaint>,
-
-        /// Optional list of process patterns that trigger an emergency node
-        /// reclaim.
-        #[serde(skip_serializing_if = "Option::is_none", default)]
-        #[schemars(schema_with = "kill_if_commands_schema")]
-        pub kill_if_commands: Option<Vec<String>>,
-
-        /// Reference to a Secret holding a workload-cluster kubeconfig.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub kubeconfig_secret_ref: Option<KubeconfigSecretRef>,
-
-        /// Optional reference to a Kata containerd drop-in source on the
-        /// workload cluster.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub kata: Option<KataConfig>,
-    }
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
 # SPDX-License-Identifier: Apache-2.0
 
-.PHONY: help install build build-debug build-linux-amd64 build-linux-arm64 build-macos-arm64 prepare-binaries-linux-amd64 prepare-binaries-linux-arm64 test test-lib lint format clean crds crddoc docs docs-serve docs-clean docs-rustdoc calm-diagrams calm-validate run-local docker-build docker-build-amd64 docker-build-arm64 docker-build-chainguard docker-push docker-buildx docker-buildx-chainguard gitleaks gitleaks-install install-git-hooks security-scan-local sbom audit vexctl-install vex-validate vex-assemble vex-auto-presence vex-auto-reachability vex-auto vex-auto-check kind-install kind-create kind-delete kind-load kind-deploy kind-example kind-setup kind-status
+.PHONY: help install build build-debug build-linux-amd64 build-linux-arm64 build-macos-arm64 prepare-binaries-linux-amd64 prepare-binaries-linux-arm64 test test-lib lint format clean crds crddoc docs docs-serve docs-clean docs-rustdoc calm-diagrams calm-validate run-local docker-build docker-build-amd64 docker-build-arm64 docker-build-chainguard docker-push docker-buildx docker-buildx-chainguard gitleaks gitleaks-install install-git-hooks security-scan-local sbom audit vexctl-install vex-validate vex-assemble vex-auto-presence vex-auto-reachability vex-auto vex-auto-check set-image-version kind-install kind-create kind-delete kind-load kind-deploy kind-example kind-setup kind-status
 
 # CALM (FINOS Common Architecture Language Model) configuration
 CALM_CLI_VERSION ?= 1.37.0
@@ -172,15 +172,39 @@ run-local: ## Run operator locally
 # Code Generation
 # ============================================================
 
+# crdgen prints one CRD to stdout per selector; this target owns the file layout
+# (the binary makes no path assumptions). Keep this list in sync with crdgen's
+# SELECTORS and the committed deploy/crds/*.yaml filenames.
+CRD_SELECTORS ?= scheduledmachine timebasedspotschedule capitalmarketsschedule
+
 crds: ## Generate CRD YAML files from Rust types
 	@echo "Generating CRD YAML files from src/crd.rs..."
-	@cargo run --quiet --bin crdgen
-	@echo "✓ CRD YAML files generated under deploy/crds/"
+	@for sel in $(CRD_SELECTORS); do \
+		cargo run --quiet --bin crdgen -- "$$sel" > "deploy/crds/$$sel.yaml"; \
+		echo "✓ wrote deploy/crds/$$sel.yaml"; \
+	done
 
 crddoc: ## Generate API documentation from CRD types
 	@echo "Generating API documentation..."
 	@cargo run --quiet --bin crddoc > docs/src/reference/api.md
 	@echo "✓ API documentation generated: docs/src/reference/api.md"
+
+# Pin every 5-Spot image tag under deploy/ to VERSION so the shipped manifests
+# match the image actually built/pushed at release. The controller and both
+# spot-schedule providers share the main `ghcr.io/finos/5-spot` image; the
+# reclaim- and kata-config agents use their own `ghcr.io/finos/5-spot-*` repos —
+# all carry the same release tag. The regex replaces only the tag suffix, so it
+# is independent of whatever tag is committed in git. Used by the release
+# `package-deploy-manifests` CI job; safe to run locally to preview the diff.
+set-image-version: ## Pin deploy/ image tags to VERSION (e.g. make set-image-version VERSION=v0.2.0)
+	@test -n "$(VERSION)" || { \
+		echo "ERROR: VERSION is required, e.g. make set-image-version VERSION=v0.2.0"; exit 1; }
+	@files=$$(grep -rl "image:[[:space:]]*ghcr.io/finos/5-spot" deploy/); \
+	if [ -z "$$files" ]; then echo "ERROR: no 5-Spot image references found under deploy/"; exit 1; fi; \
+	for f in $$files; do \
+		perl -i -pe 's{(image:\s*ghcr\.io/finos/5-spot[\w./-]*):\S+}{$${1}:$(VERSION)}g' "$$f"; \
+		echo "✓ pinned 5-Spot images in $$f to $(VERSION)"; \
+	done
 
 # ============================================================
 # Documentation

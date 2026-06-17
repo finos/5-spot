@@ -15,11 +15,8 @@ the most realistic adversary in a multi-tenant cluster.
 | Field | Validation present | Flows to | Status |
 |---|---|---|---|
 | `spec.clusterName` (string, ≤ 63 chars, ASCII alphanumerics + `-._`) | ✓ VAP rule 1b/1c, ✓ `validate_cluster_name()` | `cluster.x-k8s.io/cluster-name` label on every owned Machine; Prometheus metric labels; log lines | **Bounded**. Phase 1 of the 2026-04-25 audit roadmap is open: add a per-namespace allowlist binding so tenant A cannot join machines to tenant B's cluster. |
-| `spec.schedule.enabled` (bool) | ✓ schema type | phase state machine (drives Active ↔ Inactive transitions) | Safe. Boolean enum, no injection surface. |
-| `spec.schedule.daysOfWeek[]` (string array of `mon`–`sun` or ranges) | ✓ VAP rule 6 (regex), ✓ `parse_day_ranges()` | schedule evaluator (parsed into a `HashSet<u8>`) | Safe. Bounded grammar; parsed into a typed set. |
-| `spec.schedule.hoursOfDay[]` (string array of `0`–`23` or ranges) | ✓ VAP rule 7 (regex), ✓ `parse_hour_ranges()` | schedule evaluator | Safe. Same shape as `daysOfWeek`. |
-| `spec.schedule.timezone` (string, ≤ 64 chars, IANA-shape) | ✓ CRD schema regex, ✓ `chrono_tz::Tz::parse()` at runtime | schedule time conversion | Safe. Bounded charset; runtime parse rejects invalid IANA identifiers. |
-| `spec.schedule.cron` (string, optional) | ✓ VAP rule 4 / 5 (XOR with day/hour windows), ✓ `parse_cron_expression()` | schedule evaluator | Safe. Mutually exclusive with day/hour windows. |
+| `spec.enabled` (bool, default `true`) | ✓ schema type | phase state machine — the administrative master switch; `false` holds the machine in the `Disabled` phase (ADR 0009) | Safe. Boolean, no injection surface. The SM-scoped on/off the emergency-reclaim loop-breaker also sets. |
+| `spec.schedule` (provider reference: `apiVersion` / `kind` / `name`) | ✓ VAP rule 4 (group pin), ✓ CRD schema (required), ✓ runtime `validate_schedule_ref()` | resolved to a same-namespace spot-schedule provider object whose duck-typed `status.active` is read (never its spec) | Safe. `apiVersion` group is pinned to `spotschedules.5spot.finos.org`; the reference is same-namespace only (a tenant cannot point at another namespace's provider). The day/hour/timezone window itself now lives on the referenced `TimeBasedSpotSchedule` CRD, which validates it in its own schema. |
 | `spec.bootstrapSpec.apiVersion` (string) | ✓ VAP rules 8 / 9, ✓ `validate_api_group()` | dynamic resource creation (GVK construction) | Safe. Provider allowlist enforced. |
 | `spec.bootstrapSpec.kind` (string, non-empty) | ✓ VAP rule 10 | dynamic resource creation | Safe. Non-empty check; opaque to 5-Spot. |
 | **`spec.bootstrapSpec.spec` (arbitrary JSON)** | ✗ **none — by design** | provider-specific bootstrap controller (e.g. k0smotron `K0sWorkerConfig.cloudInit`) | **Pass-through.** Trust boundary is the provider, not 5-Spot. See [Provider payload pass-through](../concepts/scheduled-machine.md#security-provider-payload-pass-through). |
@@ -47,7 +44,7 @@ the most realistic adversary in a multi-tenant cluster.
 
 ## Summary
 
-- 16 of 18 spec fields have defence-in-depth validation (VAP at admission + runtime check at reconcile).
+- Every spec field except the two inline-provider payloads has defence-in-depth validation (VAP at admission + runtime check at reconcile).
 - The two unvalidated fields (`spec.bootstrapSpec.spec`, `spec.infrastructureSpec.spec`) are **intentional pass-throughs**; the trust boundary is the provider. See the [Provider payload pass-through](../concepts/scheduled-machine.md#security-provider-payload-pass-through) section for the rationale and recommended layered policy.
 - Status fields are no longer used for security-critical routing or drain decisions (Phase 3 of the 2026-04-25 audit). A tenant with `patch scheduledmachines/status` can induce small reconcile-loop noise but cannot pivot the controller to act on resources the tenant does not own.
 

@@ -1,7 +1,7 @@
 # Example CapitalMarketsSchedule — the reference spot-schedule provider
 # (ADR 0006). It models an exchange calendar (trading sessions, statutory
 # holidays, early closes) in a configured timezone and publishes the duck-typed
-# status.active boolean that a ScheduledMachine.spec.spotSchedule consumes.
+# status.active boolean that a ScheduledMachine.spec.schedule consumes.
 #
 # The provider controller (roadmap Phase 5) computes status.active from this
 # spec; 5-Spot's controller reads only the status, never this spec. This object

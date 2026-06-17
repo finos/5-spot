@@ -26,19 +26,18 @@ This is the same duck-typed contract pattern Cluster API uses for
 
 ## Referencing a provider
 
-A `ScheduledMachine` opts in by referencing a provider object in **its own
-namespace**:
+Every `ScheduledMachine` references **exactly one** provider object in **its own
+namespace** via the required `spec.schedule`:
 
 ```yaml
-apiVersion: 5spot.finos.org/v1alpha1
+apiVersion: 5spot.finos.org/v1beta1
 kind: ScheduledMachine
 metadata:
   name: trading-floor-rack-7
   namespace: capital-markets
 spec:
-  # spec.schedule is optional when spotSchedule is set (and vice versa);
-  # at least one is required.
-  spotSchedule:
+  # spec.schedule is a required provider reference.
+  schedule:
     apiVersion: spotschedules.5spot.finos.org/v1alpha1
     kind: CapitalMarketsSchedule
     name: nyse-equities-session     # must live in namespace: capital-markets
@@ -84,15 +83,17 @@ are free-form and surfaced for observability; pick any CamelCase `reason`. The
 `observedGeneration` is recommended for your own staleness detection but 5-Spot
 does not currently reject stale status on it.
 
-## Composition with `spec.schedule`
+## The provider verdict, `spec.enabled`, and `killSwitch`
 
-`spec.schedule` and `spec.spotSchedule` are independent; **at least one** must
-be set. When **both** are set, the machine is active **only if both agree** —
-logical **AND** (e.g. "the market is open *and* it is 09:00–17:00 local").
-`spec.killSwitch` always wins. Precedence, highest first:
+There is no composition: the single referenced provider's `status.active` **is**
+the activation decision. Two switches sit above it. `spec.enabled` (default
+`true`) is the administrative master switch — setting it `false` holds the
+machine in the `Disabled` lifecycle phase regardless of what the provider says.
+`spec.killSwitch` is a terminal teardown and always wins. Precedence, highest
+first:
 
 ```
-killSwitch  >  (schedule AND spotSchedule)  >  schedule-only / spotSchedule-only
+killSwitch  >  spec.enabled=false (Disabled)  >  provider status.active
 ```
 
 ## Unresolved behavior
@@ -111,7 +112,7 @@ unresolved — `active` is then authoritative). On Unresolved, 5-Spot:
   **never** resolved, the fail-safe default is **inactive**.
 
 A provider that misbehaves (or is compromised) can only flap the machines that
-**reference it** — the same blast radius as editing `spec.schedule.enabled` —
+**reference it** — the same blast radius as editing `spec.enabled` —
 and only within its own namespace. See the
 [threat model](../security/threat-model.md).
 
@@ -129,64 +130,39 @@ renamed, retyped, or removed without a superseding ADR (which would introduce a
 conversion webhook). Providers should therefore tolerate unknown fields and not
 rely on 5-Spot reading anything beyond the table above.
 
-## Reference provider: `CapitalMarketsSchedule`
+## Reference providers
 
-The in-repo reference implementation reconciles a declarative exchange calendar
-(sessions, statutory holidays, early closes, timezone) into `status.active`,
-requeuing at the next session/holiday boundary (event-driven — a single timed
-requeue at the calendar transition, not a poll loop). See the
+The **default, first-party** provider is `TimeBasedSpotSchedule` — the reified
+former inline schedule, computing `status.active` from `daysOfWeek` /
+`hoursOfDay` / `timezone` windows. It is the provider most `ScheduledMachine`s
+reference. See the
+[TimeBasedSpotSchedule provider guide](../guides/time-based-schedule.md).
+
+The in-repo `CapitalMarketsSchedule` reference implementation reconciles a
+declarative exchange calendar (sessions, statutory holidays, early closes,
+timezone) into `status.active`, requeuing at the next session/holiday boundary
+(event-driven — a single timed requeue at the calendar transition, not a poll
+loop). See the
 [CapitalMarketsSchedule provider guide](../guides/capital-markets-schedule.md)
 for install + authoring, and
 [`examples/capitalmarketsschedule.yaml`](https://github.com/finos/5-spot/blob/main/examples/capitalmarketsschedule.yaml).
 
 ## Implementing your own provider
 
-A provider is **any** namespaced CRD in the `spotschedules.5spot.finos.org`
-group whose controller writes `status.active`. The smallest possible one is a
-manual on/off toggle — a worked "hello-world":
-
-1. **Define the CRD** (`manualschedules.spotschedules.5spot.finos.org`), with a
-   trivial spec and the duck-typed status:
-
-   ```yaml
-   # spec: { enabled: bool }   status: { active: bool, conditions: [...] }
-   ```
-
-2. **Write the controller** — for each `ManualSchedule`, copy `spec.enabled`
-   into `status.active`, set `Ready=True`, and (recommended) `observedGeneration`
-   + `lastTransitionTime`. The whole reconcile is a status patch:
-
-   ```jsonc
-   PATCH /apis/spotschedules.5spot.finos.org/v1alpha1/namespaces/<ns>/manualschedules/<name>/status
-   { "status": {
-       "active": <spec.enabled>,
-       "observedGeneration": <metadata.generation>,
-       "conditions": [{ "type": "Ready", "status": "True",
-                        "reason": "Reconciled", "message": "ok",
-                        "lastTransitionTime": "<now>" }] } }
-   ```
-
-3. **Grant least privilege** — the provider's ServiceAccount needs only
-   `get;list;watch` on `manualschedules` and `update;patch` on
-   `manualschedules/status`. It never touches `ScheduledMachine` or any 5-Spot
-   resource.
-
-4. **Reference it** from a machine:
-
-   ```yaml
-   spec:
-     spotSchedule:
-       apiVersion: spotschedules.5spot.finos.org/v1alpha1
-       kind: ManualSchedule
-       name: trading-desk-override
-   ```
-
-That is the entire contract — `status.active` plus an optional `Ready`. The
+The entire contract is `status.active` plus an optional `Ready` condition — any
+namespaced CRD in the `spotschedules.5spot.finos.org` group whose controller
+writes that status is a valid provider. For a complete, copy-pasteable
+walkthrough (CRD, controller, RBAC, deploy, reference, verify) building a minimal
+`ManualSchedule` toggle, see the
+[**Create Your Own Provider** guide](../guides/create-your-own-provider.md). The
 [`CapitalMarketsSchedule`](https://github.com/finos/5-spot/tree/main/src/providers/capital_markets.rs)
 controller is the same shape with a calendar instead of a toggle.
 
 ## See also
 
+- [Create Your Own Provider](../guides/create-your-own-provider.md) — build a provider step by step
+- [TimeBasedSpotSchedule provider guide](../guides/time-based-schedule.md) — the default first-party provider
+- [CapitalMarketsSchedule provider guide](../guides/capital-markets-schedule.md) — the reference provider
 - [ADR 0006 — Pluggable spot-schedule provider contract](https://github.com/finos/5-spot)
 - [ADR 0007 — CRD multi-version + conversion](https://github.com/finos/5-spot)
 - [`ScheduledMachine` API reference](api.md)

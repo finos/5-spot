@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 `CapitalMarketsSchedule` is the **reference spot-schedule provider** (ADR 0006).
 It models an exchange calendar — trading sessions, statutory holidays, and
 early-close days — and publishes a duck-typed `status.active` that a
-[`ScheduledMachine.spec.spotSchedule`](../reference/spot-schedule-contract.md)
+[`ScheduledMachine.spec.schedule`](../reference/spot-schedule-contract.md)
 consumes. A machine bound to it follows the market: up while the exchange is in
 session, down otherwise.
 
@@ -25,7 +25,7 @@ Evaluation order each tick:
 1. A date listed in `spec.holidays` closes the market for the whole day.
 2. Otherwise the instant must fall inside some `spec.sessions[*]` window — a
    `daysOfWeek` **and** `hoursOfDay` match (same range syntax as
-   `ScheduledMachine.spec.schedule`).
+   `TimeBasedSpotSchedule.spec`).
 3. An entry in `spec.earlyCloses` for that date closes the market after its
    `closeHour` (the market is active *through the end of* `closeHour`).
 
@@ -74,7 +74,7 @@ Then reference it from a machine (see
 
 ```yaml
 spec:
-  spotSchedule:
+  schedule:
     apiVersion: spotschedules.5spot.finos.org/v1alpha1
     kind: CapitalMarketsSchedule
     name: nyse-equities   # same namespace as the ScheduledMachine
@@ -88,3 +88,10 @@ spec:
 - Metrics `fivespot_capital_markets_active` and
   `fivespot_capital_markets_transitions_total` — see
   [monitoring](../operations/monitoring.md).
+
+## See also
+
+- [Spot Schedules concept](../concepts/spot-schedule.md) — how providers fit in
+- [Spot Schedule Provider Contract](../reference/spot-schedule-contract.md) — the spec
+- [TimeBasedSpotSchedule provider](time-based-schedule.md) — the default first-party provider
+- [Create Your Own Provider](create-your-own-provider.md) — build a different provider

@@ -236,6 +236,43 @@ pub static CAPITAL_MARKETS_TRANSITIONS_TOTAL: LazyLock<CounterVec> = LazyLock::n
     })
 });
 
+/// Current active state of each `TimeBasedSpotSchedule` provider object (1 =
+/// in window, 0 = out of window/disabled), labelled by namespace + name
+/// (ADR 0009). Cardinality is bounded by the number of provider objects.
+pub static TIME_BASED_ACTIVE: LazyLock<GaugeVec> = LazyLock::new(|| {
+    register_gauge_vec!(
+        "fivespot_time_based_active",
+        "Current active state of each TimeBasedSpotSchedule (1=in window, 0=out)",
+        &["namespace", "name"]
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_time_based_active: {e}");
+        fallback_gauge_vec(
+            "fivespot_time_based_active",
+            "Current active state of each TimeBasedSpotSchedule (1=in window, 0=out)",
+            &["namespace", "name"],
+        )
+    })
+});
+
+/// `TimeBasedSpotSchedule` active⇄inactive transitions, labelled by namespace +
+/// name (ADR 0009).
+pub static TIME_BASED_TRANSITIONS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
+    register_counter_vec!(
+        "fivespot_time_based_transitions_total",
+        "Total TimeBasedSpotSchedule active/inactive transitions",
+        &["namespace", "name"]
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_time_based_transitions_total: {e}");
+        fallback_counter_vec(
+            "fivespot_time_based_transitions_total",
+            "Total TimeBasedSpotSchedule active/inactive transitions",
+            &["namespace", "name"],
+        )
+    })
+});
+
 /// Spot-schedule provider resolutions per reconcile, labelled by namespace,
 /// provider `kind`, and `result` (`active` / `inactive` / `unresolved`). The
 /// `unresolved` slice should be cross-checked against
@@ -688,6 +725,20 @@ pub fn set_capital_markets_active(namespace: &str, name: &str, active: bool) {
 /// Record a `CapitalMarketsSchedule` active⇄closed transition.
 pub fn record_capital_markets_transition(namespace: &str, name: &str) {
     CAPITAL_MARKETS_TRANSITIONS_TOTAL
+        .with_label_values(&[namespace, name])
+        .inc();
+}
+
+/// Set the current active state of a `TimeBasedSpotSchedule` provider object.
+pub fn set_time_based_active(namespace: &str, name: &str, active: bool) {
+    TIME_BASED_ACTIVE
+        .with_label_values(&[namespace, name])
+        .set(if active { 1.0 } else { 0.0 });
+}
+
+/// Record a `TimeBasedSpotSchedule` active⇄inactive transition.
+pub fn record_time_based_transition(namespace: &str, name: &str) {
+    TIME_BASED_TRANSITIONS_TOTAL
         .with_label_values(&[namespace, name])
         .inc();
 }

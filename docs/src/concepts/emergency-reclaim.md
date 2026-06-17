@@ -19,7 +19,7 @@ Emergency reclaim is the **nuclear eject path**: a node-side agent watches for a
 | Mechanism | Trigger | Phase | Side effect | Reset |
 |-----------|---------|-------|-------------|-------|
 | **`spec.killSwitch: true`** | Operator edits the `ScheduledMachine` | `Terminated` | None — machine stays terminated until operator resets | Operator sets `killSwitch: false` |
-| **`spec.killIfCommands: [...]`** (this page) | Agent on the node sees a matching process | `EmergencyRemove` | Controller flips `spec.schedule.enabled=false` so the machine does not auto-rejoin at the next schedule boundary | Operator (or the user whose workstation it is) sets `schedule.enabled: true` — see [User-facing re-enable flow](#user-facing-re-enable-flow) below |
+| **`spec.killIfCommands: [...]`** (this page) | Agent on the node sees a matching process | `EmergencyRemove` | Controller flips `spec.enabled=false` so the machine does not auto-rejoin at the next schedule boundary | Operator (or the user whose workstation it is) sets `spec.enabled: true` — see [User-facing re-enable flow](#user-facing-re-enable-flow) below |
 
 Both are opt-in: `killSwitch` defaults to `false`, and `killIfCommands` is absent by default (no agent installed on the node).
 
@@ -37,7 +37,7 @@ flowchart LR
     F["Phase::EmergencyRemove<br/>on ScheduledMachine"]
     G["kubectl drain<br/>--grace-period=0 --force<br/>--disable-eviction"]
     H["Delete CAPI Machine<br/>(no graceful shutdown)"]
-    I["PATCH ScheduledMachine<br/>spec.schedule.enabled=false"]
+    I["PATCH ScheduledMachine<br/>spec.enabled=false"]
     J["Clear reclaim<br/>annotations from Node"]
 
     A --> B --> C --> D --> E --> F --> G --> H --> I --> J
@@ -63,7 +63,7 @@ stateDiagram-v2
 
     Pending --> Active: Schedule active & resources created
     Pending --> Inactive: Outside schedule window
-    Pending --> Disabled: schedule.enabled = false
+    Pending --> Disabled: spec.enabled = false
 
     Active --> ShuttingDown: Schedule ends
     Active --> Terminated: killSwitch = true
@@ -77,13 +77,13 @@ stateDiagram-v2
     ShuttingDown --> Error: Shutdown error
 
     Inactive --> Active: Schedule window starts
-    Inactive --> Disabled: schedule.enabled = false
+    Inactive --> Disabled: spec.enabled = false
 
-    Disabled --> Pending: schedule.enabled = true
+    Disabled --> Pending: spec.enabled = true
 
     Terminated --> Pending: killSwitch = false
 
-    EmergencyRemove --> Disabled: Eject complete<br/>(schedule.enabled auto-flipped to false)
+    EmergencyRemove --> Disabled: Eject complete<br/>(spec.enabled auto-flipped to false)
 
     Error --> Pending: Recovery / Retry
 
@@ -95,14 +95,14 @@ stateDiagram-v2
 
     note right of Disabled
         Exit path from EmergencyRemove.
-        User sets schedule.enabled=true
+        User sets spec.enabled=true
         to return the node to service.
     end note
 ```
 
 ### Why the exit is `Disabled`, not `Pending`
 
-This is the piece that makes emergency reclaim useful instead of infuriating. When the eject completes, the controller **sets `spec.schedule.enabled=false`** on the owning `ScheduledMachine`. Without that flip:
+This is the piece that makes emergency reclaim useful instead of infuriating. When the eject completes, the controller **sets `spec.enabled=false`** on the owning `ScheduledMachine`. Without that flip:
 
 1. Eject succeeds, node leaves cluster.
 2. Next schedule window opens (e.g. 9 AM the next morning).
@@ -144,7 +144,7 @@ sequenceDiagram
     Ctrl->>Machine: Delete (immediate)
     Machine-->>Ctrl: Deletion confirmed
 
-    Ctrl->>SM: PATCH spec.schedule.enabled = false<br/>Emit Event (reason: EmergencyReclaimDisabledSchedule)
+    Ctrl->>SM: PATCH spec.enabled = false<br/>Emit Event (reason: EmergencyReclaimDisabledSchedule)
     Ctrl->>NodeObj: Clear reclaim annotations<br/>(merge-patch with null values)
 
     Ctrl->>SM: status.phase = Disabled
@@ -154,7 +154,7 @@ sequenceDiagram
 **Why this ordering matters:**
 
 - **Annotations are cleared last**, not first. If the user reboots or the agent restarts mid-eject, the annotation is still there, so the controller keeps processing — the operation is idempotent.
-- **`schedule.enabled=false` is set *before* annotation clear.** This is the load-bearing step. If we cleared the annotation first and then crashed, the next reconcile would see no annotation, not flip `enabled`, and fall back to normal scheduling.
+- **`spec.enabled=false` is set *before* annotation clear.** This is the load-bearing step. If we cleared the annotation first and then crashed, the next reconcile would see no annotation, not flip `enabled`, and fall back to normal scheduling.
 - **Machine deletion is immediate** (`--grace-period=0`). No PDB respect, no `gracefulShutdownTimeout` wait, no `nodeDrainTimeout` — the whole point is that the user needs their box back *now*.
 
 ---
@@ -200,16 +200,20 @@ For regulated environments, this double-gating keeps the node-side surface propo
 Declare the match patterns on the `ScheduledMachine` spec:
 
 ```yaml
-apiVersion: 5spot.finos.org/v1alpha1
+apiVersion: 5spot.finos.org/v1beta1
 kind: ScheduledMachine
 metadata:
   name: dev-workstation-01
 spec:
+  enabled: true
+
+  # Required reference to a spot-schedule provider (ADR 0009). The day/hour
+  # window — e.g. "join after hours, Mon-Fri 19:00-23:00 Eastern" — lives on the
+  # referenced TimeBasedSpotSchedule "after-hours" in this namespace.
   schedule:
-    daysOfWeek: [mon-fri]
-    hoursOfDay: [19-23]       # join after hours
-    timezone: America/New_York
-    enabled: true
+    apiVersion: spotschedules.5spot.finos.org/v1alpha1
+    kind: TimeBasedSpotSchedule
+    name: after-hours
 
   clusterName: dev-cluster
 
@@ -314,7 +318,7 @@ When the user is ready to return the node to scheduled service:
 ```bash
 kubectl patch scheduledmachine/dev-workstation-01 \
   --type merge \
-  -p '{"spec":{"schedule":{"enabled":true}}}'
+  -p '{"spec":{"enabled":true}}'
 ```
 
 What happens next depends on whether the matched process is still running:
@@ -323,7 +327,7 @@ What happens next depends on whether the matched process is still running:
 stateDiagram-v2
     [*] --> Disabled: Emergency reclaim complete
 
-    Disabled --> Pending: User sets<br/>spec.schedule.enabled=true
+    Disabled --> Pending: User sets<br/>spec.enabled=true
 
     state matched_check <<choice>>
     Pending --> matched_check: Re-evaluate schedule<br/>+ re-assess reclaim state
@@ -343,7 +347,7 @@ stateDiagram-v2
     end note
 ```
 
-**This is intentional.** Re-enabling with the matched process still running is the controller's way of telling the user: *"Your JVM is still eating the box. Quit it, then re-enable the schedule."*
+**This is intentional.** Re-enabling with the matched process still running is the controller's way of telling the user: *"Your JVM is still eating the box. Quit it, then re-enable the machine (`spec.enabled=true`)."*
 
 ### Permanently opting out
 
@@ -368,7 +372,7 @@ The controller emits two distinct Events on the `ScheduledMachine`:
 | Reason | Emitted at | Meaning |
 |--------|-----------|---------|
 | `EmergencyReclaim` | Start of `EmergencyRemove` phase | Agent annotation observed; entering non-graceful eject. Event message includes the reason string from the annotation (e.g. `process-match: java`). |
-| `EmergencyReclaimDisabledSchedule` | After successful eject, before annotation clear | `spec.schedule.enabled` has been flipped to `false`. Event message tells the operator how to re-enable. |
+| `EmergencyReclaimDisabledSchedule` | After successful eject, before annotation clear | `spec.enabled` has been flipped to `false`. Event message tells the operator how to re-enable. |
 
 View them with:
 
@@ -387,7 +391,7 @@ status:
     - type: Scheduled
       status: "False"
       reason: EmergencyReclaimDisabledSchedule
-      message: "Schedule auto-disabled by emergency reclaim (process-match: java). Re-enable with kubectl patch when ready."
+      message: "Machine auto-disabled (spec.enabled=false) by emergency reclaim (process-match: java). Re-enable with kubectl patch when ready."
       lastTransitionTime: "2026-04-20T21:45:00Z"
 ```
 

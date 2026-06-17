@@ -27,12 +27,11 @@ spec:
 
   matchConstraints:
     resourceRules:
-      # Both served versions must be validated (ADR 0007). v1beta1 is the
-      # storage/current version (adds spec.spotSchedule and an optional
-      # spec.schedule); v1alpha1 is the frozen, deprecated legacy version. A
-      # version omitted here would BYPASS every validation below.
+      # Single served/storage version since ADR 0009 (the pre-release v1alpha1
+      # ScheduledMachine was dropped). spec.schedule is a required provider
+      # reference. A version omitted here would BYPASS every validation below.
       - apiGroups: ["5spot.finos.org"]
-        apiVersions: ["v1alpha1", "v1beta1"]
+        apiVersions: ["v1beta1"]
         resources: ["scheduledmachines"]
         operations: ["CREATE", "UPDATE"]
 
@@ -121,84 +120,23 @@ spec:
         (format: <positive integer> followed by s, m, or h)
       reason: Invalid
 
-    # NOTE on the schedule rules below: `spec.schedule` is OPTIONAL since
-    # v1beta1 (ADR 0006) — a machine may instead delegate to a spotSchedule
-    # provider. Each schedule rule is therefore guarded with
-    # `!has(object.spec.schedule) || …` so a valid spotSchedule-only machine is
-    # not rejected. The "at least one of schedule/spotSchedule" invariant is
-    # enforced by rule 7a below (and by the CRD's own x-kubernetes-validations).
+    # NOTE on the schedule rule below: since ADR 0009, `spec.schedule` is a
+    # REQUIRED reference to a spot-schedule provider object (apiVersion/kind/
+    # name in the spotschedules.5spot.finos.org group) — the former inline time
+    # window moved to the TimeBasedSpotSchedule provider CRD, which carries its
+    # own day/hour/timezone schema validation. The only ScheduledMachine-side
+    # invariant left for this VAP is the provider group pin (rule 4). The
+    # "required" and structural shape are enforced by the CRD schema itself.
 
-    # ── 4. Cron XOR explicit day/hour windows ────────────────────────────────
-    # Using cron together with daysOfWeek or hoursOfDay is ambiguous.
-    # The controller silently ignores daysOfWeek/hoursOfDay when cron is set;
-    # we reject the spec at admission to prevent silent data loss.
-    - expression: |
-        !has(object.spec.schedule) ||
-        !has(object.spec.schedule.cron) ||
-        (object.spec.schedule.daysOfWeek.size() == 0 &&
-         object.spec.schedule.hoursOfDay.size() == 0)
-      message: >-
-        spec.schedule: cron is mutually exclusive with daysOfWeek and hoursOfDay —
-        set one or the other, not both
-      reason: Invalid
-
-    # ── 5. Without cron, both day and hour windows must be provided ───────────
-    - expression: |
-        !has(object.spec.schedule) ||
-        has(object.spec.schedule.cron) ||
-        (object.spec.schedule.daysOfWeek.size() > 0 &&
-         object.spec.schedule.hoursOfDay.size() > 0)
-      message: >-
-        spec.schedule: when cron is not set, both daysOfWeek and hoursOfDay must be
-        non-empty to define an active window
-      reason: Invalid
-
-    # ── 6. daysOfWeek item format ─────────────────────────────────────────────
-    # Each element must be a day name (mon…sun), an inclusive range (mon-fri),
-    # or a comma-separated combination (mon-wed,fri-sun).
-    # Trivially true for empty arrays (cron path).
-    - expression: |
-        !has(object.spec.schedule) ||
-        object.spec.schedule.daysOfWeek.all(d,
-          d.matches('^(mon|tue|wed|thu|fri|sat|sun)(-(mon|tue|wed|thu|fri|sat|sun))?(,(mon|tue|wed|thu|fri|sat|sun)(-(mon|tue|wed|thu|fri|sat|sun))?)*$'))
-      message: >-
-        spec.schedule.daysOfWeek items must be day names or ranges
-        (e.g. 'mon', 'mon-fri', 'mon-wed,fri-sun')
-      reason: Invalid
-
-    # ── 7. hoursOfDay item format ─────────────────────────────────────────────
-    # Each element must be a 1-2 digit hour, a range (9-17), or a comma-
-    # separated combination (0-9,18-23).  Numeric bounds (0-23) are enforced
-    # at runtime by the schedule evaluator.
-    # Trivially true for empty arrays (cron path).
-    - expression: |
-        !has(object.spec.schedule) ||
-        object.spec.schedule.hoursOfDay.all(h,
-          h.matches('^[0-9]{1,2}(-[0-9]{1,2})?(,[0-9]{1,2}(-[0-9]{1,2})?)*$'))
-      message: >-
-        spec.schedule.hoursOfDay items must be hours or ranges
-        (e.g. '9', '9-17', '0-9,18-23')
-      reason: Invalid
-
-    # ── 7a. At least one activation source ────────────────────────────────────
-    # A machine must declare an inline schedule, a spotSchedule provider, or
-    # both (ADR 0006). Mirrors the CRD x-kubernetes-validations and the runtime
-    # validate_activation_source() in src/reconcilers/helpers.rs.
-    - expression: "has(object.spec.schedule) || has(object.spec.spotSchedule)"
-      message: >-
-        at least one of spec.schedule or spec.spotSchedule must be set
-      reason: Invalid
-
-    # ── 7b. spotSchedule.apiVersion group pin ─────────────────────────────────
+    # ── 4. schedule.apiVersion group pin ──────────────────────────────────────
     # The provider reference group MUST be spotschedules.5spot.finos.org
-    # (ADR 0006 §2 / §6) — providers are untrusted inputs and the controller's
-    # read-only RBAC is scoped to exactly this group. Mirrors the CRD field CEL
-    # and the runtime group check.
+    # (ADR 0006 §2 / §6, ADR 0009) — providers are untrusted inputs and the
+    # controller's read-only RBAC is scoped to exactly this group. Mirrors the
+    # CRD field CEL and the runtime validate_schedule_ref() check.
     - expression: |
-        !has(object.spec.spotSchedule) ||
-        object.spec.spotSchedule.apiVersion.startsWith('spotschedules.5spot.finos.org/')
+        object.spec.schedule.apiVersion.startsWith('spotschedules.5spot.finos.org/')
       message: >-
-        spec.spotSchedule.apiVersion group must be spotschedules.5spot.finos.org
+        spec.schedule.apiVersion group must be spotschedules.5spot.finos.org
       reason: Invalid
 
     # ── 8. bootstrapSpec.apiVersion must use a namespaced API group ───────────

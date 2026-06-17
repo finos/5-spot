@@ -105,7 +105,7 @@
       "unique-id": "data-asset-scheduledmachine-cr",
       "node-type": "data-asset",
       "name": "ScheduledMachine Custom Resource",
-      "description": "Namespaced CRD (5spot.finos.org/v1alpha1) declaring a machine, its schedule (daysOfWeek, hoursOfDay, timezone), inline bootstrap/infrastructure specs, priority, grace periods, and kill switch."
+      "description": "Namespaced CRD (5spot.finos.org/v1beta1) declaring a machine, its schedule as a REQUIRED reference to a spot-schedule provider object (spec.schedule: apiVersion/kind/name in the spotschedules.5spot.finos.org group, same namespace — ADR 0009), a top-level spec.enabled administrative master switch, inline bootstrap/infrastructure specs, priority, grace periods, and kill switch."
     },
     {
       "unique-id": "service-kubernetes-api",
@@ -314,8 +314,8 @@
     {
       "unique-id": "service-spot-schedule-provider",
       "node-type": "service",
-      "name": "Spot Schedule Provider (external)",
-      "description": "Third-party controller implementing the spotschedules.5spot.finos.org provider contract (ADR 0006). Reconciles a provider CRD (reference implementation: CapitalMarketsSchedule — exchange sessions, statutory holidays, early closes) and publishes a single duck-typed status.active boolean plus a Ready condition. 5-Spot treats it as an UNTRUSTED INPUT: it can start/stop the ScheduledMachines that reference it (same blast radius as editing spec.schedule.enabled), bounded to same-namespace SMs that named it. 5-Spot never reads the provider spec and never writes the provider object.",
+      "name": "Spot Schedule Provider",
+      "description": "Controller implementing the spotschedules.5spot.finos.org provider contract (ADR 0006, ADR 0009). Reconciles a provider CRD and publishes a single duck-typed status.active boolean plus a Ready condition. 5-Spot ships two FIRST-PARTY providers as standalone controllers: TimeBasedSpotSchedule (the CORE/DEFAULT provider — day/hour/timezone windows, the reified former inline spec.schedule) and CapitalMarketsSchedule (exchange sessions, statutory holidays, early closes); third parties may ship their own. Every ScheduledMachine references exactly one provider via spec.schedule (ADR 0009). 5-Spot treats the provider as an UNTRUSTED INPUT regardless of who ships it: it can start/stop the ScheduledMachines that reference it (same blast radius as editing the referenced provider object), bounded to same-namespace SMs that named it. 5-Spot never reads the provider spec and never writes the provider object.",
       "controls": {
         "least-privilege": {
           "description": "A reference provider's own controller holds update,patch on its OWN kind's /status subresource only (a separate Role, not 5-Spot's ClusterRole). It needs no access to ScheduledMachine or 5-Spot resources.",
@@ -336,7 +336,7 @@
       "unique-id": "data-asset-spot-schedule-cr",
       "node-type": "data-asset",
       "name": "Spot Schedule Provider Custom Resource",
-      "description": "Namespaced CRD in the spotschedules.5spot.finos.org group (e.g. CapitalMarketsSchedule), stored in the management cluster API. Owned by the external provider controller, which writes status.active (the authoritative active/inactive signal), a Ready condition, observedGeneration, and lastTransitionTime. Referenced by ScheduledMachine.spec.spotSchedule (apiVersion/kind/name, same namespace). Multi-version per ADR 0007 (served versions, single storage version, conversion strategy None)."
+      "description": "Namespaced CRD in the spotschedules.5spot.finos.org group (TimeBasedSpotSchedule, CapitalMarketsSchedule, or a third-party kind), stored in the management cluster API. Owned by its provider controller, which writes status.active (the authoritative active/inactive signal), a Ready condition, observedGeneration, and lastTransitionTime. Referenced by ScheduledMachine.spec.schedule (apiVersion/kind/name, same namespace) — the single, required activation source after ADR 0009."
     }
   ],
 
@@ -704,7 +704,7 @@
     },
     {
       "unique-id": "rel-controller-spot-schedule-watch",
-      "description": "Controller watches the spot-schedule provider custom resource named by ScheduledMachine.spec.spotSchedule and reads its duck-typed status.active (and Ready condition). Event-driven via a dynamic per-GVK watch (Api<DynamicObject> resolved through kube discovery) mapped back to referencing ScheduledMachines through an in-memory reverse index; provider status.active transitions trigger SM reconciles at watch latency. Read-only: 5-Spot never writes the provider object. ADR 0006 §5.",
+      "description": "Controller watches the spot-schedule provider custom resource named by ScheduledMachine.spec.schedule (the single required activation source, ADR 0009) and reads its duck-typed status.active (and Ready condition). Event-driven via a dynamic per-GVK watch (Api<DynamicObject> resolved through kube discovery) mapped back to referencing ScheduledMachines through an in-memory reverse index; provider status.active transitions trigger SM reconciles at watch latency. Read-only: 5-Spot never writes the provider object. ADR 0006 §5.",
       "relationship-type": {
         "connects": {
           "source": { "node": "service-five-spot-controller" },
@@ -717,7 +717,7 @@
       "protocol": "HTTPS",
       "controls": {
         "least-privilege-readonly-group-pinned": {
-          "description": "Controller RBAC grants get,list,watch ONLY on spotschedules.5spot.finos.org/* — no write to any provider resource. A CEL XValidation on spec.spotSchedule.apiVersion pins the group to exactly spotschedules.5spot.finos.org (any served version accepted, ADR 0007), rejecting references to any other group at admission. References are same-namespace only. Providers are untrusted inputs whose blast radius (flapping the SMs that reference them) equals editing spec.schedule.enabled; mitigations are audited via the SpotScheduleResolved condition and transition-rate metrics.",
+          "description": "Controller RBAC grants get,list,watch ONLY on spotschedules.5spot.finos.org/* — no write to any provider resource. A CEL XValidation on spec.schedule.apiVersion pins the group to exactly spotschedules.5spot.finos.org (any served version accepted, ADR 0007), rejecting references to any other group at admission. References are same-namespace only. Providers are untrusted inputs whose blast radius (flapping the SMs that reference them) equals editing the referenced provider object; mitigations are audited via the SpotScheduleResolved condition and transition-rate metrics.",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -747,7 +747,7 @@
         {
           "sequence-number": 2,
           "relationship-unique-id": "rel-controller-kube-api",
-          "description": "Controller watch observes the CR; scheduler evaluates daysOfWeek/hoursOfDay against current time in the configured timezone and finds it in window.",
+          "description": "Controller watch observes the CR and the provider object named by spec.schedule; the provider's status.active (e.g. TimeBasedSpotSchedule evaluating daysOfWeek/hoursOfDay in its timezone) reports the machine should be active (ADR 0009).",
           "direction": "destination-to-source"
         },
         {
@@ -827,7 +827,7 @@
     {
       "unique-id": "flow-emergency-reclaim",
       "name": "Emergency Reclaim (process-match eject)",
-      "description": "A matched process on a workload node triggers an ASAP eject that skips graceful drain. The 7-step ordering contract is load-bearing: spec.schedule.enabled=false (step 5) must be written BEFORE the annotation clear (step 6) so a crash between them is replay-safe. Full narrative in docs/src/concepts/emergency-reclaim.md.",
+      "description": "A matched process on a workload node triggers an ASAP eject that skips graceful drain. The 7-step ordering contract is load-bearing: spec.enabled=false (step 5, ADR 0009) must be written BEFORE the annotation clear (step 6) so a crash between them is replay-safe. Full narrative in docs/src/concepts/emergency-reclaim.md.",
       "transitions": [
         {
           "sequence-number": 1,
@@ -853,7 +853,7 @@
         {
           "sequence-number": 5,
           "relationship-unique-id": "rel-controller-kube-api",
-          "description": "Controller PATCHes ScheduledMachine spec.schedule.enabled=false (the loop-breaker: without this, the next schedule window re-adds the node and the agent re-fires forever) and emits Event Reason: EmergencyReclaimDisabledSchedule. Load-bearing: must run BEFORE step 6."
+          "description": "Controller PATCHes ScheduledMachine spec.enabled=false (the loop-breaker: without this, the provider's next active window re-adds the node and the agent re-fires forever) and emits Event Reason: EmergencyReclaimDisabledSchedule. spec.enabled is SM-scoped (ADR 0009) — the provider object is never patched, since it may be shared by other SMs. Load-bearing: must run BEFORE step 6."
         },
         {
           "sequence-number": 6,
@@ -863,7 +863,7 @@
         {
           "sequence-number": 7,
           "relationship-unique-id": "rel-controller-kube-api",
-          "description": "Controller transitions ScheduledMachine status.phase = Disabled. Re-enable is a manual operator action (kubectl patch ... spec.schedule.enabled=true)."
+          "description": "Controller transitions ScheduledMachine status.phase = Disabled. Re-enable is a manual operator action (kubectl patch ... spec.enabled=true)."
         }
       ],
       "controls": {
@@ -933,7 +933,7 @@
     {
       "unique-id": "flow-spot-schedule-activation",
       "name": "Spot Schedule Activation (provider-driven active/inactive)",
-      "description": "A ScheduledMachine with spec.spotSchedule delegates its active/inactive decision to an external provider's duck-typed status.active. The controller watches the provider CR event-driven and composes the provider verdict with the inline spec.schedule (logical AND when both are set; killSwitch always wins). An unresolved/unready provider never flaps machines: the controller surfaces SpotScheduleResolved=False and holds last-known state (fail-inactive when never resolved). ADR 0006.",
+      "description": "Every ScheduledMachine delegates its active/inactive decision to the single provider named by spec.schedule (ADR 0009) via that provider's duck-typed status.active — the default being the first-party TimeBasedSpotSchedule. The controller watches the provider CR event-driven; the provider verdict IS the should-be-active decision (no inline schedule to AND with after ADR 0009; killSwitch always wins). An unresolved/unready provider never flaps machines: the controller surfaces SpotScheduleResolved=False and holds last-known state (fail-inactive when never resolved). ADR 0006 §4, ADR 0009.",
       "transitions": [
         {
           "sequence-number": 1,
@@ -1007,6 +1007,7 @@
   "adrs": [
     "../../adr/0002-kata-config-delivery-via-spec-kata.md",
     "../../adr/0003-in-pod-host-service-restart-via-nsenter.md",
-    "../../adr/0006-pluggable-spot-schedule-provider-contract.md"
+    "../../adr/0006-pluggable-spot-schedule-provider-contract.md",
+    "../../adr/0009-unify-schedule-as-provider-reference.md"
   ]
 }

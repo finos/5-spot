@@ -29,7 +29,7 @@ metadata:
   name: scheduled-machine-worker-xyz
   namespace: default
   ownerReferences:
-    - apiVersion: 5spot.finos.org/v1alpha1
+    - apiVersion: 5spot.finos.org/v1beta1
       kind: ScheduledMachine
       name: scheduled-machine
 spec:

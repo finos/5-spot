@@ -16,6 +16,15 @@ Get started with 5-Spot in minutes.
 kubectl apply -f https://raw.githubusercontent.com/finos/5-spot/main/deploy/crds/scheduledmachine.yaml
 ```
 
+Also install the default spot-schedule provider CRD (`TimeBasedSpotSchedule`),
+which a `ScheduledMachine` references for its activation window. Applying the
+whole `deploy/crds/` directory installs every CRD at once:
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/finos/5-spot/main/deploy/crds/timebasedspotschedule.yaml
+# or: kubectl apply -f deploy/crds/   (applies all CRDs)
+```
+
 ### 2. Deploy the Operator
 
 The operator manifests live in multiple files across `deploy/deployment/`
@@ -45,19 +54,20 @@ kubectl get crds | grep 5spot
 Create a file named `my-scheduled-machine.yaml`:
 
 ```yaml
-apiVersion: 5spot.finos.org/v1alpha1
+apiVersion: 5spot.finos.org/v1beta1
 kind: ScheduledMachine
 metadata:
   name: my-first-scheduled-machine
   namespace: default
 spec:
+  # Administrative master switch (default true); false holds the machine Disabled.
+  enabled: true
+
+  # Required reference to a spot-schedule provider object in this namespace.
   schedule:
-    daysOfWeek:
-      - mon-fri
-    hoursOfDay:
-      - "9-17"
-    timezone: UTC
-    enabled: true
+    apiVersion: spotschedules.5spot.finos.org/v1alpha1
+    kind: TimeBasedSpotSchedule
+    name: weekdays
 
   clusterName: my-cluster
 
@@ -79,6 +89,22 @@ spec:
 
   priority: 50
   gracefulShutdownTimeout: 5m
+---
+# The referenced provider object. It must exist in the SAME namespace as the
+# ScheduledMachine, and the TimeBasedSpotSchedule CRD + its provider controller
+# must be installed (deploy/spot-schedule-providers/time-based/).
+apiVersion: spotschedules.5spot.finos.org/v1alpha1
+kind: TimeBasedSpotSchedule
+metadata:
+  name: weekdays
+  namespace: default
+spec:
+  daysOfWeek:
+    - mon-fri
+  hoursOfDay:
+    - "9-17"
+  timezone: UTC
+  enabled: true
 ```
 
 Apply it:

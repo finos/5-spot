@@ -1,8 +1,9 @@
-# Example ScheduledMachine with weekend schedule
-# This machine will be active Saturday-Sunday, 24 hours
-# Uses cron expression format as an alternative to daysOfWeek/hoursOfDay
+# Example ScheduledMachine with a weekend schedule.
+# This machine follows the TimeBasedSpotSchedule provider object "weekend-only"
+# (defined in examples/timebasedspotschedule.yaml): active Saturday-Sunday,
+# 24 hours, in UTC.
 
-apiVersion: 5spot.finos.org/v1alpha1
+apiVersion: 5spot.finos.org/v1beta1
 kind: ScheduledMachine
 metadata:
   name: weekend-worker
@@ -11,13 +12,16 @@ spec:
   # Name of the CAPI Cluster this machine will join
   clusterName: my-k0s-cluster
 
-  # Schedule configuration (using cron format)
-  # Cron: minute hour day-of-month month day-of-week
-  # This runs all hours (*) on Saturday (6) and Sunday (0)
+  # Administrative master switch (ADR 0009); defaults to true.
+  enabled: true
+
+  # Required reference to the spot-schedule provider that owns the
+  # active/inactive decision (ADR 0009). The day/hour window now lives on the
+  # referenced TimeBasedSpotSchedule, not inline here.
   schedule:
-    cron: "* * * * 0,6"
-    timezone: UTC
-    enabled: true
+    apiVersion: spotschedules.5spot.finos.org/v1alpha1
+    kind: TimeBasedSpotSchedule
+    name: weekend-only
 
   # Inline bootstrap specification (creates K0sWorkerConfig)
   bootstrapSpec:

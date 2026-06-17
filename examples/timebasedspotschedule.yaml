@@ -1,0 +1,68 @@
+# Example TimeBasedSpotSchedule objects — the core, first-party spot-schedule
+# provider (ADR 0009). Each models a day-of-week / hour-of-day window in a
+# configured timezone; the provider controller (spot-schedule-time-based)
+# computes the duck-typed status.active that a ScheduledMachine.spec.schedule
+# consumes. 5-Spot's main controller reads only status.active, never this spec.
+#
+# These are the provider objects the scheduledmachine-*.yaml examples reference.
+# Each must live in the SAME namespace as the ScheduledMachine that names it.
+---
+# Mon-Fri 09:00-17:00 Eastern. Referenced by scheduledmachine-basic.yaml,
+# scheduledmachine-tainted.yaml, scheduledmachine-bad-taint.yaml, and
+# scheduledmachine-kata.yaml (all in namespace: default).
+apiVersion: spotschedules.5spot.finos.org/v1alpha1
+kind: TimeBasedSpotSchedule
+metadata:
+  name: business-hours
+  namespace: default
+spec:
+  daysOfWeek:
+    - mon-fri
+  hoursOfDay:
+    - "9-17"
+  timezone: America/New_York
+  enabled: true
+---
+# Weekends, 24 hours, UTC. Referenced by scheduledmachine-weekend.yaml
+# (namespace: default).
+apiVersion: spotschedules.5spot.finos.org/v1alpha1
+kind: TimeBasedSpotSchedule
+metadata:
+  name: weekend-only
+  namespace: default
+spec:
+  daysOfWeek:
+    - sat-sun
+  hoursOfDay:
+    - "0-23"
+  timezone: UTC
+  enabled: true
+---
+# Mon-Fri 09:00-17:00 Toronto. Referenced by scheduledmachine-child-cluster.yaml.
+# The provider object lives on the MANAGEMENT cluster in the ScheduledMachine's
+# namespace (hosted-cluster-alpha).
+apiVersion: spotschedules.5spot.finos.org/v1alpha1
+kind: TimeBasedSpotSchedule
+metadata:
+  name: business-hours-toronto
+  namespace: hosted-cluster-alpha
+spec:
+  daysOfWeek:
+    - mon-fri
+  hoursOfDay:
+    - "9-17"
+  timezone: America/Toronto
+  enabled: true
+# status is written by the provider controller, e.g.:
+#
+# status:
+#   active: true
+#   observedGeneration: 2
+#   lastTransitionTime: "2026-06-15T13:00:00Z"
+#   nextTransitionTime: "2026-06-15T21:00:00Z"
+#   conditions:
+#     - type: Ready
+#       status: "True"
+#       reason: WindowOpen
+#       message: "Within the configured day/hour window"
+#       lastTransitionTime: "2026-06-15T13:00:00Z"

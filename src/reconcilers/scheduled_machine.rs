@@ -521,10 +521,7 @@ async fn reconcile_inner(
     // the reclaim-agent projection.
     super::helpers::validate_cluster_name(&resource.spec.cluster_name)?;
     super::helpers::validate_kill_if_commands(resource.spec.kill_if_commands.as_deref())?;
-    super::helpers::validate_activation_source(
-        resource.spec.schedule.as_ref(),
-        resource.spec.spot_schedule.as_ref(),
-    )?;
+    super::helpers::validate_schedule_ref(&resource.spec.schedule)?;
 
     // Get current status
     let current_phase = resource
@@ -560,14 +557,6 @@ async fn reconcile_inner(
         return Ok(action);
     }
 
-    // Evaluate the inline time window. `None` means there is no inline
-    // `spec.schedule` (a spotSchedule-only machine) — the time axis is then
-    // unconstrained and the provider governs activity.
-    let schedule_active = match &resource.spec.schedule {
-        Some(schedule) => Some(evaluate_schedule(schedule, None)?),
-        None => None,
-    };
-
     // Hold-last-state input: the provider-active value persisted last reconcile.
     let last_known_spot_active = resource
         .status
@@ -575,33 +564,32 @@ async fn reconcile_inner(
         .and_then(|status| status.spot_schedule.as_ref())
         .and_then(|spot| spot.active);
 
-    // Resolve the spot-schedule provider verdict (pull-on-reconcile; the
-    // event-driven watch lands in roadmap Phase 3). A transient API error
-    // propagates so the reconciler retries; "unresolved" is a verdict, not an
-    // error, and drives hold-last-state composition.
-    let spot_verdict = if let Some(reference) = &resource.spec.spot_schedule {
-        let verdict =
-            spot_schedule::resolve_spot_schedule(&ctx.client, &namespace, reference).await?;
-        record_spot_schedule_metrics(
-            &namespace,
-            &reference.kind,
-            &verdict,
-            last_known_spot_active,
-        );
-        persist_spot_schedule_status(&ctx, &namespace, &name, &verdict, last_known_spot_active)
-            .await?;
-        Some(verdict)
-    } else {
-        None
-    };
-
-    // Compose the inline schedule and provider verdict (AND; killSwitch already
-    // handled above) into the single should-be-active decision.
-    let should_be_active = super::helpers::compose_should_be_active(
-        schedule_active,
-        spot_verdict.as_ref(),
+    // Resolve the single spot-schedule provider named by `spec.schedule`
+    // (required since ADR 0009). A transient API error propagates so the
+    // reconciler retries; "unresolved" is a verdict, not an error, and drives
+    // hold-last-state composition. The provider verdict IS the should-be-active
+    // decision — there is no inline schedule to AND with (killSwitch handled
+    // above is terminal; `spec.enabled` gates the lifecycle separately).
+    let reference = &resource.spec.schedule;
+    let spot_verdict =
+        spot_schedule::resolve_spot_schedule(&ctx.client, &namespace, reference).await?;
+    record_spot_schedule_metrics(
+        &namespace,
+        &reference.kind,
+        &spot_verdict,
         last_known_spot_active,
     );
+    persist_spot_schedule_status(
+        &ctx,
+        &namespace,
+        &name,
+        &spot_verdict,
+        last_known_spot_active,
+    )
+    .await?;
+
+    let should_be_active =
+        super::helpers::compose_should_be_active(&spot_verdict, last_known_spot_active);
 
     // Record schedule evaluation metric
     record_schedule_evaluation(should_be_active);
@@ -616,7 +604,7 @@ async fn reconcile_inner(
         should_be_active = should_be_active,
         enabled = resource.spec.is_enabled(),
         phase = ?current_phase,
-        spot_schedule = spot_verdict.as_ref().map(spot_schedule::SpotScheduleVerdict::reason),
+        spot_schedule = spot_verdict.reason(),
         "Schedule evaluated"
     );
 
@@ -1524,8 +1512,8 @@ fn handle_error_phase(
 // Re-export helper functions for use in this module
 use super::helpers::{
     add_finalizer, add_machine_to_cluster, check_grace_period_elapsed, drain_node_with_timeout,
-    evaluate_schedule, extract_machine_refs, fetch_capi_machine, get_node_from_machine,
-    handle_deletion, handle_kill_switch, has_finalizer, parse_duration, patch_machine_refs_status,
+    extract_machine_refs, fetch_capi_machine, get_node_from_machine, handle_deletion,
+    handle_kill_switch, has_finalizer, parse_duration, patch_machine_refs_status,
     remove_machine_from_cluster, should_process_resource, update_phase,
     update_phase_with_grace_period,
 };

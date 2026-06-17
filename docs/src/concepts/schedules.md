@@ -1,23 +1,49 @@
 # Schedule Configuration
 
-5-Spot uses flexible schedule configurations to determine when machines should be active.
+5-Spot uses flexible schedule configurations to determine when machines should
+be active.
+
+> **Since ADR 0009**, a `ScheduledMachine.spec.schedule` is a *reference* to a
+> spot-schedule provider object — it no longer carries the day/hour window
+> inline. The day/hour/timezone grammar described on this page now lives on the
+> default first-party provider, **`TimeBasedSpotSchedule`** (see the
+> [provider guide](../guides/time-based-schedule.md)). The grammar is unchanged;
+> only its home moved. All `spec:` snippets below are `TimeBasedSpotSchedule`
+> specs.
 
 ## Schedule Options
 
-5-Spot schedules machines using day and hour ranges.
+A `TimeBasedSpotSchedule` schedules machines using day and hour ranges.
 
 ## Day/Hour Range Syntax
 
-Use `daysOfWeek` and `hoursOfDay` to define when a machine should be active:
+Use `daysOfWeek` and `hoursOfDay` on a `TimeBasedSpotSchedule` to define when a
+machine should be active:
 
 ```yaml
-schedule:
+apiVersion: spotschedules.5spot.finos.org/v1alpha1
+kind: TimeBasedSpotSchedule
+metadata:
+  name: business-hours
+  namespace: default
+spec:
   daysOfWeek:
     - mon-fri
   hoursOfDay:
     - 9-17
   timezone: America/New_York
   enabled: true
+```
+
+A `ScheduledMachine` then references it:
+
+```yaml
+spec:
+  enabled: true
+  schedule:
+    apiVersion: spotschedules.5spot.finos.org/v1alpha1
+    kind: TimeBasedSpotSchedule
+    name: business-hours
 ```
 
 ## Days of Week
@@ -141,22 +167,34 @@ Timezones automatically handle DST transitions:
 
 ## Enabled Flag
 
-### Disabling Schedules
+There are two distinct `enabled` switches — keep them separate:
 
-Set `enabled: false` to pause scheduling without deleting the resource:
+- **`TimeBasedSpotSchedule.spec.enabled`** (the provider's own toggle): set
+  `false` to force the provider's `status.active` to `false` (the window is
+  ignored) without deleting the schedule. Every `ScheduledMachine` referencing
+  it then sees an inactive provider.
+- **`ScheduledMachine.spec.enabled`** (the administrative master switch): set
+  `false` to hold *that one machine* in the `Disabled` phase regardless of what
+  its provider reports. This is also the loop-breaker the emergency-reclaim flow
+  sets.
+
+### Disabling a provider window
 
 ```yaml
-schedule:
+apiVersion: spotschedules.5spot.finos.org/v1alpha1
+kind: TimeBasedSpotSchedule
+spec:
   enabled: false
-  # ... other fields preserved
+  # ... daysOfWeek / hoursOfDay / timezone preserved
 ```
 
-When disabled:
+When the provider is disabled (`status.active: false`):
 
-- Machine transitions to `Disabled` phase
-- Existing active machines remain as-is (no new changes)
+- Existing active machines that reference it gracefully shut down
 - No new activations occur
-- Schedule evaluation is skipped
+
+Set `ScheduledMachine.spec.enabled: false` instead to administratively park a
+single machine in the `Disabled` phase.
 
 ### Use Cases
 
@@ -214,23 +252,29 @@ schedule:
 
 ## Schedule Evaluation
 
-5-Spot evaluates schedules every 60 seconds:
+Evaluation is **event-driven**, split across two controllers (ADR 0009). The
+`TimeBasedSpotSchedule` provider controller computes `status.active` from the
+window and **requeues once at the next window boundary** (no polling). 5-Spot's
+main controller **watches** the referenced provider and reacts to its
+`status.active` flips at watch latency.
 
 ```mermaid
 flowchart TD
-    A[Timer: Every 60s] --> B[Get Current Time]
-    B --> C[Convert to Configured Timezone]
-    C --> D{Schedule Enabled?}
-    D -->|No| E[Phase: Disabled]
+    A[TimeBasedSpotSchedule controller<br/>reconcile / boundary requeue] --> B[Get Current Time]
+    B --> C[Convert to spec.timezone]
+    C --> D{spec.enabled?}
+    D -->|No| E[status.active = false]
     D -->|Yes| H{Day in daysOfWeek?}
-    H -->|No| J[inSchedule: false]
+    H -->|No| E
     H -->|Yes| K{Hour in hoursOfDay?}
-    K -->|No| J
-    K -->|Yes| I
-    I --> L[Create/Maintain Machine]
-    J --> M[Remove Machine if exists]
-    L --> N[Update Status]
-    M --> N
+    K -->|No| E
+    K -->|Yes| I[status.active = true]
+    E --> P[PATCH status.active]
+    I --> P
+    P --> W[5-Spot watch wakes referencing machines]
+    W --> X{ScheduledMachine.spec.enabled<br/>and not killSwitch?}
+    X -->|active and enabled| L[Create/Maintain Machine]
+    X -->|inactive or disabled| M[Remove Machine if exists]
 ```
 
 ## Related

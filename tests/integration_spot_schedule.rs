@@ -122,8 +122,8 @@ async fn test_create_active_provider_makes_machine_active() {
             provider_generation: Some(5)
         }
     );
-    // spotSchedule-only machine (no inline schedule): provider decides.
-    assert!(compose_should_be_active(None, Some(&verdict), None));
+    // The single provider verdict decides should-be-active (ADR 0009).
+    assert!(compose_should_be_active(&verdict, None));
 }
 
 #[tokio::test]
@@ -135,7 +135,7 @@ async fn test_flip_to_inactive_tears_machine_down() {
             provider_generation: Some(5)
         }
     );
-    assert!(!compose_should_be_active(None, Some(&verdict), Some(true)));
+    assert!(!compose_should_be_active(&verdict, Some(true)));
 }
 
 #[tokio::test]
@@ -147,15 +147,11 @@ async fn test_delete_provider_is_unresolved_and_holds_last_state() {
     );
 
     // Hold-last-state: was active ⇒ stays active despite the provider vanishing.
-    assert!(compose_should_be_active(None, Some(&verdict), Some(true)));
+    assert!(compose_should_be_active(&verdict, Some(true)));
     // Never resolved (no last-known) ⇒ fail-inactive.
-    assert!(!compose_should_be_active(None, Some(&verdict), None));
-    // An inline schedule still closes the machine even while holding state.
-    assert!(!compose_should_be_active(
-        Some(false),
-        Some(&verdict),
-        Some(true)
-    ));
+    assert!(!compose_should_be_active(&verdict, None));
+    // Held-inactive last state ⇒ stays inactive.
+    assert!(!compose_should_be_active(&verdict, Some(false)));
 }
 
 #[test]
@@ -207,12 +203,12 @@ fn scheduled_machine(name: &str, provider_name: &str) -> ScheduledMachine {
             ..Default::default()
         },
         spec: ScheduledMachineSpec {
-            schedule: None,
-            spot_schedule: Some(SpotScheduleRef {
+            schedule: SpotScheduleRef {
                 api_version: "spotschedules.5spot.finos.org/v1alpha1".to_string(),
                 kind: "CapitalMarketsSchedule".to_string(),
                 name: provider_name.to_string(),
-            }),
+            },
+            enabled: true,
             cluster_name: "c".to_string(),
             bootstrap_spec: EmbeddedResource(json!({
                 "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",

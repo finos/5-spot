@@ -54,19 +54,22 @@ Traditional infrastructure management involves:
 Here's how simple it is to create a scheduled machine:
 
 ```yaml
-apiVersion: 5spot.finos.org/v1alpha1
+apiVersion: 5spot.finos.org/v1beta1
 kind: ScheduledMachine
 metadata:
   name: business-hours-machine
   namespace: default
 spec:
+  # Administrative master switch (default true)
+  enabled: true
+
+  # Required reference to a spot-schedule provider object in this namespace
+  # (requires a TimeBasedSpotSchedule named `weekdays` in the same namespace —
+  # the default first-party provider).
   schedule:
-    daysOfWeek:
-      - mon-fri
-    hoursOfDay:
-      - 9-17
-    timezone: America/New_York
-    enabled: true
+    apiVersion: spotschedules.5spot.finos.org/v1alpha1
+    kind: TimeBasedSpotSchedule
+    name: weekdays
 
   # Inline bootstrap configuration (e.g., K0sWorkerConfig)
   bootstrapSpec:
@@ -112,7 +115,7 @@ stateDiagram-v2
 
     Pending --> Active: Schedule active & machine created
     Pending --> Inactive: Outside schedule window
-    Pending --> Disabled: Schedule disabled
+    Pending --> Disabled: spec.enabled = false
 
     Active --> ShuttingDown: Schedule ends
     Active --> Terminated: Kill switch activated
@@ -122,9 +125,9 @@ stateDiagram-v2
     ShuttingDown --> Error: Shutdown error
 
     Inactive --> Active: Schedule window starts
-    Inactive --> Disabled: Schedule disabled
+    Inactive --> Disabled: spec.enabled = false
 
-    Disabled --> Pending: Schedule re-enabled
+    Disabled --> Pending: spec.enabled = true
 
     Terminated --> Pending: Kill switch deactivated
 
@@ -133,7 +136,7 @@ stateDiagram-v2
     note right of Pending: Initial state after creation
     note right of Active: Machine is part of cluster
     note right of ShuttingDown: Grace period in progress
-    note right of Disabled: Schedule.enabled = false
+    note right of Disabled: spec.enabled = false
     note right of Terminated: killSwitch = true
 ```
 

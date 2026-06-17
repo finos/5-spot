@@ -1,0 +1,15 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spot-schedule-time-based
+  labels:
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: spot-schedule-provider
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spot-schedule-time-based
+subjects:
+  - kind: ServiceAccount
+    name: spot-schedule-time-based
+    namespace: 5spot-system

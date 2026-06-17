@@ -71,7 +71,7 @@ cargo run --bin crdgen > deploy/crds/scheduledmachine.yaml
 ### Generate API Documentation
 
 ```bash
-cargo run --bin crddoc > docs/reference/api.md
+cargo run --bin crddoc > docs/src/reference/api.md
 ```
 
 ## Running Locally

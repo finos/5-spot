@@ -15,13 +15,12 @@ mod tests {
 
     fn create_test_spec() -> crate::crd::ScheduledMachineSpec {
         crate::crd::ScheduledMachineSpec {
-            schedule: Some(crate::crd::ScheduleSpec {
-                days_of_week: vec!["mon-fri".to_string()],
-                hours_of_day: vec!["9-17".to_string()],
-                timezone: "UTC".to_string(),
-                enabled: true,
-            }),
-            spot_schedule: None,
+            schedule: crate::crd::SpotScheduleRef {
+                api_version: "spotschedules.5spot.finos.org/v1alpha1".to_string(),
+                kind: "TimeBasedSpotSchedule".to_string(),
+                name: "weekdays-9-5".to_string(),
+            },
+            enabled: true,
             cluster_name: "test-cluster".to_string(),
             bootstrap_spec: crate::crd::EmbeddedResource(json!({
                 "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
@@ -47,33 +46,11 @@ mod tests {
 
     // ========================================================================
     // Schedule evaluation tests
+    //
+    // The time-window evaluation that used to live behind `evaluate_schedule`
+    // moved into the TimeBasedSpotSchedule provider (ADR 0009) and is tested in
+    // src/providers/time_based_tests.rs::is_active_at. Nothing to test here now.
     // ========================================================================
-
-    #[test]
-    fn test_evaluate_schedule_disabled() {
-        let schedule = crate::crd::ScheduleSpec {
-            days_of_week: vec!["mon-fri".to_string()],
-            hours_of_day: vec!["9-17".to_string()],
-            timezone: "UTC".to_string(),
-            enabled: false,
-        };
-
-        let result = evaluate_schedule(&schedule, None).unwrap();
-        assert!(!result, "Disabled schedule should return false");
-    }
-
-    #[test]
-    fn test_evaluate_schedule_invalid_timezone() {
-        let schedule = crate::crd::ScheduleSpec {
-            days_of_week: vec!["mon-fri".to_string()],
-            hours_of_day: vec!["9-17".to_string()],
-            timezone: "Invalid/Timezone".to_string(),
-            enabled: true,
-        };
-
-        let result = evaluate_schedule(&schedule, None);
-        assert!(result.is_err(), "Invalid timezone should return error");
-    }
 
     // ========================================================================
     // Resource processing tests
@@ -735,24 +712,6 @@ mod tests {
     }
 
     // ========================================================================
-    // Schedule evaluation tests - Additional cases
-    // ========================================================================
-
-    #[test]
-    fn test_evaluate_schedule_empty_days_and_hours() {
-        let schedule = crate::crd::ScheduleSpec {
-            days_of_week: vec![],
-            hours_of_day: vec![],
-            timezone: "UTC".to_string(),
-            enabled: true,
-        };
-
-        // Empty days/hours means always active
-        let result = evaluate_schedule(&schedule, None);
-        assert!(result.is_ok(), "Empty days/hours should not error");
-    }
-
-    // ========================================================================
     // Finalizer tests - Additional cases
     // ========================================================================
 
@@ -1338,7 +1297,7 @@ mod tests {
                 "metadata": { "name": "sm", "namespace": "capital-markets", "resourceVersion": "2" },
                 "spec": {
                     "clusterName": "test",
-                    "spotSchedule": {
+                    "schedule": {
                         "apiVersion": "spotschedules.5spot.finos.org/v1alpha1",
                         "kind": "CapitalMarketsSchedule",
                         "name": "nyse-equities"

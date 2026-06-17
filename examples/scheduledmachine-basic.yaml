@@ -1,11 +1,12 @@
 # Example ScheduledMachine resource
-# This machine will be active Monday-Friday, 9am-5pm Eastern Time
-# The controller will create:
+# This machine follows the TimeBasedSpotSchedule provider object "business-hours"
+# (defined in examples/timebasedspotschedule.yaml): active Monday-Friday,
+# 9am-5pm Eastern Time. The controller will create:
 #   1. A K0sWorkerConfig bootstrap resource
 #   2. A RemoteMachine infrastructure resource
 #   3. A CAPI Machine referencing both
 
-apiVersion: 5spot.finos.org/v1alpha1
+apiVersion: 5spot.finos.org/v1beta1
 kind: ScheduledMachine
 metadata:
   name: business-hours-worker
@@ -14,14 +15,18 @@ spec:
   # Name of the CAPI Cluster this machine will join
   clusterName: my-k0s-cluster
 
-  # Schedule configuration (using day/hour format)
+  # Administrative master switch (ADR 0009). When false the machine is held
+  # Disabled regardless of what the schedule provider reports. Defaults to true.
+  enabled: true
+
+  # Required reference to the spot-schedule provider that owns the
+  # active/inactive decision (ADR 0009). The group MUST be
+  # spotschedules.5spot.finos.org; the object must live in THIS namespace.
+  # The default, first-party provider is TimeBasedSpotSchedule.
   schedule:
-    daysOfWeek:
-      - mon-fri
-    hoursOfDay:
-      - "9-17"
-    timezone: America/New_York
-    enabled: true
+    apiVersion: spotschedules.5spot.finos.org/v1alpha1
+    kind: TimeBasedSpotSchedule
+    name: business-hours
 
   # Inline bootstrap specification (creates K0sWorkerConfig)
   # Name is auto-generated as: business-hours-worker

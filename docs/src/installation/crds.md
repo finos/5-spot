@@ -25,16 +25,26 @@ Or from the repository:
 kubectl apply -f https://raw.githubusercontent.com/finos/5-spot/main/deploy/crds/scheduledmachine.yaml
 ```
 
-The `ScheduledMachine` CRD serves two versions (ADR 0007): `v1beta1` (storage /
-current, adds `spec.spotSchedule` and an optional `spec.schedule`) and
-`v1alpha1` (served but **deprecated** — existing manifests keep working).
-Conversion strategy is `None`.
+The `ScheduledMachine` CRD serves a single version `v1beta1` (storage / served;
+ADR 0009 removed the former `v1alpha1`). Its `spec.schedule` is a **required
+reference** to a spot-schedule provider object in the same namespace.
+
+## TimeBasedSpotSchedule CRD (default spot-schedule provider)
+
+The **default, first-party** spot-schedule provider CRD
+(`timebasedspotschedules.spotschedules.5spot.finos.org`, ADR 0009) — the reified
+former inline schedule (day / hour / timezone windows). A `ScheduledMachine`
+references it via `spec.schedule`. Install it (ships in `deploy/crds/`):
+
+```bash
+kubectl apply -f deploy/crds/timebasedspotschedule.yaml
+```
 
 ## CapitalMarketsSchedule CRD (spot-schedule provider)
 
 The reference spot-schedule provider CRD
 (`capitalmarketsschedules.spotschedules.5spot.finos.org`, ADR 0006). Install it
-if you use `ScheduledMachine.spec.spotSchedule`:
+if a `ScheduledMachine.spec.schedule` references a `CapitalMarketsSchedule`:
 
 ```bash
 kubectl apply -f deploy/crds/capitalmarketsschedule.yaml
@@ -57,7 +67,7 @@ scheduledmachines.5spot.finos.org     2025-01-01T00:00:00Z
 
 The CRD defines the following structure:
 
-- **apiVersion**: `5spot.finos.org/v1alpha1`
+- **apiVersion**: `5spot.finos.org/v1beta1`
 - **kind**: `ScheduledMachine`
 - **spec**: Configuration for scheduling and machine management
 - **status**: Current state and conditions
@@ -72,8 +82,9 @@ If building from source, generate CRDs using:
 cargo run --bin crdgen
 ```
 
-This writes both `deploy/crds/scheduledmachine.yaml` and
-`deploy/crds/capitalmarketsschedule.yaml`.
+This writes `deploy/crds/scheduledmachine.yaml`,
+`deploy/crds/capitalmarketsschedule.yaml`, and
+`deploy/crds/timebasedspotschedule.yaml`.
 
 ## Upgrading CRDs
 

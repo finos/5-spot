@@ -21,21 +21,21 @@ operation it performs on behalf of that resource.
 document.
 
 ```yaml
-apiVersion: 5spot.finos.org/v1alpha1
+apiVersion: 5spot.finos.org/v1beta1
 kind: ScheduledMachine
 metadata:
   name: gpu-worker
   namespace: hosted-cluster-alpha
 spec:
   clusterName: alpha
+  enabled: true
   kubeconfigSecretRef:
     name: alpha-kubeconfig        # CAPI convention
     key: value                    # default — CAPI writes kubeconfig under data.value
-  schedule:
-    daysOfWeek: ["mon-fri"]
-    hoursOfDay: ["9-17"]
-    timezone: America/Toronto
-    enabled: true
+  schedule:                       # provider object lives in this namespace (ADR 0009)
+    apiVersion: spotschedules.5spot.finos.org/v1alpha1
+    kind: TimeBasedSpotSchedule
+    name: business-hours-toronto
   bootstrapSpec:
     apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
     kind: K0sWorkerConfig

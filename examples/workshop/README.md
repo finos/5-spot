@@ -92,18 +92,27 @@ root** (you run the image build — the project never builds/pushes images for y
 # Build the controller image for your host arch and load it into the kind cluster.
 make kind-load KIND_CLUSTER_NAME=5spot-mgmt
 
-# Install the CRD, the admission policy (RBAC anti-escalation guard), and the controller.
+# Install the CRDs (ScheduledMachine + the TimeBasedSpotSchedule provider CRD),
+# the admission policy (RBAC anti-escalation guard), and the controller.
 kubectl --context kind-5spot-mgmt apply -f deploy/crds/
 kubectl --context kind-5spot-mgmt apply -R -f deploy/deployment/
 kubectl --context kind-5spot-mgmt apply -f deploy/admission/validatingadmissionpolicy.yaml
 kubectl --context kind-5spot-mgmt apply -f deploy/admission/validatingadmissionpolicybinding.yaml
 
-# Point the Deployment at the image you just loaded and wait for rollout.
+# Install the default spot-schedule provider (TimeBasedSpotSchedule) — it
+# publishes the status.active that ScheduledMachine.spec.schedule consumes (ADR 0009).
+kubectl --context kind-5spot-mgmt apply -k deploy/spot-schedule-providers/time-based/
+
+# Point the Deployments at the image you just loaded and wait for rollout.
 # (make kind-load builds and loads ghcr.io/finos/5-spot:local-dev — the KIND_IMAGE.)
 kubectl --context kind-5spot-mgmt -n 5spot-system \
   set image deployment/5spot-controller controller=ghcr.io/finos/5-spot:local-dev
 kubectl --context kind-5spot-mgmt -n 5spot-system \
   rollout status deployment/5spot-controller --timeout=180s
+kubectl --context kind-5spot-mgmt -n 5spot-system \
+  set image deployment/spot-schedule-time-based provider=ghcr.io/finos/5-spot:local-dev
+kubectl --context kind-5spot-mgmt -n 5spot-system \
+  rollout status deployment/spot-schedule-time-based --timeout=180s
 ```
 
 > The shipped 5-Spot ClusterRole already grants `create` on
@@ -199,31 +208,39 @@ kubectl --kubeconfig dev-cluster.kubeconfig get node business-hours-worker \
 
 ## Part 4 — Watch scheduling actually schedule
 
-**4a. Close the window** by disabling the schedule. 5-Spot cordons + drains the
-Node, then deletes the Machine/DockerMachine/KubeadmConfig:
+**4a. Close the window** by disabling the machine (the `spec.enabled` master
+switch, ADR 0009). 5-Spot cordons + drains the Node, then deletes the
+Machine/DockerMachine/KubeadmConfig:
 
 ```bash
 kubectl --context kind-5spot-mgmt patch sm business-hours-worker \
-  --type merge -p '{"spec":{"schedule":{"enabled":false}}}'
+  --type merge -p '{"spec":{"enabled":false}}'
 
-# Phase moves Active -> ShuttingDown -> Inactive; the Node drains and disappears.
+# Phase moves Active -> ShuttingDown -> Disabled; the Node drains and disappears.
 kubectl --context kind-5spot-mgmt get sm business-hours-worker -w
 kubectl --kubeconfig dev-cluster.kubeconfig get nodes -w
 ```
 
-**4b. Re-open the window** — the worker comes back:
+**4b. Re-enable the machine** — the worker comes back:
 
 ```bash
 kubectl --context kind-5spot-mgmt patch sm business-hours-worker \
-  --type merge -p '{"spec":{"schedule":{"enabled":true}}}'
+  --type merge -p '{"spec":{"enabled":true}}'
 kubectl --kubeconfig dev-cluster.kubeconfig get nodes -w
 ```
 
-**4c. Try a real time window.** Edit the SM and set a window that does **not**
-include "now" (in your timezone) to prove time-based removal, e.g. a past hour
-range, then set it back. This is what `daysOfWeek: ["mon-fri"]` /
-`hoursOfDay: ["9-17"]` does in production — outside the window, the worker is
-gone (and you stop paying for it).
+**4c. Try a real time window.** Edit the `TimeBasedSpotSchedule business-hours`
+object and set a window that does **not** include "now" (in your timezone) to
+prove time-based removal, e.g. a past hour range, then set it back:
+
+```bash
+kubectl --context kind-5spot-mgmt patch tbss business-hours \
+  --type merge -p '{"spec":{"hoursOfDay":["0-1"]}}'
+```
+
+This is what `daysOfWeek: ["mon-fri"]` / `hoursOfDay: ["9-17"]` on the provider
+does in production — outside the window the provider reports `status.active:
+false`, so the worker is gone (and you stop paying for it).
 
 ---
 

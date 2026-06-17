@@ -218,7 +218,10 @@ nav:
 
   - Guides:
       - Kata Config Drop-In: guides/kata-config.md
-      - CapitalMarketsSchedule Provider: guides/capital-markets-schedule.md
+      - Spot Schedule Providers:
+          - TimeBasedSpotSchedule: guides/time-based-schedule.md
+          - CapitalMarketsSchedule: guides/capital-markets-schedule.md
+          - Create Your Own Provider: guides/create-your-own-provider.md
 
   - Operations:
       - Configuration: operations/configuration.md

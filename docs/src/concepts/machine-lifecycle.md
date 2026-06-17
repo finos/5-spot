@@ -10,7 +10,7 @@ stateDiagram-v2
 
     Pending --> Active: Schedule active & resources created
     Pending --> Inactive: Outside schedule window
-    Pending --> Disabled: schedule.enabled = false
+    Pending --> Disabled: spec.enabled = false
     Pending --> EmergencyRemove: killIfCommands match on node
 
     Active --> ShuttingDown: Schedule ends
@@ -23,9 +23,9 @@ stateDiagram-v2
     ShuttingDown --> Error: Shutdown error
 
     Inactive --> Active: Schedule window starts
-    Inactive --> Disabled: schedule.enabled = false
+    Inactive --> Disabled: spec.enabled = false
 
-    Disabled --> Pending: schedule.enabled = true
+    Disabled --> Pending: spec.enabled = true
 
     Terminated --> Pending: killSwitch = false
 
@@ -80,11 +80,11 @@ Machine has been **completely removed** from the cluster.
 
 ### Disabled
 
-Schedule is **disabled** by user (`schedule.enabled: false`).
+Machine is **administratively disabled** by user (`spec.enabled: false`).
 
 - No automatic state changes
 - Existing machines remain as-is
-- Re-enable by setting `schedule.enabled: true`
+- Re-enable by setting `spec.enabled: true`
 
 ### Terminated
 
@@ -103,8 +103,8 @@ user on the node started a process matching `spec.killIfCommands`.
 - Bypassed `gracefulShutdownTimeout` and `nodeDrainTimeout`
 - `kubectl drain --grace-period=0 --force --disable-eviction` ran
 - CAPI Machine deleted immediately
-- Controller auto-flips `spec.schedule.enabled = false` so the node does **not** rejoin at the next schedule window — see [Emergency Reclaim](./emergency-reclaim.md) for the full lifecycle rationale
-- Exits to `Disabled`; user returns the node to service by setting `schedule.enabled: true`
+- Controller auto-flips `spec.enabled = false` so the node does **not** rejoin at the next schedule window — see [Emergency Reclaim](./emergency-reclaim.md) for the full lifecycle rationale
+- Exits to `Disabled`; user returns the node to service by setting `spec.enabled: true`
 
 ### Error
 
@@ -142,19 +142,19 @@ Pending / Active / ShuttingDown → EmergencyRemove
 
 EmergencyRemove → Disabled
   (non-graceful drain + Machine delete complete,
-   controller auto-flipped spec.schedule.enabled = false)
+   controller auto-flipped spec.enabled = false)
 
-Disabled → Pending (when the user sets schedule.enabled = true)
+Disabled → Pending (when the user sets spec.enabled = true)
 ```
 
 See [Emergency Reclaim](./emergency-reclaim.md) for a dedicated walk-through, sequence
 diagram, and the rationale for why the exit is `Disabled` rather than `Pending`.
 
-### Schedule Disabled Flow
+### Administratively Disabled Flow
 
 ```
-Any Phase → Disabled (when enabled: false)
-Disabled → Pending (when enabled: true, re-evaluate schedule)
+Any Phase → Disabled (when spec.enabled: false)
+Disabled → Pending (when spec.enabled: true, re-evaluate schedule)
 ```
 
 ### Error Recovery

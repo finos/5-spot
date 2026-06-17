@@ -20,13 +20,14 @@
 # See docs/src/concepts/child-cluster-kubeconfig.md for the full
 # resolution order, threat model, and limitations.
 
-apiVersion: 5spot.finos.org/v1alpha1
+apiVersion: 5spot.finos.org/v1beta1
 kind: ScheduledMachine
 metadata:
   name: gpu-worker
   namespace: hosted-cluster-alpha
 spec:
   clusterName: alpha
+  enabled: true
 
   # Explicit ref. Could be omitted: 5-Spot would then auto-discover
   # the Secret `<clusterName>-kubeconfig` (`alpha-kubeconfig`) in this
@@ -35,13 +36,13 @@ spec:
     name: alpha-kubeconfig
     key: value             # default; CAPI convention
 
+  # Required reference to the spot-schedule provider (ADR 0009). The provider
+  # object lives on the MANAGEMENT cluster in this SM's namespace
+  # (hosted-cluster-alpha) — see examples/timebasedspotschedule.yaml.
   schedule:
-    daysOfWeek:
-      - mon-fri
-    hoursOfDay:
-      - "9-17"
-    timezone: America/Toronto
-    enabled: true
+    apiVersion: spotschedules.5spot.finos.org/v1alpha1
+    kind: TimeBasedSpotSchedule
+    name: business-hours-toronto
 
   bootstrapSpec:
     apiVersion: bootstrap.cluster.x-k8s.io/v1beta1

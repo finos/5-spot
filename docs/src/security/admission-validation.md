@@ -76,16 +76,16 @@ The binding can be scoped to specific namespaces if needed — see
 
 ## Validation Rules
 
-The policy's `matchConstraints` cover **both served `ScheduledMachine`
-versions** — `v1alpha1` and `v1beta1` (ADR 0007). This matters: a version
-omitted from `apiVersions` would **bypass every rule below**, so when `v1beta1`
-became the storage/current version it was added here.
+The policy's `matchConstraints` cover the **single served `ScheduledMachine`
+version** — `v1beta1` only (ADR 0009 removed the pre-release `v1alpha1`). This
+matters: a version omitted from `apiVersions` would **bypass every rule below**.
 
-Because `spec.schedule` is **optional** since `v1beta1` (a machine may instead
-delegate to a `spotSchedule` provider, ADR 0006), every schedule rule is guarded
-with `!has(object.spec.schedule) || …` so a valid `spotSchedule`-only machine is
-not rejected. The "at least one activation source" and provider group-pin rules
-(7a / 7b below) backstop that.
+Since ADR 0009, `spec.schedule` is a **required reference** to a spot-schedule
+provider object (the former inline time window moved to the
+`TimeBasedSpotSchedule` provider CRD, which carries its own day/hour/timezone
+schema validation). The only `ScheduledMachine`-side schedule invariant left for
+this policy is the **provider group pin** (rule 4 below); `spec.schedule`'s
+presence and structural shape are enforced by the CRD schema itself.
 
 Every rule must pass for the request to be admitted.  Rules are evaluated
 against `object` (the incoming resource) in the order listed.
@@ -95,11 +95,7 @@ against `object` (the incoming resource) in the order listed.
 | 1 | `spec.clusterName` | Must not be empty | `spec.clusterName must not be empty` |
 | 2 | `spec.gracefulShutdownTimeout` | Must match `^\d+[smh]$` | `must be a duration string such as '5m', '30s', or '1h'` |
 | 3 | `spec.nodeDrainTimeout` | Must match `^\d+[smh]$` | `must be a duration string such as '5m', '30s', or '1h'` |
-| 4 | `spec.schedule` | Both `daysOfWeek` and `hoursOfDay` must be non-empty | `both daysOfWeek and hoursOfDay must be non-empty` |
-| 5 | `spec.schedule.daysOfWeek[]` | Each item matches `mon\|tue\|…` with optional range/combo | `must be day names or ranges (e.g. 'mon', 'mon-fri', 'mon-wed,fri-sun')` |
-| 6 | `spec.schedule.hoursOfDay[]` | Each item matches `\d{1,2}(-\d{1,2})?` with optional combo | `must be hours or ranges (e.g. '9', '9-17', '0-9,18-23')` |
-| 7a | `spec.schedule` / `spec.spotSchedule` | At least one must be set | `at least one of spec.schedule or spec.spotSchedule must be set` |
-| 7b | `spec.spotSchedule.apiVersion` | Group must be `spotschedules.5spot.finos.org` (when `spotSchedule` is set) | `spec.spotSchedule.apiVersion group must be spotschedules.5spot.finos.org` |
+| 4 | `spec.schedule.apiVersion` | Provider group must be `spotschedules.5spot.finos.org` | `spec.schedule.apiVersion group must be spotschedules.5spot.finos.org` |
 | 7 | `spec.bootstrapSpec.apiVersion` | Must contain `/` — core API versions (`v1`) are rejected | `must use a namespaced API group` |
 | 8 | `spec.bootstrapSpec.apiVersion` | Group must be `bootstrap.cluster.x-k8s.io` or `k0smotron.io` | `must be from an allowed group` |
 | 9 | `spec.bootstrapSpec.kind` | Must not be empty | `spec.bootstrapSpec.kind must not be empty` |
@@ -137,23 +133,27 @@ gracefulShutdownTimeout: "5 m"  # ❌  rejected — space not allowed
 gracefulShutdownTimeout: "five" # ❌  rejected — not a number
 ```
 
-#### Rule 4 — Schedule window must be complete
+#### Rule 4 — Schedule provider group pin
 
-Both `daysOfWeek` and `hoursOfDay` must be non-empty. A schedule with only
-days and no hours (or vice versa) is not meaningful.
+`spec.schedule` is a **required reference** to a spot-schedule provider object
+(ADR 0009). Its `apiVersion` group **must** be `spotschedules.5spot.finos.org` —
+providers are untrusted inputs and the controller's read-only RBAC is scoped to
+exactly this group. The day/hour/timezone window now lives on the referenced
+`TimeBasedSpotSchedule` provider CRD, which validates it in its own schema; the
+`ScheduledMachine` only carries the reference.
 
 ```yaml
-# ✅ Valid
+# ✅ Valid — references the default first-party provider
 schedule:
-  daysOfWeek: ["mon-fri"]
-  hoursOfDay: ["9-17"]
-  timezone: "America/Toronto"
-  enabled: true
+  apiVersion: spotschedules.5spot.finos.org/v1alpha1
+  kind: TimeBasedSpotSchedule
+  name: business-hours
 
-# ❌ Rejected by rule 4 — hoursOfDay missing
+# ❌ Rejected by rule 4 — wrong group
 schedule:
-  daysOfWeek: ["mon-fri"]
-  # hoursOfDay missing — rule 4 rejects this
+  apiVersion: example.com/v1
+  kind: SomeSchedule
+  name: nope
 ```
 
 #### Rules 7–8, 10–11 — Provider API group allowlist
@@ -465,18 +465,18 @@ attempted violation, which is useful for SIEM alerting.
 
 ```bash
 kubectl apply -f - <<'EOF'
-apiVersion: 5spot.finos.org/v1alpha1
+apiVersion: 5spot.finos.org/v1beta1
 kind: ScheduledMachine
 metadata:
   name: test-valid
   namespace: default
 spec:
   clusterName: my-cluster
+  enabled: true
   schedule:
-    daysOfWeek: ["mon-fri"]
-    hoursOfDay: ["9-17"]
-    timezone: "America/Toronto"
-    enabled: true
+    apiVersion: spotschedules.5spot.finos.org/v1alpha1
+    kind: TimeBasedSpotSchedule
+    name: business-hours
   bootstrapSpec:
     apiVersion: k0smotron.io/v1beta1
     kind: K0sWorkerConfig
@@ -496,18 +496,18 @@ Expected: `scheduledmachine.5spot.finos.org/test-valid created`
 
 ```bash
 kubectl apply -f - <<'EOF'
-apiVersion: 5spot.finos.org/v1alpha1
+apiVersion: 5spot.finos.org/v1beta1
 kind: ScheduledMachine
 metadata:
   name: test-bad-duration
   namespace: default
 spec:
   clusterName: my-cluster
+  enabled: true
   schedule:
-    daysOfWeek: ["mon-fri"]
-    hoursOfDay: ["9-17"]
-    timezone: "UTC"
-    enabled: true
+    apiVersion: spotschedules.5spot.finos.org/v1alpha1
+    kind: TimeBasedSpotSchedule
+    name: business-hours
   bootstrapSpec:
     apiVersion: k0smotron.io/v1beta1
     kind: K0sWorkerConfig
@@ -533,18 +533,18 @@ The ScheduledMachine "test-bad-duration" is invalid:
 
 ```bash
 kubectl apply -f - <<'EOF'
-apiVersion: 5spot.finos.org/v1alpha1
+apiVersion: 5spot.finos.org/v1beta1
 kind: ScheduledMachine
 metadata:
   name: test-bad-apigroup
   namespace: default
 spec:
   clusterName: my-cluster
+  enabled: true
   schedule:
-    daysOfWeek: ["mon-fri"]
-    hoursOfDay: ["9-17"]
-    timezone: "UTC"
-    enabled: true
+    apiVersion: spotschedules.5spot.finos.org/v1alpha1
+    kind: TimeBasedSpotSchedule
+    name: business-hours
   bootstrapSpec:
     apiVersion: rbac.authorization.k8s.io/v1   # ❌ not an allowed group
     kind: ClusterRole
@@ -566,22 +566,22 @@ The ScheduledMachine "test-bad-apigroup" is invalid:
   group: bootstrap.cluster.x-k8s.io or k0smotron.io
 ```
 
-### Test incomplete schedule window (rule 4)
+### Test wrong schedule provider group (rule 4)
 
 ```bash
 kubectl apply -f - <<'EOF'
-apiVersion: 5spot.finos.org/v1alpha1
+apiVersion: 5spot.finos.org/v1beta1
 kind: ScheduledMachine
 metadata:
-  name: test-incomplete-schedule
+  name: test-bad-schedule-group
   namespace: default
 spec:
   clusterName: my-cluster
+  enabled: true
   schedule:
-    daysOfWeek: ["mon-fri"]
-    # hoursOfDay missing — ❌ rejected by rule 4
-    timezone: "UTC"
-    enabled: true
+    apiVersion: example.com/v1   # ❌ wrong group — rejected by rule 4
+    kind: SomeSchedule
+    name: nope
   bootstrapSpec:
     apiVersion: k0smotron.io/v1beta1
     kind: K0sWorkerConfig
@@ -598,8 +598,9 @@ EOF
 Expected error:
 
 ```
-The ScheduledMachine "test-incomplete-schedule" is invalid:
-  spec.schedule: Invalid value: ...: both daysOfWeek and hoursOfDay must be non-empty
+The ScheduledMachine "test-bad-schedule-group" is invalid:
+  spec.schedule: Invalid value: ...: spec.schedule.apiVersion group must be
+  spotschedules.5spot.finos.org
 ```
 
 ---

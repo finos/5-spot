@@ -1,0 +1,25 @@
+# Least-privilege ClusterRole for the TimeBasedSpotSchedule provider.
+#
+# The provider watches TimeBasedSpotSchedule objects (which live in tenant
+# namespaces alongside the ScheduledMachines that reference them) and writes ONLY
+# their /status subresource. It never reads or writes any other resource, and
+# never writes the TimeBasedSpotSchedule spec — operators/GitOps own the
+# window spec; the provider owns only the computed status (ADR 0006 §6: the
+# provider's own controller holds update/patch on its kind's /status).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spot-schedule-time-based
+  labels:
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: spot-schedule-provider
+rules:
+  # Watch the schedule objects across all namespaces (read-only on the spec).
+  - apiGroups: ["spotschedules.5spot.finos.org"]
+    resources: ["timebasedspotschedules"]
+    verbs: ["get", "list", "watch"]
+
+  # Publish the computed status.active (and conditions / transition times).
+  - apiGroups: ["spotschedules.5spot.finos.org"]
+    resources: ["timebasedspotschedules/status"]
+    verbs: ["get", "update", "patch"]

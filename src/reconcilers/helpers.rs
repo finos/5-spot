@@ -24,8 +24,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, Datelike, Timelike, Utc};
-use chrono_tz::Tz;
+use chrono::{DateTime, Utc};
 use k8s_openapi::api::authorization::v1::{
     ResourceAttributes, SelfSubjectAccessReview, SelfSubjectAccessReviewSpec,
 };
@@ -109,94 +108,31 @@ pub fn should_process_resource(
 // Schedule evaluation
 // ============================================================================
 
-/// Evaluate if a machine should be active based on schedule
+/// Resolve the single spot-schedule provider verdict into the final
+/// should-be-active decision (ADR 0009).
 ///
-/// # Errors
-/// Returns error if timezone is invalid or weekday/hour parsing fails
-pub fn evaluate_schedule(
-    schedule: &crate::crd::ScheduleSpec,
-    check_time: Option<DateTime<Utc>>,
-) -> Result<bool, ReconcilerError> {
-    if !schedule.enabled {
-        return Ok(false);
-    }
-
-    let now = check_time.unwrap_or_else(Utc::now);
-
-    // Parse timezone
-    let tz: Tz = schedule.timezone.parse().map_err(|_| {
-        ReconcilerError::ScheduleError(format!("Invalid timezone: {}", schedule.timezone))
-    })?;
-
-    let current_time = now.with_timezone(&tz);
-
-    // Check weekday (Monday = 0, Sunday = 6)
-    #[allow(clippy::cast_possible_truncation)]
-    let current_weekday = current_time.weekday().num_days_from_monday() as u8;
-    let allowed_weekdays = schedule
-        .get_active_weekdays()
-        .map_err(|e| ReconcilerError::ScheduleError(format!("Failed to parse weekdays: {e}")))?
-        .ok_or_else(|| ReconcilerError::ScheduleError("No weekday schedule defined".to_string()))?;
-
-    debug!(
-        current_weekday = current_weekday,
-        allowed_weekdays = ?allowed_weekdays,
-        "Weekday check"
-    );
-
-    if !allowed_weekdays.contains(&current_weekday) {
-        return Ok(false);
-    }
-
-    // Check hour
-    #[allow(clippy::cast_possible_truncation)]
-    let current_hour = current_time.hour() as u8;
-    let allowed_hours = schedule
-        .get_active_hours()
-        .map_err(|e| ReconcilerError::ScheduleError(format!("Failed to parse hours: {e}")))?
-        .ok_or_else(|| ReconcilerError::ScheduleError("No hour schedule defined".to_string()))?;
-
-    debug!(
-        current_hour = current_hour,
-        allowed_hours = ?allowed_hours,
-        "Hour check"
-    );
-
-    Ok(allowed_hours.contains(&current_hour))
-}
-
-/// Fold the time-based schedule result and the spot-schedule provider verdict
-/// into the final should-be-active decision (ADR 0006 §3).
+/// Since ADR 0009 a machine's activation is governed entirely by the one
+/// provider named by `spec.schedule`; there is no inline time window to AND
+/// with. `killSwitch` (terminal) and `spec.enabled` (lifecycle Disabled gate)
+/// are handled earlier in the reconcile loop and are not inputs here.
 ///
-/// - `schedule_active` is `Some(bool)` from [`evaluate_schedule`] when an inline
-///   `spec.schedule` is set, or `None` for a `spotSchedule`-only machine (no
-///   time constraint ⇒ the schedule axis is treated as "in window").
-/// - `verdict` is the resolved provider verdict when `spec.spotSchedule` is set,
-///   or `None` (no provider constraint).
+/// - `verdict` is the resolved provider verdict for `spec.schedule`.
 /// - `last_known_spot_active` is `status.spotSchedule.active` — the value held
 ///   while the provider is **Unresolved** (hold-last-state; `None` /
-///   never-resolved ⇒ fail-inactive).
-///
-/// The two axes compose with logical **AND**. `killSwitch` precedence is handled
-/// earlier in the reconcile loop (terminal) and is not an input here. At least
-/// one of `schedule_active` / `verdict` is always `Some` in practice
-/// (`validate_activation_source` rejects a machine with neither source).
+///   never-resolved ⇒ fail-inactive, per ADR 0006 §4).
 #[must_use]
 pub fn compose_should_be_active(
-    schedule_active: Option<bool>,
-    verdict: Option<&crate::reconcilers::spot_schedule::SpotScheduleVerdict>,
+    verdict: &crate::reconcilers::spot_schedule::SpotScheduleVerdict,
     last_known_spot_active: Option<bool>,
 ) -> bool {
     use crate::reconcilers::spot_schedule::SpotScheduleVerdict;
 
-    let schedule_component = schedule_active.unwrap_or(true);
-    let spot_component = match verdict {
-        None | Some(SpotScheduleVerdict::Active { .. }) => true,
-        Some(SpotScheduleVerdict::Inactive { .. }) => false,
+    match verdict {
+        SpotScheduleVerdict::Active { .. } => true,
+        SpotScheduleVerdict::Inactive { .. } => false,
         // Hold last known state while unresolved; never-resolved ⇒ fail-inactive.
-        Some(SpotScheduleVerdict::Unresolved { .. }) => last_known_spot_active.unwrap_or(false),
-    };
-    schedule_component && spot_component
+        SpotScheduleVerdict::Unresolved { .. } => last_known_spot_active.unwrap_or(false),
+    }
 }
 
 // ============================================================================
@@ -1142,42 +1078,32 @@ pub fn validate_api_group(
     Ok(())
 }
 
-/// Validate that a `ScheduledMachine` declares at least one activation source —
-/// `spec.schedule` or `spec.spotSchedule` — and that a `spotSchedule` reference
-/// targets the pinned provider group.
+/// Validate that a `ScheduledMachine`'s required `spec.schedule` reference
+/// targets the pinned spot-schedule provider group (ADR 0009).
 ///
-/// This mirrors the CRD's spec-level CEL rules
-/// (`has(self.schedule) || has(self.spotSchedule)` and the
-/// `spotschedules.5spot.finos.org` group pin). The kube-apiserver enforces
-/// those CEL rules at admission on clusters >= 1.25 — note this is **CRD
-/// structural-schema validation, not a ValidatingAdmissionPolicy**, so it holds
-/// without VAP enabled. This runtime guard keeps the invariant defence-in-depth
-/// regardless: it still holds on a pre-CEL apiserver, for objects stored before
-/// the rule was added (the apiserver does not re-validate on read), and against
-/// direct API writes — matching the runtime `validate_*` posture the controller
-/// already applies for `clusterName` and `killIfCommands`.
+/// This mirrors the CRD's per-field CEL group pin
+/// (`spec.schedule.apiVersion startsWith 'spotschedules.5spot.finos.org/'`). The
+/// kube-apiserver enforces it at admission on clusters >= 1.25 — note this is
+/// **CRD structural-schema validation, not a ValidatingAdmissionPolicy**, so it
+/// holds without VAP enabled. This runtime guard keeps the invariant
+/// defence-in-depth regardless: it still holds on a pre-CEL apiserver, for
+/// objects stored before the rule was added (the apiserver does not re-validate
+/// on read), and against direct API writes — matching the runtime `validate_*`
+/// posture the controller already applies for `clusterName` and
+/// `killIfCommands`.
 ///
 /// # Errors
-/// [`ReconcilerError::ValidationError`] if neither activation source is set, or
-/// if `spotSchedule.apiVersion`'s group is not `spotschedules.5spot.finos.org`.
-pub fn validate_activation_source(
-    schedule: Option<&crate::crd::ScheduleSpec>,
-    spot_schedule: Option<&crate::crd::SpotScheduleRef>,
+/// [`ReconcilerError::ValidationError`] if `spec.schedule.apiVersion`'s group is
+/// not `spotschedules.5spot.finos.org`.
+pub fn validate_schedule_ref(
+    schedule: &crate::crd::SpotScheduleRef,
 ) -> Result<(), ReconcilerError> {
-    if schedule.is_none() && spot_schedule.is_none() {
-        return Err(ReconcilerError::ValidationError(
-            "at least one of spec.schedule or spec.spotSchedule must be set".to_string(),
-        ));
-    }
-
-    if let Some(reference) = spot_schedule {
-        if !reference.is_spot_schedule_group() {
-            return Err(ReconcilerError::ValidationError(format!(
-                "spec.spotSchedule.apiVersion group must be '{}', got '{}'",
-                crate::constants::SPOT_SCHEDULE_API_GROUP,
-                reference.group()
-            )));
-        }
+    if !schedule.is_spot_schedule_group() {
+        return Err(ReconcilerError::ValidationError(format!(
+            "spec.schedule.apiVersion group must be '{}', got '{}'",
+            crate::constants::SPOT_SCHEDULE_API_GROUP,
+            schedule.group()
+        )));
     }
 
     Ok(())
@@ -2410,18 +2336,16 @@ pub fn build_clear_reclaim_patch() -> serde_json::Value {
 /// `docs/roadmaps/5spot-emergency-reclaim-by-process-match.md` Phase 3 and
 /// Open Question 6.
 ///
-/// Merge-patch shape is deliberately narrow: only `spec.schedule.enabled`
-/// is addressed. Siblings under `spec.schedule` (`daysOfWeek`,
-/// `hoursOfDay`, `timezone`) and siblings under `spec` (`killSwitch`,
-/// `killIfCommands`, `bootstrapSpec`, `infrastructureSpec`, ...) are
-/// untouched.
+/// Merge-patch shape is deliberately narrow: only the SM-scoped `spec.enabled`
+/// master switch is addressed (ADR 0009). Siblings under `spec` (`schedule`,
+/// `killSwitch`, `killIfCommands`, `bootstrapSpec`, `infrastructureSpec`, ...)
+/// are untouched. The referenced provider object is never patched — it may be
+/// shared by other `ScheduledMachine`s, so the loop-breaker must stay SM-scoped.
 #[must_use]
 pub fn build_disable_schedule_patch() -> serde_json::Value {
     json!({
         "spec": {
-            "schedule": {
-                "enabled": false,
-            }
+            "enabled": false,
         }
     })
 }
@@ -2477,7 +2401,7 @@ pub fn build_emergency_disable_schedule_event() -> KubeEvent {
         type_: EventType::Warning,
         reason: crate::constants::REASON_EMERGENCY_RECLAIM_DISABLED_SCHEDULE.to_string(),
         note: Some(
-            "spec.schedule.enabled flipped to false to break the \
+            "spec.enabled flipped to false to break the \
              eject→re-add→re-eject loop. Re-enable is a user action."
                 .to_string(),
         ),
@@ -2501,7 +2425,7 @@ pub fn build_rapid_re_reclaim_event(name: &str) -> KubeEvent {
         note: Some(format!(
             "ScheduledMachine {name} has been emergency-reclaimed {} or more times within \
              {} seconds. The conflicting process is likely still running on the node — \
-             stop it before re-enabling spec.schedule.enabled, or the agent will fire again \
+             stop it before re-enabling spec.enabled, or the agent will fire again \
              on the next reconcile.",
             crate::constants::RAPID_RE_RECLAIM_THRESHOLD,
             crate::constants::RAPID_RE_RECLAIM_WINDOW_SECS,
@@ -2770,7 +2694,7 @@ async fn patch_disable_schedule(
                 resource = %name,
                 namespace = %namespace,
                 error = %e,
-                "Failed to PATCH spec.schedule.enabled=false — reclaim loop not broken; retrying"
+                "Failed to PATCH spec.enabled=false — reclaim loop not broken; retrying"
             );
             ReconcilerError::KubeError(e)
         })?;

@@ -12,21 +12,21 @@
 #   2. `node.kubernetes.io/unschedulable` — reserved kubelet prefix (rule 18)
 #   3. duplicate `(workload, NoSchedule)` entries — uniqueness (rule 19)
 
-apiVersion: 5spot.finos.org/v1alpha1
+apiVersion: 5spot.finos.org/v1beta1
 kind: ScheduledMachine
 metadata:
   name: bad-taint-example
   namespace: default
 spec:
   clusterName: my-k0s-cluster
+  enabled: true
 
+  # The schedule reference itself is valid here — only the nodeTaints below are
+  # intentionally bad. References the TimeBasedSpotSchedule "business-hours".
   schedule:
-    daysOfWeek:
-      - mon-fri
-    hoursOfDay:
-      - "9-17"
-    timezone: UTC
-    enabled: true
+    apiVersion: spotschedules.5spot.finos.org/v1alpha1
+    kind: TimeBasedSpotSchedule
+    name: business-hours
 
   bootstrapSpec:
     apiVersion: bootstrap.cluster.x-k8s.io/v1beta1

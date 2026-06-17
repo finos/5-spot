@@ -8,21 +8,21 @@
 # Taint identity is the tuple (key, effect). Same key with different effects
 # is permitted; duplicate (key, effect) pairs are rejected.
 
-apiVersion: 5spot.finos.org/v1alpha1
+apiVersion: 5spot.finos.org/v1beta1
 kind: ScheduledMachine
 metadata:
   name: batch-worker-tainted
   namespace: default
 spec:
   clusterName: my-k0s-cluster
+  enabled: true
 
+  # Active/inactive decision is delegated to the TimeBasedSpotSchedule provider
+  # object "business-hours" (examples/timebasedspotschedule.yaml), same namespace.
   schedule:
-    daysOfWeek:
-      - mon-fri
-    hoursOfDay:
-      - "9-17"
-    timezone: America/New_York
-    enabled: true
+    apiVersion: spotschedules.5spot.finos.org/v1alpha1
+    kind: TimeBasedSpotSchedule
+    name: business-hours
 
   bootstrapSpec:
     apiVersion: bootstrap.cluster.x-k8s.io/v1beta1

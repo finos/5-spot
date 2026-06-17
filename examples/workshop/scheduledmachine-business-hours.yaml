@@ -5,9 +5,28 @@
 #   1. KubeadmConfig  (bootstrap.cluster.x-k8s.io)      — generates the kubeadm join
 #   2. DockerMachine  (infrastructure.cluster.x-k8s.io) — the worker container
 #   3. Machine        (cluster.x-k8s.io)                — ties the two to the Cluster
-# When the window CLOSES (or enabled:false / killSwitch), 5-Spot drains the Node
-# (via the auto-discovered dev-cluster-kubeconfig Secret) and deletes all three.
-apiVersion: 5spot.finos.org/v1alpha1
+# When the window CLOSES (or spec.enabled:false / killSwitch), 5-Spot drains the
+# Node (via the auto-discovered dev-cluster-kubeconfig Secret) and deletes all
+# three.
+#
+# Since ADR 0009 the day/hour window lives on a TimeBasedSpotSchedule provider
+# object (the first doc below); the ScheduledMachine references it by name.
+apiVersion: spotschedules.5spot.finos.org/v1alpha1
+kind: TimeBasedSpotSchedule
+metadata:
+  name: business-hours
+  namespace: default
+spec:
+  # ── WORKSHOP setting: always-on, so the worker joins immediately. ─────────
+  daysOfWeek: ["mon-sun"]
+  hoursOfDay: ["0-23"]
+  # ── Real "business hours" setting — uncomment to only run Mon–Fri 9am–5pm: ─
+  # daysOfWeek: ["mon-fri"]
+  # hoursOfDay: ["9-17"]
+  timezone: "UTC"
+  enabled: true
+---
+apiVersion: 5spot.finos.org/v1beta1
 kind: ScheduledMachine
 metadata:
   name: business-hours-worker
@@ -18,15 +37,15 @@ spec:
   # which it uses to drain/taint the Node on the workload cluster.
   clusterName: dev-cluster
 
+  # Administrative master switch (ADR 0009). Defaults to true.
+  enabled: true
+
+  # Required reference to the TimeBasedSpotSchedule provider object above
+  # (same namespace). Its status.active is this machine's active/inactive verdict.
   schedule:
-    # ── WORKSHOP setting: always-on, so the worker joins immediately. ─────────
-    daysOfWeek: ["mon-sun"]
-    hoursOfDay: ["0-23"]
-    # ── Real "business hours" setting — uncomment to only run Mon–Fri 9am–5pm: ─
-    # daysOfWeek: ["mon-fri"]
-    # hoursOfDay: ["9-17"]
-    timezone: "UTC"
-    enabled: true
+    apiVersion: spotschedules.5spot.finos.org/v1alpha1
+    kind: TimeBasedSpotSchedule
+    name: business-hours
 
   # Bootstrap: a kubeadm worker join config. 5-Spot creates this as a concrete
   # KubeadmConfig (not a template) named business-hours-worker.

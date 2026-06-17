@@ -4,7 +4,7 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0006 — Pluggable spot-schedule provider contract via `spec.spotSchedule` and the `spotschedules.5spot.finos.org` API group
 
-- **Status:** Accepted
+- **Status:** Accepted (§1 and §3 amended by ADR [0009](./0009-unify-schedule-as-provider-reference.md))
 - **Date:** 2026-06-13
 - **Deciders:** Erick Bourgeois, 5-Spot team
 - **Supersedes:** —

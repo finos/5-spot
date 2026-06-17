@@ -1,19 +1,16 @@
-# Example ScheduledMachine driven by an external spot-schedule provider
-# (spec.spotSchedule) — ADR 0006.
+# Example ScheduledMachine driven by the CapitalMarketsSchedule spot-schedule
+# provider (ADR 0006, ADR 0009).
 #
-# This machine delegates its active/inactive decision to a
+# This machine delegates its active/inactive decision entirely to a
 # CapitalMarketsSchedule provider object named "nyse-equities" in the SAME
 # namespace (see examples/capitalmarketsschedule.yaml). The 5-Spot controller
-# watches that provider and reads only its duck-typed `status.active`.
+# watches that provider and reads only its duck-typed `status.active` — the
+# provider alone decides; there is no longer an inline time window to compose
+# with (ADR 0009 reified the former inline schedule into the
+# TimeBasedSpotSchedule provider).
 #
-# Because BOTH spec.schedule and spec.spotSchedule are set here, the machine is
-# active only when the time window AND the provider both agree (logical AND):
-# "the market is open (provider) AND it is 09:00-17:00 local (schedule)".
-# Drop the `schedule` block to let the provider decide alone (a spotSchedule-
-# only machine). At least one of schedule / spotSchedule is required.
-#
-# NOTE: this manifest uses 5spot.finos.org/v1beta1 — spec.spotSchedule does NOT
-# exist on the deprecated v1alpha1 version.
+# To follow a plain day/hour window instead of an exchange calendar, reference a
+# TimeBasedSpotSchedule here instead (see examples/timebasedspotschedule.yaml).
 
 apiVersion: 5spot.finos.org/v1beta1
 kind: ScheduledMachine
@@ -22,23 +19,16 @@ metadata:
   namespace: capital-markets
 spec:
   clusterName: my-k0s-cluster
+  enabled: true
 
-  # Delegate the active/inactive decision to an exchange-calendar provider.
-  # The group MUST be spotschedules.5spot.finos.org (CEL-enforced); any served
-  # version is accepted. The object must live in this SM's namespace.
-  spotSchedule:
+  # Required reference to the spot-schedule provider that owns the
+  # active/inactive decision (ADR 0009). The group MUST be
+  # spotschedules.5spot.finos.org (CEL-enforced); any served version is
+  # accepted. The object must live in this SM's namespace.
+  schedule:
     apiVersion: spotschedules.5spot.finos.org/v1alpha1
     kind: CapitalMarketsSchedule
     name: nyse-equities
-
-  # Optional inline schedule, AND-composed with the provider above.
-  schedule:
-    daysOfWeek:
-      - mon-fri
-    hoursOfDay:
-      - "9-17"
-    timezone: America/New_York
-    enabled: true
 
   bootstrapSpec:
     apiVersion: bootstrap.cluster.x-k8s.io/v1beta1

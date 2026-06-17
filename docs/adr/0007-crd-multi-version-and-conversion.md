@@ -4,7 +4,7 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0007 — CRD multi-version support with `None` conversion and additive-only evolution
 
-- **Status:** Accepted
+- **Status:** Accepted (amended by ADR [0009](./0009-unify-schedule-as-provider-reference.md): `ScheduledMachine` collapsed to a single served version pre-release; the multi-version machinery remains for post-release evolution)
 - **Date:** 2026-06-13
 - **Deciders:** Erick Bourgeois, 5-Spot team
 - **Supersedes:** —

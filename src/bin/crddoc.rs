@@ -4,13 +4,13 @@
 //!
 //! Offline tool that emits a Markdown API reference for the `ScheduledMachine`
 //! custom resource to `stdout`.  The output is committed to
-//! `docs/reference/api.md` so that documentation consumers do not need a
+//! `docs/src/reference/api.md` so that documentation consumers do not need a
 //! running Rust toolchain.
 //!
 //! ## Usage
 //!
 //! ```bash
-//! cargo run --bin crddoc > docs/reference/api.md
+//! cargo run --bin crddoc > docs/src/reference/api.md
 //! ```
 //!
 //! Re-run this binary whenever the `ScheduledMachine` spec changes (fields
@@ -42,18 +42,15 @@ fn main() {
     println!("### API Group and Version");
     println!();
     println!("- **API Group**: `5spot.finos.org`");
-    println!("- **API Version**: `v1beta1` (storage/current), `v1alpha1` (served, deprecated)");
+    println!("- **API Version**: `v1beta1` (single served/storage version)");
     println!("- **Kind**: `ScheduledMachine`");
     println!();
-    println!("> The CRD serves two versions (ADR 0007). `v1beta1` is the storage version and adds");
-    println!("> `spec.spotSchedule` plus an optional `spec.schedule`; `v1alpha1` is frozen and");
-    println!(
-        "> deprecated (existing `5spot.finos.org/v1alpha1` manifests continue to apply but have"
-    );
-    println!(
-        "> neither field). Conversion strategy is `None` — versions round-trip losslessly because"
-    );
-    println!("> `v1beta1` is a superset.");
+    println!("> Since ADR 0009, `spec.schedule` is a **required reference** to a spot-schedule");
+    println!("> provider object (in the `spotschedules.5spot.finos.org` group) that owns the");
+    println!("> machine's active/inactive decision. The former inline time window is now the");
+    println!("> first-party `TimeBasedSpotSchedule` provider; `CapitalMarketsSchedule` and");
+    println!("> third-party providers are referenced the same way. The pre-release `v1alpha1`");
+    println!("> `ScheduledMachine` version was dropped (ADR 0009 amends ADR 0007).");
     println!();
     println!("### Example");
     println!();
@@ -65,19 +62,13 @@ fn main() {
     println!("  namespace: default");
     println!("spec:");
     println!("  clusterName: my-cluster");
-    println!("  # Optional: delegate the active/inactive decision to an external provider");
-    println!("  # (ADR 0006). AND-composed with `schedule` when both are present.");
-    println!("  spotSchedule:");
-    println!("    apiVersion: spotschedules.5spot.finos.org/v1alpha1");
-    println!("    kind: CapitalMarketsSchedule");
-    println!("    name: nyse-equities");
+    println!("  enabled: true");
+    println!("  # Required: reference the spot-schedule provider that owns the");
+    println!("  # active/inactive decision (ADR 0009). The default is TimeBasedSpotSchedule.");
     println!("  schedule:");
-    println!("    daysOfWeek:");
-    println!("      - mon-fri");
-    println!("    hoursOfDay:");
-    println!("      - 9-17");
-    println!("    timezone: America/New_York");
-    println!("    enabled: true");
+    println!("    apiVersion: spotschedules.5spot.finos.org/v1alpha1");
+    println!("    kind: TimeBasedSpotSchedule");
+    println!("    name: weekdays-9-5");
     println!("  bootstrapSpec:");
     println!("    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1");
     println!("    kind: K0sWorkerConfig");
@@ -114,56 +105,59 @@ fn main() {
     println!("    name: kata-drop-in");
     println!("```");
     println!();
-    println!("### Spec Fields");
+    println!("The referenced provider object lives in the same namespace. The default,");
+    println!("first-party provider is `TimeBasedSpotSchedule`:");
     println!();
-    println!("> **At least one of `schedule` / `spotSchedule` is required** (CEL-enforced). When");
-    println!("> both are set the machine is active only when the time window **and** the provider");
-    println!("> both agree (logical AND); `killSwitch` always overrides.");
+    println!("```yaml");
+    println!("apiVersion: spotschedules.5spot.finos.org/v1alpha1");
+    println!("kind: TimeBasedSpotSchedule");
+    println!("metadata:");
+    println!("  name: weekdays-9-5");
+    println!("  namespace: default");
+    println!("spec:");
+    println!("  daysOfWeek:");
+    println!("    - mon-fri");
+    println!("  hoursOfDay:");
+    println!("    - 9-17");
+    println!("  timezone: America/New_York");
+    println!("  enabled: true");
+    println!("```");
+    println!();
+    println!("### Spec Fields");
     println!();
     println!("#### schedule");
     println!();
+    println!("(required, object) Reference to the spot-schedule provider object that owns this");
+    println!("machine's active/inactive decision (ADR 0009). The 5-Spot controller watches the");
     println!(
-        "Inline time-based scheduling configuration. **Optional since `v1beta1`** — a machine"
+        "referenced object and reads only its duck-typed `status.active` (and `Ready` condition)"
     );
-    println!("may instead delegate its decision to a `spotSchedule` provider.");
-    println!();
-    println!("- **daysOfWeek** (required, array of strings): Days when machine should be active.");
-    println!("  Supports ranges (`mon-fri`) and combinations (`mon-wed,fri-sun`).");
-    println!();
-    println!("- **hoursOfDay** (required, array of strings): Hours when machine should be active (0-23).");
-    println!("  Supports ranges (`9-17`) and combinations (`0-9,18-23`).");
-    println!();
-    println!("- **timezone** (optional, string, default: `UTC`): Timezone for the schedule.");
-    println!("  Must be a valid IANA timezone (e.g., `America/New_York`, `Europe/London`).");
-    println!();
-    println!(
-        "- **enabled** (optional, boolean, default: `true`): Whether the schedule is enabled."
-    );
-    println!();
-    println!("#### spotSchedule");
-    println!();
-    println!("Reference to an external spot-schedule provider resource that owns this machine's");
-    println!("active/inactive decision (ADR 0006). The 5-Spot controller watches the referenced");
-    println!(
-        "object and reads only its duck-typed `status.active` (and `Ready` condition) — never"
-    );
-    println!("the provider `spec`, and it never writes the provider object. Composed with");
-    println!("`schedule` via logical AND when both are present.");
+    println!("— never the provider `spec`, and it never writes the provider object. The provider");
+    println!("verdict is the machine's should-be-active decision; `spec.enabled` and `killSwitch`");
+    println!("override it.");
     println!();
     println!(
         "- **apiVersion** (required, string): `group/version` of the provider. The group MUST"
     );
     println!("  be `spotschedules.5spot.finos.org` (CEL-pinned); any served version is accepted.");
-    println!("- **kind** (required, string): Provider kind, e.g. `CapitalMarketsSchedule`.");
+    println!("- **kind** (required, string): Provider kind, e.g. `TimeBasedSpotSchedule` (the");
+    println!("  default) or `CapitalMarketsSchedule`.");
     println!(
         "- **name** (required, string): Provider object name in **this machine's namespace**."
     );
     println!("  Cross-namespace references are not supported.");
     println!();
     println!("See the [Spot Schedule Provider Contract](spot-schedule-contract.md) for the full");
-    println!(
-        "contract a provider implements, and the `CapitalMarketsSchedule` reference provider."
-    );
+    println!("contract a provider implements, plus the `TimeBasedSpotSchedule` and");
+    println!("`CapitalMarketsSchedule` first-party providers.");
+    println!();
+    println!("#### enabled");
+    println!();
+    println!("(optional, boolean, default: `true`) Administrative master switch for this machine");
+    println!("(ADR 0009). When `false` the machine is held **Disabled** regardless of what its");
+    println!("`schedule` provider reports — the SM-scoped on/off operators reach for, and the");
+    println!("loop-breaker the emergency-reclaim flow sets. Distinct from the provider's own");
+    println!("`status.active` and from `killSwitch` (immediate, terminal teardown).");
     println!();
     println!("#### clusterName");
     println!();
@@ -228,7 +222,7 @@ fn main() {
     println!();
     println!("#### priority");
     println!();
-    println!("(optional, integer 0-100, default: `50`) Priority for machine scheduling.");
+    println!("(optional, integer 0-255, default: `50`) Priority for machine scheduling.");
     println!("Higher values indicate higher priority. Used for resource distribution across");
     println!("operator instances.");
     println!();

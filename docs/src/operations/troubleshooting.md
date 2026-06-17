@@ -133,14 +133,15 @@ kubectl describe machine <name>
 
 **Possible Causes:**
 
-1. **Schedule disabled**
+1. **Machine disabled**
    ```bash
-   kubectl get scheduledmachine <name> -o jsonpath='{.spec.schedule.enabled}'
+   kubectl get scheduledmachine <name> -o jsonpath='{.spec.enabled}'
    ```
 
-2. **Timezone mismatch**
+2. **Timezone mismatch** (on the referenced spot-schedule provider)
    ```bash
-   kubectl get scheduledmachine <name> -o jsonpath='{.spec.schedule.timezone}'
+   # spec.schedule references a provider (e.g. TimeBasedSpotSchedule); check its timezone
+   kubectl get scheduledmachine <name> -o jsonpath='{.spec.schedule.name}'
    TZ=<timezone> date  # Check time in that timezone
    ```
 
@@ -456,7 +457,7 @@ incrementing.
 events for this SM within 10 minutes
 (`RAPID_RE_RECLAIM_THRESHOLD = 3`,
 `RAPID_RE_RECLAIM_WINDOW_SECS = 600`). Almost always: a user is
-re-enabling the schedule (`spec.schedule.enabled=true`) before
+re-enabling the machine (`spec.enabled=true`) before
 they have stopped the conflicting process the agent is matching
 on. The agent fires again the moment the Node rejoins, and the
 loop repeats.
@@ -499,7 +500,7 @@ kubectl logs -n 5spot-system -l app=5spot-reclaim-agent --tail=100 \
   even if the user starts a matching process.
 
 **Why no auto-resume:** the controller deliberately does not flip
-`spec.schedule.enabled` back to `true` automatically when the
+`spec.enabled` back to `true` automatically when the
 matching process exits. Doing so would invite races between the
 Node rejoining and the agent restarting, and would silently mask
 the user behaviour the warning is trying to surface. Re-enable is
@@ -507,7 +508,7 @@ explicit by design.
 
 ### `EmergencyReclaim` event fires but schedule is not disabled
 
-**Symptom:** The `EmergencyReclaim` event is on the `ScheduledMachine`, but `spec.schedule.enabled` is still `true`.
+**Symptom:** The `EmergencyReclaim` event is on the `ScheduledMachine`, but `spec.enabled` is still `true`.
 
 **This indicates the controller crashed between the drain/delete steps and the `enabled=false` PATCH.** The Node annotation is cleared *after* the PATCH, so the controller will see the annotation on the next reconcile and retry. If it does not, check:
 
@@ -516,7 +517,7 @@ explicit by design.
 kubectl get events --field-selector reason=EmergencyReclaimDisabledSchedule \
   --sort-by='.lastTimestamp'
 
-# If yes, but spec.schedule.enabled is still true, the PATCH may have lost a race
+# If yes, but spec.enabled is still true, the PATCH may have lost a race
 # with a user edit. Check the generation on the ScheduledMachine:
 kubectl get scheduledmachine/<name> -o jsonpath='{.metadata.generation} {.status.observedGeneration}'
 ```

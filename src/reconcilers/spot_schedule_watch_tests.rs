@@ -4,7 +4,7 @@
 #[allow(clippy::module_inception)]
 mod tests {
     use super::super::*;
-    use crate::crd::{ScheduleSpec, ScheduledMachine, ScheduledMachineSpec, SpotScheduleRef};
+    use crate::crd::{ScheduledMachine, ScheduledMachineSpec, SpotScheduleRef};
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
     use kube::core::GroupVersionKind;
     use kube::runtime::reflector::ObjectRef;
@@ -26,17 +26,16 @@ mod tests {
         ObjectRef::new(name).within(namespace)
     }
 
-    /// Build a `ScheduledMachine` with an optional `spec.spotSchedule` reference.
-    fn scheduled_machine(
-        namespace: &str,
-        name: &str,
-        spot: Option<(&str, &str)>,
-    ) -> ScheduledMachine {
-        let spot_schedule = spot.map(|(kind, provider_name)| SpotScheduleRef {
+    /// Build a `ScheduledMachine` whose required `spec.schedule` provider
+    /// reference is `(kind, name)` in `namespace` (ADR 0009 — the schedule ref
+    /// is what `provider_key_for` keys off).
+    fn scheduled_machine(namespace: &str, name: &str, spot: (&str, &str)) -> ScheduledMachine {
+        let (kind, provider_name) = spot;
+        let schedule = SpotScheduleRef {
             api_version: "spotschedules.5spot.finos.org/v1alpha1".to_string(),
             kind: kind.to_string(),
             name: provider_name.to_string(),
-        });
+        };
         ScheduledMachine {
             metadata: ObjectMeta {
                 name: Some(name.to_string()),
@@ -44,13 +43,8 @@ mod tests {
                 ..Default::default()
             },
             spec: ScheduledMachineSpec {
-                schedule: Some(ScheduleSpec {
-                    days_of_week: vec!["mon-fri".to_string()],
-                    hours_of_day: vec!["9-17".to_string()],
-                    timezone: "UTC".to_string(),
-                    enabled: true,
-                }),
-                spot_schedule,
+                schedule,
+                enabled: true,
                 cluster_name: "c".to_string(),
                 bootstrap_spec: crate::crd::EmbeddedResource(json!({
                     "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
@@ -174,16 +168,27 @@ mod tests {
     // provider_key_for — extraction from a ScheduledMachine
     // ========================================================================
 
+    /// An SM with a valid schedule ref but no namespace — `provider_key_for`
+    /// returns `None` because a provider object is always resolved in the SM's
+    /// own namespace, which is unknowable here.
+    fn namespaceless_scheduled_machine(name: &str) -> ScheduledMachine {
+        let mut sm = scheduled_machine("cm", name, ("CapitalMarketsSchedule", "nyse"));
+        sm.metadata.namespace = None;
+        sm
+    }
+
     #[test]
     fn test_provider_key_for_extracts_gvk_ns_name() {
-        let sm = scheduled_machine("cm", "sm-a", Some(("CapitalMarketsSchedule", "nyse")));
-        let key = provider_key_for(&sm).expect("has spotSchedule");
+        let sm = scheduled_machine("cm", "sm-a", ("CapitalMarketsSchedule", "nyse"));
+        let key = provider_key_for(&sm).expect("has schedule ref");
         assert_eq!(key, provider_key("CapitalMarketsSchedule", "cm", "nyse"));
     }
 
     #[test]
-    fn test_provider_key_for_none_without_spot_schedule() {
-        let sm = scheduled_machine("cm", "sm-a", None);
+    fn test_provider_key_for_none_without_namespace() {
+        // The schedule ref is required, so the only way to get no key is a
+        // namespace-less SM (the provider is resolved in the SM's namespace).
+        let sm = namespaceless_scheduled_machine("sm-a");
         assert!(provider_key_for(&sm).is_none());
     }
 
@@ -211,7 +216,7 @@ mod tests {
         mgr.observe_scheduled_machine(&scheduled_machine(
             "cm",
             "sm-a",
-            Some(("CapitalMarketsSchedule", "nyse")),
+            ("CapitalMarketsSchedule", "nyse"),
         ));
         assert_eq!(mgr.indexed_key_count(), 1);
         assert_eq!(mgr.watcher_count(), 1);
@@ -223,12 +228,12 @@ mod tests {
         mgr.observe_scheduled_machine(&scheduled_machine(
             "cm",
             "sm-a",
-            Some(("CapitalMarketsSchedule", "nyse")),
+            ("CapitalMarketsSchedule", "nyse"),
         ));
         mgr.observe_scheduled_machine(&scheduled_machine(
             "cm",
             "sm-b",
-            Some(("CapitalMarketsSchedule", "tsx")),
+            ("CapitalMarketsSchedule", "tsx"),
         ));
         // Two provider objects, same GVK ⇒ one watcher.
         assert_eq!(mgr.indexed_key_count(), 2);
@@ -241,32 +246,21 @@ mod tests {
         mgr.observe_scheduled_machine(&scheduled_machine(
             "cm",
             "sm-a",
-            Some(("CapitalMarketsSchedule", "nyse")),
+            ("CapitalMarketsSchedule", "nyse"),
         ));
         assert_eq!(mgr.watcher_count(), 1);
 
         mgr.forget_scheduled_machine(&scheduled_machine(
             "cm",
             "sm-a",
-            Some(("CapitalMarketsSchedule", "nyse")),
+            ("CapitalMarketsSchedule", "nyse"),
         ));
         assert_eq!(mgr.indexed_key_count(), 0);
         assert_eq!(mgr.watcher_count(), 0);
     }
 
-    #[tokio::test]
-    async fn test_observe_without_spot_schedule_deregisters() {
-        let mgr = manager();
-        mgr.observe_scheduled_machine(&scheduled_machine(
-            "cm",
-            "sm-a",
-            Some(("CapitalMarketsSchedule", "nyse")),
-        ));
-        assert_eq!(mgr.watcher_count(), 1);
-
-        // The SM's spotSchedule was removed ⇒ an apply with no ref de-indexes it.
-        mgr.observe_scheduled_machine(&scheduled_machine("cm", "sm-a", None));
-        assert_eq!(mgr.indexed_key_count(), 0);
-        assert_eq!(mgr.watcher_count(), 0);
-    }
+    // NOTE: the former `test_observe_without_spot_schedule_deregisters` was
+    // deleted with ADR 0009: `spec.schedule` is now a required ref, so an SM can
+    // never lose its provider reference on a re-apply. The forget/stop-watcher
+    // path is still covered by `test_forget_last_referencing_sm_stops_watcher`.
 }

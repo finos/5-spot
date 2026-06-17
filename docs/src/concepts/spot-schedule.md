@@ -5,11 +5,15 @@ SPDX-License-Identifier: Apache-2.0
 # Spot Schedules (pluggable providers)
 
 A `ScheduledMachine` answers one question every reconcile: *should this machine
-exist right now?* The built-in [`spec.schedule`](schedules.md) answers it from a
-fixed time window (`daysOfWeek` / `hoursOfDay` / `timezone`). **Spot schedules**
-let an *external* resource answer it instead — so activation can follow anything
-an operator can model: an exchange calendar, a PromQL signal, a change-freeze
-window, or a plain manual toggle.
+exist right now?* It answers it by referencing a spot-schedule **provider** via
+the required [`spec.schedule`](../reference/spot-schedule-contract.md) — an
+external resource that publishes the verdict. The default first-party provider is
+[`TimeBasedSpotSchedule`](../guides/time-based-schedule.md), which computes the
+decision from a day / hour / timezone window. Other providers
+([`CapitalMarketsSchedule`](../guides/capital-markets-schedule.md), third-party
+ones) are referenced the same way — so activation can follow anything an operator
+can model: an exchange calendar, a PromQL signal, a change-freeze window, or a
+plain manual toggle.
 
 This is the design recorded in
 [ADR 0006](https://github.com/finos/5-spot/blob/main/docs/adr/0006-pluggable-spot-schedule-provider-contract.md).
@@ -36,12 +40,12 @@ in-repo reference.
 
 ## Referencing a provider
 
-`spec.spotSchedule` is an object reference — `apiVersion` / `kind` / `name` — to
-a provider object in the **same namespace** as the `ScheduledMachine`:
+`spec.schedule` is a required object reference — `apiVersion` / `kind` / `name`
+— to a provider object in the **same namespace** as the `ScheduledMachine`:
 
 ```yaml
 spec:
-  spotSchedule:
+  schedule:
     apiVersion: spotschedules.5spot.finos.org/v1alpha1
     kind: CapitalMarketsSchedule
     name: nyse-equities
@@ -52,19 +56,17 @@ schema, the admission policy, and at runtime). Cross-namespace references are a
 deliberate non-goal — a provider can only influence machines in its own
 namespace.
 
-## Composition with `spec.schedule` (AND)
+## The verdict, `spec.enabled`, and `killSwitch`
 
-`spec.schedule` and `spec.spotSchedule` are independent, and **at least one**
-must be set. When both are set the machine is active **only if both agree** —
-logical **AND**:
+There is no composition — the single referenced provider's `status.active` **is**
+the activation decision. `spec.enabled` (default `true`) is the administrative
+master switch: setting it `false` holds the machine in the `Disabled` phase no
+matter what the provider says. `spec.killSwitch` is a terminal teardown and
+always wins. Precedence, highest first:
 
 ```
-killSwitch  >  (schedule AND spotSchedule)  >  schedule-only / spotSchedule-only
+killSwitch  >  spec.enabled=false (Disabled)  >  provider status.active
 ```
-
-That composition expresses "the market is open **and** it is 09:00–17:00 local":
-the provider gates the *days the exchange trades*, the inline schedule gates the
-*hours the desk staffs*. `spec.killSwitch` always wins.
 
 ## Event-driven, fail-safe
 
@@ -79,7 +81,7 @@ machine. 5-Spot **holds the last known state** (and fails *inactive* only if the
 reference never resolved at all), surfacing a `SpotScheduleResolved=False`
 condition and a `fivespot_spot_schedule_resolution_errors_total` metric instead.
 A misbehaving provider's blast radius is exactly that of editing
-`spec.schedule.enabled` — bounded to the same-namespace machines that named it
+`spec.enabled` — bounded to the same-namespace machines that named it
 (see the [threat model](../security/threat-model.md)).
 
 ## See also
@@ -87,4 +89,5 @@ A misbehaving provider's blast radius is exactly that of editing
 - [Spot Schedule Provider Contract](../reference/spot-schedule-contract.md) — implement a provider
 - [CapitalMarketsSchedule provider guide](../guides/capital-markets-schedule.md) — the reference provider
 - [ScheduledMachine](scheduled-machine.md) — the consuming resource
-- [Schedule Configuration](schedules.md) — the inline `spec.schedule` axis
+- [TimeBasedSpotSchedule provider](../guides/time-based-schedule.md) — the default first-party provider
+- [Schedule Configuration](schedules.md) — the day / hour window grammar `TimeBasedSpotSchedule` uses

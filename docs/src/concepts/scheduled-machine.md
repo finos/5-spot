@@ -6,26 +6,29 @@ The `ScheduledMachine` Custom Resource Definition (CRD) is the primary API for 5
 
 A ScheduledMachine defines:
 
-- When a machine should be active (schedule)
+- When a machine should be active — a required reference to a spot-schedule provider (`spec.schedule`)
+- Whether the machine is administratively enabled (`spec.enabled`)
 - Inline bootstrap and infrastructure specs (CAPI resources created on-demand)
 - Lifecycle behavior (priority, grace period, kill switch)
 
 ## Example
 
 ```yaml
-apiVersion: 5spot.finos.org/v1alpha1
+apiVersion: 5spot.finos.org/v1beta1
 kind: ScheduledMachine
 metadata:
   name: business-hours-worker
   namespace: default
 spec:
+  enabled: true
+
+  # Required reference to a spot-schedule provider in this namespace (ADR 0009).
+  # TimeBasedSpotSchedule is the default first-party provider; the day/hour window
+  # lives on that object, not here.
   schedule:
-    daysOfWeek:
-      - mon-fri
-    hoursOfDay:
-      - 9-17
-    timezone: America/New_York
-    enabled: true
+    apiVersion: spotschedules.5spot.finos.org/v1alpha1
+    kind: TimeBasedSpotSchedule
+    name: business-hours
   
   # Inline bootstrap configuration
   bootstrapSpec:
@@ -53,49 +56,39 @@ spec:
 
 ## Spec Fields
 
-### schedule
+### enabled
 
-Defines when the machine should be active using day and hour ranges.
-**Optional since `v1beta1`**: a machine may instead delegate activation to an
-external provider via [`spotSchedule`](#spotschedule) — at least one of
-`schedule` / `spotSchedule` must be set.
+The administrative master switch for this machine (ADR 0009). When `false`, the
+machine is held in the **Disabled** phase regardless of what its `schedule`
+provider reports. This is the SM-scoped on/off operators reach for, and the
+loop-breaker the [emergency-reclaim](./emergency-reclaim.md) flow sets. It is
+distinct from the provider's own `status.active` (the active-window question) and
+from `killSwitch` (immediate, terminal teardown).
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `daysOfWeek` | `[]string` | No* | `[]` | Days when active. Supports ranges and lists. |
-| `hoursOfDay` | `[]string` | No* | `[]` | Hours when active (0-23). Supports ranges. |
-| `timezone` | `string` | No | `UTC` | IANA timezone for schedule evaluation. |
-| `enabled` | `bool` | No | `true` | Whether the schedule is enabled. |
+| `enabled` | `bool` | No | `true` | Administrative master switch. `false` ⇒ Disabled. |
 
-*At least one of `daysOfWeek` or `hoursOfDay` must be non-empty.
+### schedule
 
-### spotSchedule
-
-Delegates the active/inactive decision to an external **provider** resource
-(ADR 0006) — see [Spot Schedules](spot-schedule.md) for the concept and the
-[provider contract](../reference/spot-schedule-contract.md) for the spec.
+**Required** reference to a spot-schedule **provider** object that owns the
+active/inactive decision for this machine (ADR 0009). The provider's duck-typed
+`status.active` is the machine's should-be-active verdict; 5-Spot reads only that
+status, never the provider `spec`. See [Spot Schedules](spot-schedule.md) for the
+concept and the [provider contract](../reference/spot-schedule-contract.md) for
+the spec.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `apiVersion` | `string` | Yes | `group/version`; group **must** be `spotschedules.5spot.finos.org`. |
-| `kind` | `string` | Yes | Provider kind, e.g. `CapitalMarketsSchedule`. |
+| `kind` | `string` | Yes | Provider kind, e.g. `TimeBasedSpotSchedule` (default) or `CapitalMarketsSchedule`. |
 | `name` | `string` | Yes | Provider object name, in **this machine's namespace**. |
 
-When both `schedule` and `spotSchedule` are set, the machine is active only when
-the time window **and** the provider both agree (logical AND); `killSwitch`
-always wins.
-
-#### Day Format
-
-- Single day: `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun`
-- Range: `mon-fri`, `sat-sun`
-- Mixed: `mon-wed,fri`
-
-#### Hour Format
-
-- Single hour: `9`, `14`, `22`
-- Range: `9-17` (inclusive of both start and end)
-- Mixed: `0-9,17-23`
+The default, first-party provider is
+[`TimeBasedSpotSchedule`](../guides/time-based-schedule.md) — the reified former
+inline schedule (day/hour/timezone windows). Verdict precedence, highest first:
+`killSwitch` (terminal teardown) > `spec.enabled=false` (Disabled) > provider
+`status.active`.
 
 ### bootstrapSpec
 
@@ -137,7 +130,7 @@ Optional configuration applied to the created CAPI Machine.
 | `gracefulShutdownTimeout` | `string` | No | `5m` | Time for graceful machine shutdown. |
 | `nodeDrainTimeout` | `string` | No | `5m` | Timeout for draining the node before deletion. |
 | `killSwitch` | `bool` | No | `false` | Operator-driven kill switch. Immediately remove machine if `true`; reset to `false` to return to scheduled service. |
-| `killIfCommands` | `[]string` | No | `null` | Node-side process-match kill switch. When non-empty, the reclaim agent DaemonSet is installed on the backing node and watches `/proc` for any process whose `comm` or `cmdline` matches an entry. First match triggers `EmergencyRemove` + auto-disables the schedule. See [Emergency Reclaim](./emergency-reclaim.md). |
+| `killIfCommands` | `[]string` | No | `null` | Node-side process-match kill switch. When non-empty, the reclaim agent DaemonSet is installed on the backing node and watches `/proc` for any process whose `comm` or `cmdline` matches an entry. First match triggers `EmergencyRemove` + auto-disables the machine (sets `spec.enabled=false`). See [Emergency Reclaim](./emergency-reclaim.md). |
 | `nodeTaints` | `[]NodeTaint` | No | `[]` | User-defined taints applied to the Kubernetes Node once it is Ready. The controller owns and reconciles only the taints it applied; admin-added taints on the same Node are left untouched. See [Node Taints](#node-taints) below. |
 | `kata` | `KataConfig` | No | `null` | Kata containerd drop-in delivery. References a `ConfigMap`/`Secret` **on the workload cluster** whose content the node-side agent writes to the **fixed** host path `/etc/k0s/containerd.d/kata.toml` (not configurable — ADR 0005), then restarts `restartService` (default `k0sworker.service`) once per distinct content change so containerd reloads it. See [Kata Config Delivery](./kata-config-delivery.md). |
 
@@ -282,8 +275,8 @@ grant code execution or cross-tenant reachability **before** granting
 1. **Pre-stage approved bootstrap / infrastructure resources** in a
    platform-controlled namespace and expose only their `kind` + `name`
    to tenants via your own wrapper CR. This eliminates the inline spec
-   entirely. (Out of scope for v1alpha1; tracked for a future
-   v1alpha2.)
+   entirely. (Out of scope for the current `v1beta1`; tracked for a
+   future API version.)
 2. **Layer policy on top of 5-Spot**: a CEL `ValidatingAdmissionPolicy`
    can reject specific provider fields (e.g. `cloudInit`,
    `address` outside an approved CIDR) at admission time. The 5-Spot

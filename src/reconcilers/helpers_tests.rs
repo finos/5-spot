@@ -409,7 +409,7 @@ mod tests {
     /// Minimal `ScheduledMachine` JSON for `patch_status` responses.
     fn sm_response_body(name: &str, namespace: &str, phase: &str) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
-            "apiVersion": "5spot.finos.org/v1alpha1",
+            "apiVersion": "5spot.finos.org/v1beta1",
             "kind": "ScheduledMachine",
             "metadata": {
                 "name": name,
@@ -429,10 +429,9 @@ mod tests {
                     "spec": {}
                 },
                 "schedule": {
-                    "daysOfWeek": ["mon-fri"],
-                    "hoursOfDay": ["9-17"],
-                    "timezone": "UTC",
-                    "enabled": true
+                    "apiVersion": "spotschedules.5spot.finos.org/v1alpha1",
+                    "kind": "TimeBasedSpotSchedule",
+                    "name": "weekdays-9-5"
                 },
                 "gracefulShutdownTimeout": "5m",
                 "nodeDrainTimeout": "5m"
@@ -1932,13 +1931,12 @@ mod tests {
                     "spec": {}
                 })),
                 machine_template: None,
-                schedule: Some(crate::crd::ScheduleSpec {
-                    days_of_week: vec!["mon-fri".to_string()],
-                    hours_of_day: vec!["9-17".to_string()],
-                    timezone: "UTC".to_string(),
-                    enabled: true,
-                }),
-                spot_schedule: None,
+                schedule: crate::crd::SpotScheduleRef {
+                    api_version: "spotschedules.5spot.finos.org/v1alpha1".to_string(),
+                    kind: "TimeBasedSpotSchedule".to_string(),
+                    name: "weekdays-9-5".to_string(),
+                },
+                enabled: true,
                 priority: 50,
                 graceful_shutdown_timeout: "5m".to_string(),
                 node_drain_timeout: "5m".to_string(),
@@ -2199,12 +2197,14 @@ mod tests {
     }
 
     // ========================================================================
-    // build_disable_schedule_patch — flip spec.schedule.enabled=false
+    // build_disable_schedule_patch — flip spec.enabled=false (ADR 0009)
     //   Part of Phase::EmergencyRemove. Rationale: without this flip, the
     //   next schedule window re-adds the node, the agent sees the user's
     //   still-running JVM, and the eject→re-add→re-eject loop repeats every
-    //   schedule boundary. Setting enabled=false makes the user's explicit
-    //   re-enable the signal to return the node to service.
+    //   schedule boundary. Setting the SM-scoped `spec.enabled=false` makes
+    //   the user's explicit re-enable the signal to return the node to
+    //   service. The patch is SM-scoped and never touches the shared
+    //   `spec.schedule` provider reference.
     //   See docs/roadmaps/5spot-emergency-reclaim-by-process-match.md (Q6).
     // ========================================================================
 
@@ -2212,8 +2212,8 @@ mod tests {
     fn test_build_disable_schedule_patch_sets_enabled_false() {
         let patch = build_disable_schedule_patch();
         let enabled = patch
-            .pointer("/spec/schedule/enabled")
-            .expect("patch must write /spec/schedule/enabled");
+            .pointer("/spec/enabled")
+            .expect("patch must write /spec/enabled");
         assert_eq!(
             enabled,
             &serde_json::Value::Bool(false),
@@ -2222,14 +2222,13 @@ mod tests {
     }
 
     #[test]
-    fn test_build_disable_schedule_patch_only_touches_schedule_enabled() {
-        // Strategic-merge safety contract: we must not accidentally blow
-        // away siblings of `enabled` under spec.schedule (daysOfWeek,
-        // hoursOfDay, timezone) nor siblings of `schedule` under spec
-        // (killSwitch, killIfCommands, bootstrapSpec, ...). Merge-patch
-        // semantics mean any key we include at a given depth replaces
-        // only that key — so the exact structure of the patch body is
-        // the load-bearing invariant.
+    fn test_build_disable_schedule_patch_only_touches_spec_enabled() {
+        // Merge-patch safety contract: we must touch only the SM-scoped
+        // `spec.enabled` master switch and leave every sibling under `spec`
+        // (schedule, killSwitch, killIfCommands, bootstrapSpec, ...)
+        // untouched. Merge-patch semantics mean any key we include at a
+        // given depth replaces only that key — so the exact structure of
+        // the patch body is the load-bearing invariant.
         let patch = build_disable_schedule_patch();
         let top = patch.as_object().expect("top must be object");
         assert_eq!(top.len(), 1, "top level must be only {{spec}}");
@@ -2238,21 +2237,15 @@ mod tests {
             .get("spec")
             .and_then(|v| v.as_object())
             .expect("spec object");
-        assert_eq!(spec.len(), 1, "spec must contain only {{schedule}}");
-
-        let schedule = spec
-            .get("schedule")
-            .and_then(|v| v.as_object())
-            .expect("schedule object");
         assert_eq!(
-            schedule.len(),
+            spec.len(),
             1,
-            "schedule must contain only {{enabled}} — other fields \
-             (daysOfWeek, hoursOfDay, timezone) must be untouched"
+            "spec must contain only {{enabled}} — the shared schedule \
+             provider ref and other spec fields must be untouched"
         );
         assert!(
-            schedule.contains_key("enabled"),
-            "schedule must contain the enabled key"
+            spec.contains_key("enabled"),
+            "spec must contain the enabled key"
         );
     }
 
@@ -2264,8 +2257,8 @@ mod tests {
         // action, never a controller decision.
         let patch = build_disable_schedule_patch();
         let enabled = patch
-            .pointer("/spec/schedule/enabled")
-            .expect("must have /spec/schedule/enabled");
+            .pointer("/spec/enabled")
+            .expect("must have /spec/enabled");
         assert_eq!(
             enabled.as_bool(),
             Some(false),
@@ -3756,13 +3749,12 @@ mod tests {
                     "spec": {}
                 })),
                 machine_template: None,
-                schedule: Some(crate::crd::ScheduleSpec {
-                    days_of_week: vec!["mon-fri".to_string()],
-                    hours_of_day: vec!["9-17".to_string()],
-                    timezone: "UTC".to_string(),
-                    enabled: true,
-                }),
-                spot_schedule: None,
+                schedule: crate::crd::SpotScheduleRef {
+                    api_version: "spotschedules.5spot.finos.org/v1alpha1".to_string(),
+                    kind: "TimeBasedSpotSchedule".to_string(),
+                    name: "weekdays-9-5".to_string(),
+                },
+                enabled: true,
                 priority: 50,
                 graceful_shutdown_timeout: graceful_shutdown_timeout.to_string(),
                 node_drain_timeout: "5m".to_string(),
@@ -3968,68 +3960,41 @@ mod tests {
     }
 
     // ========================================================================
-    // validate_activation_source — at least one of schedule/spotSchedule
-    // (runtime mirror of the CRD spec-level CEL, defence-in-depth)
+    // validate_schedule_ref — the required spec.schedule ref must target the
+    // pinned spot-schedule provider group (runtime mirror of the CRD per-field
+    // CEL pin, defence-in-depth — ADR 0009)
     // ========================================================================
-
-    fn sample_schedule() -> crate::crd::ScheduleSpec {
-        crate::crd::ScheduleSpec {
-            days_of_week: vec!["mon-fri".to_string()],
-            hours_of_day: vec!["9-17".to_string()],
-            timezone: "UTC".to_string(),
-            enabled: true,
-        }
-    }
 
     fn sample_spot_schedule_ref() -> crate::crd::SpotScheduleRef {
         crate::crd::SpotScheduleRef {
             api_version: "spotschedules.5spot.finos.org/v1alpha1".to_string(),
-            kind: "CapitalMarketsSchedule".to_string(),
-            name: "nyse-equities".to_string(),
+            kind: "TimeBasedSpotSchedule".to_string(),
+            name: "weekdays-9-5".to_string(),
         }
     }
 
     #[test]
-    fn test_validate_activation_source_schedule_only_ok() {
-        let schedule = sample_schedule();
-        assert!(validate_activation_source(Some(&schedule), None).is_ok());
-    }
-
-    #[test]
-    fn test_validate_activation_source_spot_schedule_only_ok() {
+    fn test_validate_schedule_ref_correct_group_ok() {
         let reference = sample_spot_schedule_ref();
-        assert!(validate_activation_source(None, Some(&reference)).is_ok());
+        assert!(validate_schedule_ref(&reference).is_ok());
     }
 
     #[test]
-    fn test_validate_activation_source_both_ok() {
-        let schedule = sample_schedule();
-        let reference = sample_spot_schedule_ref();
-        assert!(validate_activation_source(Some(&schedule), Some(&reference)).is_ok());
-    }
-
-    #[test]
-    fn test_validate_activation_source_neither_rejected() {
-        let err = validate_activation_source(None, None).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("at least one of spec.schedule or spec.spotSchedule"));
-    }
-
-    #[test]
-    fn test_validate_activation_source_rejects_foreign_provider_group() {
+    fn test_validate_schedule_ref_rejects_foreign_provider_group() {
         let reference = crate::crd::SpotScheduleRef {
             api_version: "evil.example.com/v1".to_string(),
             kind: "Foo".to_string(),
             name: "bar".to_string(),
         };
-        let err = validate_activation_source(None, Some(&reference)).unwrap_err();
+        let err = validate_schedule_ref(&reference).unwrap_err();
         assert!(err.to_string().contains("spotschedules.5spot.finos.org"));
         assert!(err.to_string().contains("evil.example.com"));
     }
 
     // ========================================================================
-    // compose_should_be_active — AND composition, hold-last-state (ADR 0006 §3/§4)
+    // compose_should_be_active — verdict → should-be-active, hold-last-state
+    // (ADR 0009: the single provider verdict is authoritative; there is no
+    // inline time window to AND with — ADR 0006 §4 hold-last-state semantics)
     // ========================================================================
 
     use crate::reconcilers::spot_schedule::SpotScheduleVerdict;
@@ -4052,76 +4017,29 @@ mod tests {
     }
 
     #[test]
-    fn test_compose_schedule_only_active() {
-        assert!(compose_should_be_active(Some(true), None, None));
+    fn test_compose_active_verdict_is_active() {
+        // Active verdict ⇒ should-be-active regardless of last-known state.
+        assert!(compose_should_be_active(&active_verdict(), None));
+        assert!(compose_should_be_active(&active_verdict(), Some(false)));
     }
 
     #[test]
-    fn test_compose_schedule_only_inactive() {
-        assert!(!compose_should_be_active(Some(false), None, None));
-    }
-
-    #[test]
-    fn test_compose_spot_only_active() {
-        // No inline schedule ⇒ time axis unconstrained; provider decides.
-        assert!(compose_should_be_active(
-            None,
-            Some(&active_verdict()),
-            None
-        ));
-    }
-
-    #[test]
-    fn test_compose_spot_only_inactive() {
-        assert!(!compose_should_be_active(
-            None,
-            Some(&inactive_verdict()),
-            None
-        ));
-    }
-
-    #[test]
-    fn test_compose_and_both_active() {
-        assert!(compose_should_be_active(
-            Some(true),
-            Some(&active_verdict()),
-            None
-        ));
-    }
-
-    #[test]
-    fn test_compose_and_schedule_open_provider_inactive() {
-        assert!(!compose_should_be_active(
-            Some(true),
-            Some(&inactive_verdict()),
-            None
-        ));
-    }
-
-    #[test]
-    fn test_compose_and_schedule_closed_provider_active() {
-        assert!(!compose_should_be_active(
-            Some(false),
-            Some(&active_verdict()),
-            None
-        ));
+    fn test_compose_inactive_verdict_is_inactive() {
+        // Inactive verdict ⇒ should-be-inactive regardless of last-known state.
+        assert!(!compose_should_be_active(&inactive_verdict(), None));
+        assert!(!compose_should_be_active(&inactive_verdict(), Some(true)));
     }
 
     #[test]
     fn test_compose_unresolved_holds_last_active() {
         // hold-last-state: provider unreadable but was active ⇒ stay active.
-        assert!(compose_should_be_active(
-            None,
-            Some(&unresolved_verdict()),
-            Some(true)
-        ));
+        assert!(compose_should_be_active(&unresolved_verdict(), Some(true)));
     }
 
     #[test]
     fn test_compose_unresolved_holds_last_inactive() {
         assert!(!compose_should_be_active(
-            None,
-            Some(&unresolved_verdict()),
+            &unresolved_verdict(),
             Some(false)
         ));
     }
@@ -4129,30 +4047,7 @@ mod tests {
     #[test]
     fn test_compose_unresolved_never_resolved_fails_inactive() {
         // never resolved (no last-known) ⇒ fail-inactive.
-        assert!(!compose_should_be_active(
-            None,
-            Some(&unresolved_verdict()),
-            None
-        ));
-    }
-
-    #[test]
-    fn test_compose_unresolved_held_active_but_schedule_closed() {
-        // schedule axis still closes the machine even while holding provider state.
-        assert!(!compose_should_be_active(
-            Some(false),
-            Some(&unresolved_verdict()),
-            Some(true)
-        ));
-    }
-
-    #[test]
-    fn test_compose_unresolved_held_active_and_schedule_open() {
-        assert!(compose_should_be_active(
-            Some(true),
-            Some(&unresolved_verdict()),
-            Some(true)
-        ));
+        assert!(!compose_should_be_active(&unresolved_verdict(), None));
     }
 
     #[test]

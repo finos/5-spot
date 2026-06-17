@@ -44,3 +44,4 @@ refactors) need neither. When unsure, **write the ADR.**
 | [0006](./0006-pluggable-spot-schedule-provider-contract.md) | Pluggable spot-schedule provider contract via `spec.spotSchedule` and the `spotschedules.5spot.finos.org` API group | Accepted |
 | [0007](./0007-crd-multi-version-and-conversion.md) | CRD multi-version support with `None` conversion and additive-only evolution | Accepted |
 | [0008](./0008-autovex-presubmission-gate.md) | Auto-VEX generated and signed off before submission, enforced by a byte-exact CI gate | Accepted |
+| [0009](./0009-unify-schedule-as-provider-reference.md) | Unify activation under `spec.schedule` as a provider reference; ship `TimeBasedSpotSchedule` as the core provider | Accepted |

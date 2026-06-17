@@ -71,8 +71,9 @@ All metrics use the `fivespot_` prefix. The full list lives in
 
 #### Spot-schedule providers
 
-Emitted only for `ScheduledMachine`s with a `spec.spotSchedule` reference
-(ADR 0006). Labels are bounded by `namespace` × provider `kind` — never the
+Emitted for `ScheduledMachine`s — `spec.schedule` is always a spot-schedule
+provider reference (ADR 0009). Labels are bounded by `namespace` × provider
+`kind` — never the
 (unbounded) provider or machine name.
 
 | Metric | Type | Labels | Description |
@@ -406,7 +407,7 @@ Event types and reasons:
 | Warning | `ReconcileFailed` | Unrecoverable error — machine in Error phase |
 | Warning | `KillSwitchActivated` | Emergency kill switch triggered |
 | Warning | `EmergencyReclaim` | Reclaim-agent process-match fired; emergency-remove flow started |
-| Warning | `EmergencyReclaimDisabledSchedule` | Step 5 of the flow: `spec.schedule.enabled=false` patched (load-bearing — breaks the eject→re-add→re-eject loop) |
+| Warning | `EmergencyReclaimDisabledSchedule` | Step 5 of the flow: `spec.enabled=false` patched (load-bearing — breaks the eject→re-add→re-eject loop) |
 | Warning | `RapidReReclaim` | ≥3 reclaims for the same SM within 10 min — the user is re-enabling without first stopping the conflicting process. See [troubleshooting](./troubleshooting.md) |
 
 Events are written to the `events.k8s.io/v1` API and are immutable once created, providing an auditable state-change trail (SOX §404 / NIST AU-2).

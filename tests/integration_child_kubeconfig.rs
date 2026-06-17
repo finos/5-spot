@@ -35,7 +35,7 @@ use tower_test::mock;
 
 use five_spot::constants::CHILD_NODE_EVENT_CHANNEL_CAP;
 use five_spot::crd::{
-    EmbeddedResource, KubeconfigSecretRef, ScheduleSpec, ScheduledMachine, ScheduledMachineSpec,
+    EmbeddedResource, KubeconfigSecretRef, ScheduledMachine, ScheduledMachineSpec, SpotScheduleRef,
 };
 use five_spot::reconcilers::{
     CacheKey, ChildClientCache, ChildNodeWatchManager, Context, ResolvedClient,
@@ -90,13 +90,12 @@ fn make_sm(
             ..Default::default()
         },
         spec: ScheduledMachineSpec {
-            schedule: Some(ScheduleSpec {
-                days_of_week: vec!["mon-fri".to_string()],
-                hours_of_day: vec!["9-17".to_string()],
-                timezone: "UTC".to_string(),
-                enabled: true,
-            }),
-            spot_schedule: None,
+            schedule: SpotScheduleRef {
+                api_version: "spotschedules.5spot.finos.org/v1alpha1".to_string(),
+                kind: "TimeBasedSpotSchedule".to_string(),
+                name: "weekdays-9-5".to_string(),
+            },
+            enabled: true,
             cluster_name: cluster_name.to_string(),
             bootstrap_spec: EmbeddedResource(serde_json::json!({
                 "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",

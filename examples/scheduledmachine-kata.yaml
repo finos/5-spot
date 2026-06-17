@@ -18,21 +18,21 @@
 #       [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.kata]
 #         runtime_type = "io.containerd.kata.v2"
 
-apiVersion: 5spot.finos.org/v1alpha1
+apiVersion: 5spot.finos.org/v1beta1
 kind: ScheduledMachine
 metadata:
   name: kata-business-hours-worker
   namespace: default
 spec:
   clusterName: my-k0s-cluster
+  enabled: true
 
+  # Active/inactive decision delegated to the TimeBasedSpotSchedule provider
+  # object "business-hours" (examples/timebasedspotschedule.yaml), same namespace.
   schedule:
-    daysOfWeek:
-      - mon-fri
-    hoursOfDay:
-      - "9-17"
-    timezone: America/New_York
-    enabled: true
+    apiVersion: spotschedules.5spot.finos.org/v1alpha1
+    kind: TimeBasedSpotSchedule
+    name: business-hours
 
   # Kata containerd drop-in delivery. Only `kind` and `name` are required;
   # the remaining fields show their defaults. The host destination is NOT

@@ -44,6 +44,17 @@ fn test_record_spot_schedule_transition() {
 }
 
 #[test]
+fn test_set_time_based_active() {
+    set_time_based_active("default", "weekdays-9-5", true);
+    set_time_based_active("default", "weekdays-9-5", false);
+}
+
+#[test]
+fn test_record_time_based_transition() {
+    record_time_based_transition("default", "weekdays-9-5");
+}
+
+#[test]
 fn test_set_machines_by_phase() {
     set_machines_by_phase("Active", 5.0);
     set_machines_by_phase("Inactive", 3.0);

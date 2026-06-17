@@ -132,12 +132,19 @@ mod tests {
     }
 
     // ========================================================================
-    // ScheduleSpec tests
+    // TimeBasedSpotScheduleSpec tests
+    //
+    // The day/hour/timezone window moved from the (removed) inline
+    // ScheduledMachine.spec.schedule ScheduleSpec into the
+    // TimeBasedSpotSchedule provider CRD (ADR 0009). The window-evaluation
+    // behaviour itself is owned and tested by the provider in
+    // src/providers/time_based_tests.rs; here we only pin the accessor
+    // helpers that survived the move.
     // ========================================================================
 
     #[test]
-    fn test_schedule_spec_get_active_weekdays() {
-        let spec = ScheduleSpec {
+    fn test_time_based_spot_schedule_spec_get_active_weekdays() {
+        let spec = TimeBasedSpotScheduleSpec {
             days_of_week: vec!["mon-fri".to_string()],
             hours_of_day: vec!["9-17".to_string()],
             timezone: "UTC".to_string(),
@@ -149,8 +156,8 @@ mod tests {
     }
 
     #[test]
-    fn test_schedule_spec_get_active_hours() {
-        let spec = ScheduleSpec {
+    fn test_time_based_spot_schedule_spec_get_active_hours() {
+        let spec = TimeBasedSpotScheduleSpec {
             days_of_week: vec!["mon-fri".to_string()],
             hours_of_day: vec!["9-17".to_string()],
             timezone: "UTC".to_string(),
@@ -285,18 +292,24 @@ mod tests {
     // Serialization tests
     // ========================================================================
 
+    /// Canonical `spec.schedule` reference used across the ScheduledMachine
+    /// spec-construction tests. `schedule` is required since ADR 0009, so every
+    /// spec needs one; reuse this helper so a contract change touches one place.
+    fn sample_schedule_ref() -> SpotScheduleRef {
+        SpotScheduleRef {
+            api_version: "spotschedules.5spot.finos.org/v1alpha1".to_string(),
+            kind: "TimeBasedSpotSchedule".to_string(),
+            name: "weekdays-9-5".to_string(),
+        }
+    }
+
     #[test]
     fn test_scheduled_machine_spec_serialization() {
         use serde_json::json;
 
         let spec = ScheduledMachineSpec {
-            schedule: Some(ScheduleSpec {
-                days_of_week: vec!["mon-fri".to_string()],
-                hours_of_day: vec!["9-17".to_string()],
-                timezone: "UTC".to_string(),
-                enabled: true,
-            }),
-            spot_schedule: None,
+            schedule: sample_schedule_ref(),
+            enabled: true,
             cluster_name: "test-cluster".to_string(),
             bootstrap_spec: EmbeddedResource(json!({
                 "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
@@ -321,7 +334,7 @@ mod tests {
 
         // Test that it serializes without errors
         let json_output = serde_json::to_string(&spec).unwrap();
-        assert!(json_output.contains("mon-fri"));
+        assert!(json_output.contains("weekdays-9-5"));
         assert!(json_output.contains("192.168.1.100"));
         assert!(json_output.contains("bootstrap"));
         // skip_serializing_if = Option::is_none must elide the field entirely.
@@ -514,13 +527,8 @@ mod tests {
     fn base_spec() -> ScheduledMachineSpec {
         use serde_json::json;
         ScheduledMachineSpec {
-            schedule: Some(ScheduleSpec {
-                days_of_week: vec!["mon-fri".to_string()],
-                hours_of_day: vec!["9-17".to_string()],
-                timezone: "UTC".to_string(),
-                enabled: true,
-            }),
-            spot_schedule: None,
+            schedule: sample_schedule_ref(),
+            enabled: true,
             cluster_name: "test-cluster".to_string(),
             bootstrap_spec: EmbeddedResource(json!({
                 "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
@@ -548,10 +556,9 @@ mod tests {
     fn test_kill_if_commands_absent_deserializes_as_none() {
         let json = serde_json::json!({
             "schedule": {
-                "daysOfWeek": ["mon-fri"],
-                "hoursOfDay": ["9-17"],
-                "timezone": "UTC",
-                "enabled": true
+                "apiVersion": "spotschedules.5spot.finos.org/v1alpha1",
+                "kind": "TimeBasedSpotSchedule",
+                "name": "weekdays-9-5"
             },
             "clusterName": "c",
             "bootstrapSpec": {
@@ -611,7 +618,11 @@ mod tests {
         // the controller can surface a condition warning on empty lists rather
         // than silently treating them as opt-out.
         let json = serde_json::json!({
-            "schedule": {"daysOfWeek": [], "hoursOfDay": [], "timezone": "UTC", "enabled": true},
+            "schedule": {
+                "apiVersion": "spotschedules.5spot.finos.org/v1alpha1",
+                "kind": "TimeBasedSpotSchedule",
+                "name": "weekdays-9-5"
+            },
             "clusterName": "c",
             "bootstrapSpec": {
                 "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
@@ -740,7 +751,11 @@ mod tests {
     #[test]
     fn test_scheduled_machine_spec_default_node_taints_is_empty() {
         let json = serde_json::json!({
-            "schedule": {"daysOfWeek": [], "hoursOfDay": [], "timezone": "UTC", "enabled": true},
+            "schedule": {
+                "apiVersion": "spotschedules.5spot.finos.org/v1alpha1",
+                "kind": "TimeBasedSpotSchedule",
+                "name": "weekdays-9-5"
+            },
             "clusterName": "c",
             "bootstrapSpec": {
                 "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
@@ -761,7 +776,11 @@ mod tests {
     #[test]
     fn test_scheduled_machine_spec_node_taints_omitted_when_empty() {
         let json = serde_json::json!({
-            "schedule": {"daysOfWeek": [], "hoursOfDay": [], "timezone": "UTC", "enabled": true},
+            "schedule": {
+                "apiVersion": "spotschedules.5spot.finos.org/v1alpha1",
+                "kind": "TimeBasedSpotSchedule",
+                "name": "weekdays-9-5"
+            },
             "clusterName": "c",
             "bootstrapSpec": {
                 "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
@@ -785,7 +804,11 @@ mod tests {
     #[test]
     fn test_scheduled_machine_spec_parses_node_taints() {
         let json = serde_json::json!({
-            "schedule": {"daysOfWeek": [], "hoursOfDay": [], "timezone": "UTC", "enabled": true},
+            "schedule": {
+                "apiVersion": "spotschedules.5spot.finos.org/v1alpha1",
+                "kind": "TimeBasedSpotSchedule",
+                "name": "weekdays-9-5"
+            },
             "clusterName": "c",
             "bootstrapSpec": {
                 "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
@@ -1158,13 +1181,8 @@ mod tests {
         use serde_json::json;
 
         let spec = ScheduledMachineSpec {
-            schedule: Some(ScheduleSpec {
-                days_of_week: vec!["mon-fri".to_string()],
-                hours_of_day: vec!["9-17".to_string()],
-                timezone: "UTC".to_string(),
-                enabled: true,
-            }),
-            spot_schedule: None,
+            schedule: sample_schedule_ref(),
+            enabled: true,
             cluster_name: "alpha".to_string(),
             bootstrap_spec: EmbeddedResource(json!({
                 "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
@@ -1714,106 +1732,93 @@ mod tests {
     }
 
     #[test]
-    fn test_is_enabled_follows_inline_schedule_enabled() {
+    fn test_is_enabled_follows_spec_enabled() {
+        // Since ADR 0009 `is_enabled()` reads the top-level `spec.enabled`
+        // master switch, independent of the provider referenced by
+        // `spec.schedule`.
         let mut spec = base_spec();
-        spec.schedule = Some(ScheduleSpec {
-            days_of_week: vec!["sat".to_string()],
-            hours_of_day: vec!["0-23".to_string()],
-            timezone: "UTC".to_string(),
-            enabled: true,
-        });
+        spec.enabled = true;
         assert!(spec.is_enabled());
 
-        spec.schedule = Some(ScheduleSpec {
-            days_of_week: vec![],
-            hours_of_day: vec![],
-            timezone: "UTC".to_string(),
-            enabled: false,
-        });
+        spec.enabled = false;
         assert!(!spec.is_enabled());
     }
 
     #[test]
-    fn test_is_enabled_true_for_spot_schedule_only_machine() {
-        let mut spec = base_spec();
-        spec.schedule = None;
-        spec.spot_schedule = Some(spot_schedule_ref());
-        // No inline schedule ⇒ always enabled; the provider governs activity.
+    fn test_spec_enabled_defaults_true_when_absent() {
+        // `enabled` has serde default `true`, so a spec deserialized without it
+        // is administratively enabled — backward compatible with pre-ADR-0009
+        // SMs that never carried the field.
+        let json = serde_json::json!({
+            "schedule": {
+                "apiVersion": "spotschedules.5spot.finos.org/v1alpha1",
+                "kind": "TimeBasedSpotSchedule",
+                "name": "weekdays-9-5"
+            },
+            "clusterName": "c",
+            "bootstrapSpec": {
+                "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
+                "kind": "K0sWorkerConfig",
+                "spec": {}
+            },
+            "infrastructureSpec": {
+                "apiVersion": "infrastructure.cluster.x-k8s.io/v1beta1",
+                "kind": "RemoteMachine",
+                "spec": {"address": "10.0.0.1", "port": 22}
+            }
+        });
+        let spec: ScheduledMachineSpec =
+            serde_json::from_value(json).expect("spec without enabled must deserialize");
+        assert!(spec.enabled, "absent enabled must default to true");
         assert!(spec.is_enabled());
     }
 
     #[test]
-    fn test_spot_schedule_only_spec_omits_schedule_on_wire() {
-        let mut spec = base_spec();
-        spec.schedule = None;
-        spec.spot_schedule = Some(spot_schedule_ref());
+    fn test_schedule_ref_is_required_on_the_wire() {
+        // ADR 0009: `schedule` is a required SpotScheduleRef — it always
+        // serializes, and a spec without it fails to deserialize.
+        let spec = base_spec();
         let json = serde_json::to_value(&spec).unwrap();
-        // schedule is skipped when None; spotSchedule is present.
-        assert!(json.get("schedule").is_none());
-        assert!(json.get("spotSchedule").is_some());
-        let parsed: ScheduledMachineSpec = serde_json::from_value(json).unwrap();
-        assert!(parsed.schedule.is_none());
-        assert_eq!(parsed.spot_schedule, Some(spot_schedule_ref()));
+        let sched = json
+            .get("schedule")
+            .expect("schedule must always be present");
+        assert_eq!(
+            sched.get("kind").and_then(serde_json::Value::as_str),
+            Some("TimeBasedSpotSchedule")
+        );
+
+        let missing = serde_json::json!({
+            "clusterName": "c",
+            "bootstrapSpec": {
+                "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
+                "kind": "K0sWorkerConfig",
+                "spec": {}
+            },
+            "infrastructureSpec": {
+                "apiVersion": "infrastructure.cluster.x-k8s.io/v1beta1",
+                "kind": "RemoteMachine",
+                "spec": {"address": "10.0.0.1", "port": 22}
+            }
+        });
+        assert!(
+            serde_json::from_value::<ScheduledMachineSpec>(missing).is_err(),
+            "spec without the required schedule ref must fail to deserialize"
+        );
     }
 
     #[test]
-    fn test_scheduled_machine_crd_is_v1beta1() {
+    fn test_scheduled_machine_crd_is_single_served_v1beta1() {
+        // ADR 0009: the ScheduledMachine CRD is now a single served version
+        // (v1beta1); the frozen v1alpha1 ScheduledMachine was removed.
         use kube::CustomResourceExt;
         let crd = ScheduledMachine::crd();
-        assert_eq!(crd.spec.versions.len(), 1, "derive emits a single version");
+        assert_eq!(
+            crd.spec.versions.len(),
+            1,
+            "ScheduledMachine must have exactly one served version"
+        );
         assert_eq!(crd.spec.versions[0].name, "v1beta1");
         assert!(crd.spec.versions[0].storage);
-    }
-
-    #[test]
-    fn test_v1alpha1_crd_is_frozen_and_deprecated() {
-        use kube::CustomResourceExt;
-        let crd = v1alpha1::ScheduledMachine::crd();
-        assert_eq!(crd.spec.versions[0].name, "v1alpha1");
-        assert_eq!(crd.spec.versions[0].deprecated, Some(true));
-    }
-
-    #[test]
-    fn test_merged_scheduledmachine_has_single_storage_version() {
-        use kube::core::crd::merge_crds;
-        use kube::CustomResourceExt;
-
-        let merged = merge_crds(
-            vec![ScheduledMachine::crd(), v1alpha1::ScheduledMachine::crd()],
-            "v1beta1",
-        )
-        .expect("merge succeeds");
-
-        // Both served versions are present.
-        let names: Vec<&str> = merged
-            .spec
-            .versions
-            .iter()
-            .map(|v| v.name.as_str())
-            .collect();
-        assert!(names.contains(&"v1alpha1"));
-        assert!(names.contains(&"v1beta1"));
-
-        // Exactly one storage version, and it is v1beta1.
-        let storage: Vec<&str> = merged
-            .spec
-            .versions
-            .iter()
-            .filter(|v| v.storage)
-            .map(|v| v.name.as_str())
-            .collect();
-        assert_eq!(storage, vec!["v1beta1"], "exactly one storage version");
-
-        // No conversion webhook configured => strategy None (default).
-        let conversion_is_webhook = merged
-            .spec
-            .conversion
-            .as_ref()
-            .is_some_and(|c| c.strategy == "Webhook");
-        assert!(
-            !conversion_is_webhook,
-            "conversion strategy must not be Webhook"
-        );
     }
 
     // ========================================================================

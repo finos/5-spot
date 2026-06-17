@@ -9,6 +9,155 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-06-17 09:00] - Pin deploy manifest image tags to the release version; crdgen back to stdout
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Makefile`: NEW `set-image-version VERSION=…` target — rewrites every
+  `ghcr.io/finos/5-spot*` image tag under `deploy/` (controller, both
+  spot-schedule providers, reclaim agent, kata-config agent) to the given
+  version. Tag-suffix-only regex, so it is independent of the tag committed in
+  git. Added to `.PHONY`.
+- `.github/workflows/build.yaml` (`package-deploy-manifests`, release-only):
+  added a "Pin deployment image versions" step running
+  `make set-image-version VERSION=${{ needs.extract-version.outputs.tag_name }}`
+  before tarring, so the released `deploy-manifests.tar.gz` references the image
+  variant just built/pushed. Its "Regenerate CRDs" step now runs `make crds`.
+- `src/bin/crdgen.rs`: reverted to **stdout** output (the binary no longer writes
+  files or assumes `deploy/crds/` exists — matches `crddoc`). Args are parsed via
+  `clap` (a `ValueEnum` selector), consistent with the other binaries and
+  avoiding raw `std::env::args` (resolves Semgrep `rust.lang.security.args.args`,
+  code-scanning alert #175). No-arg prints all CRDs as a `---`-separated
+  multi-doc stream (pipe-to-`kubectl`-friendly); a selector (`scheduledmachine` /
+  `timebasedspotschedule` / `capitalmarketsschedule`) prints just one. The
+  file-writing approach was only introduced in the Phase-1 multi-version commit to
+  host the schedule/spotSchedule CEL injection, which ADR 0009 removed — so crdgen
+  is pure serialization again.
+- `Makefile` `crds` target: now owns the file layout, redirecting each selector
+  to `deploy/crds/<selector>.yaml`.
+- `deploy/crds/capitalmarketsschedule.yaml`: regenerated (picks up the
+  `TimeBasedSpotScheduleSpec` doc-comment fix in its description).
+
+### Why
+The deployment manifests hardcoded `:v0.1.0`; the release pipeline built/pushed
+`ghcr.io/finos/5-spot:<tag>` but shipped manifests still pointed at the stale
+tag. Pinning at release time keeps the shipped manifests in lockstep with the
+image that was actually built. crdgen returning to stdout keeps path/layout
+decisions with the caller (Makefile/CI), not baked into the binary.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
+## [2026-06-16 13:00] - ADR 0009: examples, time-based provider deploy manifests, and prose docs
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/crd.rs`: `ScheduledMachineSpec.schedule` is now a **required**
+  `SpotScheduleRef` (was `Option<ScheduleSpec>`); removed `spec.spotSchedule`;
+  added top-level `spec.enabled` master switch; removed `ScheduleSpec` and the
+  `v1alpha1` `ScheduledMachine` module; added the `TimeBasedSpotSchedule` CRD
+  (spec + status) in `spotschedules.5spot.finos.org`. `is_enabled()` now reads
+  `spec.enabled`.
+- `src/providers/time_based.rs` (+tests) and `src/bin/spot_schedule_time_based.rs`:
+  NEW core/default provider controller — `is_active_at`/`next_transition`/
+  `reconcile`, mirroring `capital_markets`; publishes `status.active`.
+- `src/reconcilers/{scheduled_machine,helpers,spot_schedule_watch}.rs`: drive
+  activation solely from the single `spec.schedule` provider verdict; removed
+  `evaluate_schedule`; simplified `compose_should_be_active` (verdict + hold-last
+  -state); replaced `validate_activation_source` with `validate_schedule_ref`;
+  emergency-reclaim loop-breaker now patches `spec.enabled=false` (never the
+  shared provider object); watch reverse-index keys off `spec.schedule`.
+- `src/metrics.rs` (+tests): added `fivespot_time_based_active` /
+  `fivespot_time_based_transitions_total` + record fns.
+- `src/bin/{crdgen,crddoc}.rs`: emit the `TimeBasedSpotSchedule` CRD; single
+  `v1beta1` `ScheduledMachine` (dropped the multi-version merge + schedule/
+  spotSchedule XOR CEL); api.md regenerated.
+- `deploy/admission/validatingadmissionpolicy.yaml`: removed the inline-schedule
+  rules (cron/day/hour) and the "at least one" rule; the remaining schedule rule
+  pins `spec.schedule.apiVersion` to the provider group; `v1beta1`-only.
+- `docs/adr/0009-*.md` (+ index; amended 0006 §1/§3 and 0007);
+  `docs/architecture/calm/architecture.json` (provider model + flows; validated,
+  diagrams regenerated).
+- `examples/scheduledmachine-*.yaml`: migrated all to `5spot.finos.org/v1beta1`,
+  added `spec.enabled: true`, and replaced every inline `schedule:` / removed
+  `spotSchedule:` block with a single `spec.schedule:` provider reference. Basic
+  / weekend / tainted / bad-taint / kata / child-cluster now reference a
+  `TimeBasedSpotSchedule`; `scheduledmachine-spot-schedule.yaml` references
+  `CapitalMarketsSchedule` (`nyse-equities`) alone (no more AND-composition).
+- `examples/timebasedspotschedule.yaml`: NEW companion file defining the
+  `business-hours` / `weekend-only` (ns `default`) and `business-hours-toronto`
+  (ns `hosted-cluster-alpha`) provider objects the SM examples reference.
+- `examples/capitalmarketsschedule.yaml`, `examples/workshop/*`: updated
+  comments / shape to `spec.schedule` reference + `spec.enabled`; workshop now
+  installs the time-based provider and toggles `spec.enabled` / `tbss`.
+- `deploy/spot-schedule-providers/time-based/`: NEW provider deploy bundle
+  (serviceaccount / clusterrole / clusterrolebinding / deployment /
+  kustomization), mirroring the capital-markets bundle — least-privilege RBAC
+  (get/list/watch `timebasedspotschedules`, update/patch its `/status`),
+  hardened `Deployment` running `spot-schedule-time-based`.
+- `docs/src/**` and `docs/mkdocs.yml`: rewrote all spot-schedule prose to the
+  ADR 0009 shape (required `spec.schedule` provider ref; `TimeBasedSpotSchedule`
+  as the default first-party provider; `spec.enabled` master switch; emergency
+  reclaim sets `spec.enabled`; VAP single group-pin rule 4 / `v1beta1`-only
+  matchConstraints). Added a new `docs/src/guides/time-based-schedule.md` guide
+  and listed it in the nav.
+
+### Why
+ADR 0009 reified the former inline `ScheduledMachine.spec.schedule` window into
+the first-party `TimeBasedSpotSchedule` provider, made `spec.schedule` a required
+provider reference, dropped the SM `v1alpha1` version and the `spotSchedule`
+field, and introduced `spec.enabled`. Examples, deploy manifests, and docs had
+to match the new contract.
+
+### Impact
+- [x] Breaking change (pre-release CRD contract: `spec.schedule` is now a
+  required provider reference, `spec.spotSchedule` removed, SM `v1alpha1` dropped)
+- [x] Requires cluster rollout (new CRD + provider controller + RBAC; re-apply
+  `deploy/crds/` and the time-based provider bundle)
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/src/guides/create-your-own-provider.md`: NEW standalone guide — a
+  complete, copy-pasteable walkthrough building a minimal `ManualSchedule`
+  provider end to end: CRD (namespaced, `status` subresource), controller
+  (status-patch reconcile, `Ready` semantics, event-driven not polling),
+  least-privilege RBAC, deployment, referencing from a `ScheduledMachine`,
+  verification, and additive versioning. Language-agnostic.
+- `docs/mkdocs.yml`: grouped both provider guides under a **Spot Schedule
+  Providers** sub-section in Guides (CapitalMarketsSchedule + Create Your Own
+  Provider) — makes the existing capital-markets guide more discoverable.
+- `docs/src/reference/spot-schedule-contract.md`: replaced the inline
+  "implement your own" walkthrough with a pointer to the new guide (reference =
+  spec, guide = how-to); added both guides to See-also.
+- `docs/src/guides/capital-markets-schedule.md`: added a See-also section
+  cross-linking the concept, contract, and the new provider guide.
+
+### Why
+The "create your own provider" how-to was buried inside the contract *reference*
+page; operators asked for it (and the CapitalMarketsSchedule guide) as
+first-class entries under **Guides**. Splitting how-to from spec also keeps the
+reference page focused.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
 ## [2026-06-15 10:30] - Restore dropped spot-schedule metric functions (build fix)
 
 **Author:** Erick Bourgeois

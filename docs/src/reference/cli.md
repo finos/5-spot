@@ -160,7 +160,7 @@ crdgen > deploy/crds/scheduledmachine.yaml
 Generate API documentation:
 
 ```bash
-crddoc > docs/reference/api.md
+crddoc > docs/src/reference/api.md
 ```
 
 ## Exit Codes

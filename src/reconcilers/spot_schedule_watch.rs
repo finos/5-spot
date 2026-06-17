@@ -134,12 +134,12 @@ impl ReverseIndex {
 }
 
 /// Build the [`ProviderKey`] a `ScheduledMachine` references, if any. Returns
-/// `None` when the SM has no `spec.spotSchedule`, no namespace, or an
-/// `apiVersion` without a `group/version` form (the latter is already rejected
-/// at admission, so it is a defensive guard).
+/// `None` when the SM has no namespace or an `apiVersion` without a
+/// `group/version` form (the latter is already rejected at admission, so it is a
+/// defensive guard). `spec.schedule` itself is required since ADR 0009.
 #[must_use]
 pub fn provider_key_for(sm: &ScheduledMachine) -> Option<ProviderKey> {
-    let reference = sm.spec.spot_schedule.as_ref()?;
+    let reference = &sm.spec.schedule;
     let namespace = sm.namespace()?;
     let (group, version) = reference.api_version.split_once('/')?;
     Some(ProviderKey {
