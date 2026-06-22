@@ -18,10 +18,11 @@ use std::sync::Arc;
 use anyhow::Result;
 use clap::Parser;
 use five_spot::constants::{
-    CAPI_GROUP, CAPI_MACHINE_API_VERSION, CAPI_RESOURCE_MACHINES, CHILD_NODE_EVENT_CHANNEL_CAP,
-    DEFAULT_LEASE_DURATION_SECS, DEFAULT_LEASE_GRACE_SECS, DEFAULT_LEASE_NAME,
-    DEFAULT_LEASE_NAMESPACE, DEFAULT_LEASE_RENEW_DEADLINE_SECS, DEFAULT_LEASE_RETRY_PERIOD_SECS,
-    HEALTH_PORT, K8S_API_TIMEOUT_SECS, METRICS_PORT, SPOT_SCHEDULE_EVENT_CHANNEL_CAP,
+    capi_machine_api_version, set_capi_machine_api_version, CAPI_GROUP, CAPI_RESOURCE_MACHINES,
+    CHILD_NODE_EVENT_CHANNEL_CAP, DEFAULT_LEASE_DURATION_SECS, DEFAULT_LEASE_GRACE_SECS,
+    DEFAULT_LEASE_NAME, DEFAULT_LEASE_NAMESPACE, DEFAULT_LEASE_RENEW_DEADLINE_SECS,
+    DEFAULT_LEASE_RETRY_PERIOD_SECS, HEALTH_PORT, K8S_API_TIMEOUT_SECS, METRICS_PORT,
+    SPOT_SCHEDULE_EVENT_CHANNEL_CAP,
 };
 use five_spot::crd::ScheduledMachine;
 use five_spot::health::{start_health_server, HealthState};
@@ -179,6 +180,15 @@ async fn main() -> Result<()> {
     // Mark Kubernetes as connected
     health_state.set_k8s_connected(true);
 
+    // Resolve the CAPI Machine API version the cluster actually serves (v1beta1 on
+    // CAPI ≤ v1.10, v1beta2 on v1.11+ / modern k0smotron), so we create and watch
+    // Machines at the version downstream controllers expect. Env override wins;
+    // discovery otherwise. MANDATORY — if it can't be resolved the controller errors
+    // out (and is restarted by Kubernetes) rather than guessing a version.
+    let capi_machine_version = resolve_capi_machine_version(&client).await?;
+    info!(version = %capi_machine_version, "Using CAPI Machine API version");
+    set_capi_machine_api_version(capi_machine_version);
+
     // Create shared context
     let context = Arc::new(
         Context::new(client.clone(), cli.instance_id, cli.instance_count)
@@ -296,7 +306,7 @@ async fn main() -> Result<()> {
     //    `SM.status.nodeRef.name` closes the watch-amplification vector
     //    documented in Phase 3 of the 2026-04-25 security audit roadmap.
     let machine_ar = ApiResource::from_gvk_with_plural(
-        &GroupVersionKind::gvk(CAPI_GROUP, CAPI_MACHINE_API_VERSION, "Machine"),
+        &GroupVersionKind::gvk(CAPI_GROUP, capi_machine_api_version(), "Machine"),
         CAPI_RESOURCE_MACHINES,
     );
     let machines_api: Api<DynamicObject> = Api::all_with(client.clone(), &machine_ar);
@@ -420,6 +430,57 @@ async fn main() -> Result<()> {
 
     info!("Controller shut down");
     Ok(())
+}
+
+/// Resolve which `cluster.x-k8s.io` Machine API version this cluster serves.
+///
+/// Precedence: the `CAPI_MACHINE_API_VERSION` env var (explicit operator pin) →
+/// API discovery of the group's recommended/served version. Discovery is
+/// **mandatory** — there is no compile-time default. If the version can't be
+/// determined (Cluster API not installed / not yet ready) this returns an error and
+/// the controller exits, to be restarted by Kubernetes — we never guess a version.
+/// One binary works against CAPI lines serving `v1beta1` (≤ v1.10) or `v1beta2`
+/// (v1.11+ / modern k0smotron) with no config.
+async fn resolve_capi_machine_version(client: &Client) -> Result<String> {
+    if let Ok(pinned) = std::env::var("CAPI_MACHINE_API_VERSION") {
+        let pinned = pinned.trim();
+        if !pinned.is_empty() {
+            info!(version = %pinned, "CAPI Machine API version pinned via env");
+            return Ok(pinned.to_string());
+        }
+    }
+    // Retry briefly so a controller that starts moments before CAPI finishes
+    // installing converges instead of crash-looping on the first probe.
+    const ATTEMPTS: u32 = 6;
+    let mut last_reason = String::from("discovery not attempted");
+    for attempt in 1..=ATTEMPTS {
+        match kube::discovery::group(client, CAPI_GROUP).await {
+            Ok(apigroup) => match apigroup.recommended_kind("Machine") {
+                Some((ar, _caps)) => {
+                    info!(version = %ar.version, "Discovered CAPI Machine API version");
+                    return Ok(ar.version);
+                }
+                None => {
+                    last_reason =
+                        format!("group '{CAPI_GROUP}' is served but exposes no Machine kind");
+                }
+            },
+            Err(error) => {
+                last_reason = format!("discovery of '{CAPI_GROUP}' failed: {error}");
+            }
+        }
+        warn!(
+            attempt,
+            max = ATTEMPTS,
+            reason = %last_reason,
+            "CAPI Machine API version not resolved yet; retrying"
+        );
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    }
+    Err(anyhow::anyhow!(
+        "could not resolve the CAPI Machine API version after {ATTEMPTS} attempts ({last_reason}); \
+         is Cluster API installed? set the CAPI_MACHINE_API_VERSION env var to override discovery"
+    ))
 }
 
 /// Check if the `ScheduledMachine` CRD is installed in the cluster

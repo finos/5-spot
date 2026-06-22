@@ -17,6 +17,8 @@
 //! - Operator instance environment variables
 //! - Security constraints (`MAX_DURATION_SECS`, `RESERVED_LABEL_PREFIXES`, …)
 
+use std::sync::OnceLock;
+
 // ============================================================================
 // Kubernetes API Constants
 // ============================================================================
@@ -623,11 +625,52 @@ pub const CAPI_MACHINE_API_GROUP: &str = "cluster.x-k8s.io";
 /// CAPI API group
 pub const CAPI_GROUP: &str = "cluster.x-k8s.io";
 
-/// CAPI Machine API version
-pub const CAPI_MACHINE_API_VERSION: &str = "v1beta1";
+/// Runtime-resolved CAPI Machine API version (`"v1beta1"` / `"v1beta2"`), recorded
+/// once at startup by `main` via **mandatory discovery** (or the
+/// `CAPI_MACHINE_API_VERSION` env override). There is deliberately NO compile-time
+/// default version: the controller refuses to start if it can't determine which
+/// version the cluster serves, rather than silently guessing one. The Machine
+/// *group* and *kind* (`cluster.x-k8s.io` / `Machine`) are fixed by the CAPI
+/// contract; only the version varies, and it is never hardcoded for production.
+static CAPI_MACHINE_API_VERSION_RUNTIME: OnceLock<String> = OnceLock::new();
 
-/// Full CAPI Machine API version string
-pub const CAPI_MACHINE_API_VERSION_FULL: &str = "cluster.x-k8s.io/v1beta1";
+/// Record the CAPI Machine API version resolved at startup (discovery or the
+/// `CAPI_MACHINE_API_VERSION` env override). Idempotent — only the first call
+/// takes effect; later calls are ignored (the served version is fixed for the
+/// controller's lifetime).
+pub fn set_capi_machine_api_version(version: String) {
+    let _ = CAPI_MACHINE_API_VERSION_RUNTIME.set(version);
+}
+
+/// The CAPI Machine API version the controller should create/watch Machines at.
+///
+/// Panics if called before [`set_capi_machine_api_version`] has run — that is an
+/// invariant violation: `main` resolves the version (mandatory discovery) before
+/// any reconcile runs, so the value is always present in production. Unit tests,
+/// which never perform real discovery, get the `v1beta1` their fixtures assume.
+#[must_use]
+pub fn capi_machine_api_version() -> &'static str {
+    match CAPI_MACHINE_API_VERSION_RUNTIME.get() {
+        Some(version) => version.as_str(),
+        None => {
+            #[cfg(test)]
+            {
+                "v1beta1"
+            }
+            #[cfg(not(test))]
+            panic!(
+                "CAPI Machine API version not resolved — set_capi_machine_api_version() \
+                 must run (after mandatory discovery) before any reconcile"
+            )
+        }
+    }
+}
+
+/// Full `cluster.x-k8s.io/<version>` string for the active CAPI Machine version.
+#[must_use]
+pub fn capi_machine_api_version_full() -> String {
+    format!("{CAPI_GROUP}/{}", capi_machine_api_version())
+}
 
 /// CAPI cluster name label
 pub const CAPI_CLUSTER_NAME_LABEL: &str = "cluster.x-k8s.io/cluster-name";

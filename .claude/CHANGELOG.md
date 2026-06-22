@@ -9,6 +9,62 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-06-22 12:00] - CAPI Machine API version: passthrough from bootstrapSpec + mandatory discovery (no hardcoded version)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/constants.rs`: removed the hardcoded `CAPI_MACHINE_API_VERSION` /
+  `CAPI_MACHINE_API_VERSION_FULL` consts. The version is now a runtime value
+  (`OnceLock`) set once at startup via `set_capi_machine_api_version`; the accessor
+  `capi_machine_api_version()` panics if read before resolution (an invariant —
+  `main` resolves before any reconcile) and returns `v1beta1` only under
+  `#[cfg(test)]` for fixtures. Group/kind (`cluster.x-k8s.io`/`Machine`) stay fixed
+  by the CAPI contract; only the version is data-driven.
+- `src/main.rs`: `resolve_capi_machine_version` now returns `Result` and discovery
+  is **mandatory** — precedence is `CAPI_MACHINE_API_VERSION` env override →
+  `kube::discovery` of the served `machines.cluster.x-k8s.io` version → error (6×5s
+  retry, then the controller exits and is restarted by Kubernetes). No silent
+  default. The Machine watch uses the resolved version.
+- `src/reconcilers/helpers.rs`: new `machine_api_version_for` helper derives the
+  Machine version from the version component of the user's `bootstrapSpec.apiVersion`
+  (passthrough), falling back to the discovered served version. Machine **create**
+  and **delete** both use it; **watch**/**fetch** use the discovered version (CAPI
+  conversion webhooks bridge any mismatch). `extract_machine_refs` relaxed so a
+  v1beta2 `nodeRef` (only `name` guaranteed) still resolves (defaults apiVersion→`v1`,
+  kind→`Node`).
+- `src/reconcilers/helpers_tests.rs`: +5 unit tests — 4 for `machine_api_version_for`
+  (v1beta2/v1beta1 passthrough, `None` fallback, malformed fallback) and a mock-client
+  test asserting `remove_machine_from_cluster` issues the Machine DELETE at the
+  bootstrapSpec version.
+- `docs/src/operations/configuration.md`: documented the new `CAPI_MACHINE_API_VERSION`
+  env override and added a "CAPI Machine API version" section explaining the
+  passthrough + mandatory-discovery model.
+- `docs/src/advanced/capi-integration.md`: added a "CAPI API version (passthrough)"
+  note to the Machine Creation Flow — the Machine version follows `bootstrapSpec`,
+  the `v1beta1` examples are illustrative not fixed.
+- `docs/src/operations/troubleshooting.md`: new entry for the controller exiting at
+  startup when Cluster API isn't discoverable ("could not resolve the CAPI Machine
+  API version").
+
+### Why
+5-Spot v0.2.2 hardcoded the CAPI Machine version to `v1beta1`, which crash-loops
+modern k0smotron / CAPI ≥ v1.11 (they serve/watch `v1beta2`). Making the version
+data-driven (user's bootstrapSpec) with mandatory served-version discovery lets one
+controller image work against both v1beta1 (CAPD) and v1beta2 (modern k0smotron)
+clusters, with no hardcoded opinion. Enables the workshop's k0smotron tier.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only (code + docs)
+
+Note: the controller now **requires** CAPI to be discoverable at startup (it retries
+~30s then exits→restarts) instead of silently defaulting to `v1beta1`. Security model
+unchanged — the bootstrap/infra **group** allowlist (`validate_api_group`) is the
+control; the Machine group is fixed and the version is not a security boundary.
+
 ## [2026-06-17 09:00] - Pin deploy manifest image tags to the release version; crdgen back to stdout
 
 **Author:** Erick Bourgeois

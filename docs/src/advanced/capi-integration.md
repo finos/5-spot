@@ -107,6 +107,18 @@ sequenceDiagram
     5S->>SM: Update status: Active
 ```
 
+> **CAPI API version (passthrough).** The `Machine` 5-Spot creates is always in the
+> fixed `cluster.x-k8s.io` group, but its **version** is not hardcoded — it follows
+> the version component of your `bootstrapSpec.apiVersion`. Declare
+> `bootstrap.cluster.x-k8s.io/v1beta1` and 5-Spot creates (and deletes) a `v1beta1`
+> Machine; declare `…/v1beta2` and it uses `v1beta2`, so the Machine shares one CAPI
+> contract version with your bootstrap and infrastructure objects. For watching and
+> reading Machines the controller uses the version the cluster *serves* (discovered
+> at startup) and **requires** Cluster API to be installed — see
+> [Configuration → CAPI Machine API version](../operations/configuration.md#capi-machine-api-version).
+> The `cluster.x-k8s.io/v1beta1` shown in the examples above is therefore one valid
+> choice, not a fixed requirement.
+
 ## Machine Deletion Flow
 
 ```mermaid

@@ -19,6 +19,7 @@
 | `LEASE_DURATION_SECONDS` | `15` | How long the Lease is considered valid; a new leader is elected if not renewed in time |
 | `LEASE_RENEW_DEADLINE_SECONDS` | `10` | The leader must renew the Lease within this many seconds; grace = duration − deadline |
 | `LEASE_RETRY_PERIOD_SECONDS` | `2` | Documented for ops parity; not a direct LeaseManager parameter |
+| `CAPI_MACHINE_API_VERSION` | _(discovered)_ | Pins the Cluster API `Machine` version (`v1beta1` / `v1beta2`). Normally **left unset** — the controller discovers the version the cluster serves. Set only to override discovery (e.g. an air-gapped cluster where API discovery is restricted). See [CAPI Machine API version](#capi-machine-api-version). |
 
 ## Command-Line Arguments
 
@@ -68,6 +69,28 @@ LEASE_RENEW_DEADLINE_SECONDS=10 \
 Non-leader replicas watch for leadership changes and take over automatically within one `LEASE_DURATION_SECONDS` window if the leader stops renewing.
 
 > **Note:** Leader election and multi-instance sharding (`OPERATOR_INSTANCE_COUNT > 1`) are alternative HA strategies. Use leader election for active/standby HA; use instance sharding to distribute load across all replicas.
+
+### CAPI Machine API version
+
+5-Spot creates and watches Cluster API `Machine` objects. The `Machine` *group* and
+*kind* (`cluster.x-k8s.io` / `Machine`) are fixed by the CAPI contract, but the
+served **version** varies by cluster — `v1beta1` on CAPI ≤ v1.10, `v1beta2` on
+v1.11+ and modern k0smotron. The controller resolves it at startup with **no
+hardcoded default**:
+
+1. **`CAPI_MACHINE_API_VERSION`** — if set, this exact version is used (operator override).
+2. **Discovery** — otherwise the controller discovers the version the API server
+   serves for `machines.cluster.x-k8s.io`.
+
+Discovery is **mandatory**: if neither source yields a version (for example Cluster
+API is not installed yet), the controller retries briefly, then exits and is
+restarted by Kubernetes — it never guesses a version.
+
+Per `ScheduledMachine`, the **created** `Machine` follows the version component of
+your `bootstrapSpec.apiVersion` (passthrough), so the Machine, bootstrap, and
+infrastructure objects all share one CAPI contract version. One controller image
+therefore works against both `v1beta1` (e.g. CAPD) and `v1beta2` (e.g. modern
+k0smotron) clusters with no configuration.
 
 ## Reclaim agent (DaemonSet)
 

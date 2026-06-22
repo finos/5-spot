@@ -42,16 +42,15 @@ use tracing::{debug, error, info, warn};
 
 use super::{Context, ReconcilerError};
 use crate::constants::{
-    ALLOWED_BOOTSTRAP_API_GROUPS, ALLOWED_INFRASTRUCTURE_API_GROUPS, API_VERSION_FULL,
-    CAPI_CLUSTER_NAME_LABEL, CAPI_GROUP, CAPI_MACHINE_API_VERSION, CAPI_MACHINE_API_VERSION_FULL,
-    CAPI_RESOURCE_MACHINES, CONDITION_STATUS_TRUE, CONDITION_TYPE_READY, DEFAULT_INSTANCE_ID,
-    ENV_OPERATOR_INSTANCE_ID, ERROR_REQUEUE_SECS, FINALIZER_CLEANUP_TIMEOUT_SECS,
-    FINALIZER_SCHEDULED_MACHINE, MAX_BACKOFF_SECS, MAX_CLUSTER_NAME_LEN, MAX_DURATION_SECS,
-    MAX_KILL_IF_COMMANDS_COUNT, MAX_KILL_IF_COMMAND_LEN, MAX_RECONCILE_RETRIES, PHASE_ACTIVE,
-    PHASE_ERROR, PHASE_INACTIVE, PHASE_SHUTTING_DOWN, PHASE_TERMINATED,
-    POD_EVICTION_GRACE_PERIOD_SECS, RBAC_VERB_CREATE, REASON_GRACE_PERIOD, REASON_KILL_SWITCH,
-    REASON_RECONCILE_SUCCEEDED, RESERVED_LABEL_PREFIXES, SCHEDULED_MACHINE_LABEL,
-    TIMER_REQUEUE_SECS,
+    capi_machine_api_version, ALLOWED_BOOTSTRAP_API_GROUPS, ALLOWED_INFRASTRUCTURE_API_GROUPS,
+    API_VERSION_FULL, CAPI_CLUSTER_NAME_LABEL, CAPI_GROUP, CAPI_RESOURCE_MACHINES,
+    CONDITION_STATUS_TRUE, CONDITION_TYPE_READY, DEFAULT_INSTANCE_ID, ENV_OPERATOR_INSTANCE_ID,
+    ERROR_REQUEUE_SECS, FINALIZER_CLEANUP_TIMEOUT_SECS, FINALIZER_SCHEDULED_MACHINE,
+    MAX_BACKOFF_SECS, MAX_CLUSTER_NAME_LEN, MAX_DURATION_SECS, MAX_KILL_IF_COMMANDS_COUNT,
+    MAX_KILL_IF_COMMAND_LEN, MAX_RECONCILE_RETRIES, PHASE_ACTIVE, PHASE_ERROR, PHASE_INACTIVE,
+    PHASE_SHUTTING_DOWN, PHASE_TERMINATED, POD_EVICTION_GRACE_PERIOD_SECS, RBAC_VERB_CREATE,
+    REASON_GRACE_PERIOD, REASON_KILL_SWITCH, REASON_RECONCILE_SUCCEEDED, RESERVED_LABEL_PREFIXES,
+    SCHEDULED_MACHINE_LABEL, TIMER_REQUEUE_SECS,
 };
 use crate::crd::{Condition, NodeRef, ScheduledMachine, ScheduledMachineStatus};
 use crate::metrics::{
@@ -1113,6 +1112,23 @@ pub fn validate_schedule_ref(
 // CAPI Resource Creation
 // ============================================================================
 
+/// Derive the CAPI `Machine` API version (`v1beta1` / `v1beta2`) for a
+/// `ScheduledMachine` from the version component of its bootstrapSpec `apiVersion`
+/// (passthrough — the Machine shares the one CAPI contract version the user
+/// declared for bootstrap + infra). Falls back to the runtime-resolved *served*
+/// version ([`capi_machine_api_version`]) when bootstrap carries no `/<version>`
+/// segment. The Machine group/kind (`cluster.x-k8s.io`/`Machine`) are fixed by the
+/// CAPI contract; only the version is data-driven, never hardcoded for production.
+fn machine_api_version_for(bootstrap_api_version: Option<&str>) -> String {
+    bootstrap_api_version
+        .and_then(|bv| bv.rsplit_once('/').map(|(_, ver)| ver))
+        .filter(|ver| !ver.is_empty())
+        .map_or_else(
+            || capi_machine_api_version().to_string(),
+            |ver| ver.to_string(),
+        )
+}
+
 /// Add machine to cluster by creating bootstrap, infrastructure, and Machine resources
 ///
 /// This function:
@@ -1166,6 +1182,12 @@ pub async fn add_machine_to_cluster(
             "bootstrapSpec missing required field 'apiVersion'".to_string(),
         )
     })?;
+    // The created CAPI Machine shares the contract version the user declared on
+    // bootstrapSpec (passthrough); see machine_api_version_for.
+    let machine_api_version_full = format!(
+        "{CAPI_GROUP}/{}",
+        machine_api_version_for(Some(bootstrap_api_version))
+    );
     let bootstrap_kind = resource.spec.bootstrap_spec.kind().ok_or_else(|| {
         ReconcilerError::InvalidConfig("bootstrapSpec missing required field 'kind'".to_string())
     })?;
@@ -1245,7 +1267,7 @@ pub async fn add_machine_to_cluster(
     ensure_can_create(
         client,
         namespace,
-        CAPI_MACHINE_API_VERSION_FULL,
+        &machine_api_version_full,
         "Machine",
         "machine",
     )
@@ -1370,7 +1392,7 @@ pub async fn add_machine_to_cluster(
     }
 
     let machine_obj = json!({
-        "apiVersion": CAPI_MACHINE_API_VERSION_FULL,
+        "apiVersion": machine_api_version_full.as_str(),
         "kind": "Machine",
         "metadata": {
             "name": name,
@@ -1401,7 +1423,7 @@ pub async fn add_machine_to_cluster(
     create_dynamic_resource(
         client,
         namespace,
-        CAPI_MACHINE_API_VERSION_FULL,
+        &machine_api_version_full,
         "Machine",
         machine_obj,
     )
@@ -1625,9 +1647,13 @@ pub async fn remove_machine_from_cluster(
         "Deleting CAPI resources"
     );
 
-    // 1. Delete the Machine resource first (this triggers CAPI cleanup)
+    // 1. Delete the Machine resource first (this triggers CAPI cleanup). Use the
+    //    CAPI contract version the user declared on bootstrapSpec (passthrough,
+    //    matching create); fall back to the runtime-discovered served version when
+    //    it has none. CAPI conversion bridges either way.
+    let machine_api_version = machine_api_version_for(resource.spec.bootstrap_spec.api_version());
     let ar = kube::api::ApiResource::from_gvk_with_plural(
-        &kube::api::GroupVersionKind::gvk(CAPI_GROUP, CAPI_MACHINE_API_VERSION, "Machine"),
+        &kube::api::GroupVersionKind::gvk(CAPI_GROUP, &machine_api_version, "Machine"),
         CAPI_RESOURCE_MACHINES,
     );
     let machines: Api<kube::core::DynamicObject> =
@@ -1696,9 +1722,21 @@ pub fn extract_machine_refs(
         .get("status")
         .and_then(|s| s.get("nodeRef"))
         .and_then(|nr| {
-            let api_version = nr.get("apiVersion").and_then(serde_json::Value::as_str)?;
-            let kind = nr.get("kind").and_then(serde_json::Value::as_str)?;
+            // `name` is the only field guaranteed across CAPI versions: v1beta1's
+            // nodeRef is a corev1 ObjectReference (apiVersion/kind/uid present),
+            // but v1beta2 simplified it to a `MachineNodeReference` carrying just
+            // `name` (it is always a core/v1 Node). Require only `name`; default
+            // the rest so v1beta2 nodeRef enrichment (node taints, reclaim-agent)
+            // still fires.
             let name = nr.get("name").and_then(serde_json::Value::as_str)?;
+            let api_version = nr
+                .get("apiVersion")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("v1");
+            let kind = nr
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("Node");
             let uid = nr
                 .get("uid")
                 .and_then(serde_json::Value::as_str)
@@ -1727,7 +1765,7 @@ pub async fn fetch_capi_machine(
     machine_name: &str,
 ) -> Result<Option<kube::core::DynamicObject>, ReconcilerError> {
     let ar = kube::api::ApiResource::from_gvk_with_plural(
-        &kube::api::GroupVersionKind::gvk(CAPI_GROUP, CAPI_MACHINE_API_VERSION, "Machine"),
+        &kube::api::GroupVersionKind::gvk(CAPI_GROUP, capi_machine_api_version(), "Machine"),
         CAPI_RESOURCE_MACHINES,
     );
     let machines: Api<kube::core::DynamicObject> =

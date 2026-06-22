@@ -181,6 +181,26 @@ kubectl describe machine <name>
 - Check CAPI provider health
 - Review CAPI controller logs
 
+### Controller exits at startup: "could not resolve the CAPI Machine API version"
+
+**Symptoms:**
+- The controller pod crash-loops shortly after starting (`CrashLoopBackOff`)
+- Logs end with `could not resolve the CAPI Machine API version after 6 attempts … is Cluster API installed?`
+- Preceding lines show `CAPI Machine API version not resolved yet; retrying`
+
+**Cause:**
+The controller resolves which `cluster.x-k8s.io` Machine version the cluster serves
+at startup (see [Configuration → CAPI Machine API version](configuration.md#capi-machine-api-version)).
+Discovery is **mandatory** — it never guesses a version. If Cluster API is not
+installed, or its CRDs / aggregated discovery aren't ready yet, the controller
+retries (~30s) and then exits so Kubernetes restarts it.
+
+**Solution:**
+- Install Cluster API before or alongside 5-Spot — `kubectl get crd machines.cluster.x-k8s.io` must succeed.
+- If discovery is restricted (air-gapped / locked-down clusters), set
+  `CAPI_MACHINE_API_VERSION` (`v1beta1` or `v1beta2`) to skip discovery.
+- Once CAPI is present the controller resolves on its next restart — no manual action needed.
+
 ### Reconciliation Retrying with Increasing Delay
 
 **Symptoms:**

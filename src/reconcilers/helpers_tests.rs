@@ -1311,18 +1311,30 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_machine_refs_incomplete_node_ref_returns_none() {
-        // Old CAPI versions or in-flight Machines may have a partial nodeRef.
-        // We treat anything missing apiVersion/kind/name as "not ready yet" so
-        // the status is only populated once CAPI has fully resolved the Node.
+    fn test_extract_machine_refs_name_only_node_ref_resolves() {
+        // CAPI v1beta2 simplified `status.nodeRef` to a `MachineNodeReference`
+        // carrying only `name` (it is always a core/v1 Node). `extract_machine_refs`
+        // must resolve from `name` alone, defaulting apiVersion→v1, kind→Node, so
+        // node-taints and reclaim-agent provisioning still fire under v1beta2.
         let m = machine_dyn(serde_json::json!({
-            "status": { "nodeRef": { "name": "legacy" } }
+            "status": { "nodeRef": { "name": "worker-1" } }
         }));
         let (_, n) = extract_machine_refs(&m);
-        assert!(
-            n.is_none(),
-            "nodeRef missing apiVersion/kind must be treated as None"
-        );
+        let nref = n.expect("name-only nodeRef must resolve (v1beta2 contract)");
+        assert_eq!(nref.name, "worker-1");
+        assert_eq!(nref.api_version, "v1");
+        assert_eq!(nref.kind, "Node");
+        assert!(nref.uid.is_none());
+    }
+
+    #[test]
+    fn test_extract_machine_refs_missing_name_returns_none() {
+        // `name` is the one required field — a nodeRef without it is "not ready".
+        let m = machine_dyn(serde_json::json!({
+            "status": { "nodeRef": { "apiVersion": "v1", "kind": "Node" } }
+        }));
+        let (_, n) = extract_machine_refs(&m);
+        assert!(n.is_none(), "nodeRef without a name must be None");
     }
 
     #[test]
@@ -1487,6 +1499,146 @@ mod tests {
             "403 must map to CapiError, got: {err:?}"
         );
 
+        srv.await.unwrap();
+    }
+
+    // ========================================================================
+    // machine_api_version_for — bootstrapSpec passthrough + discovery fallback
+    // ========================================================================
+
+    #[test]
+    fn test_machine_api_version_for_passes_through_bootstrap_v1beta2() {
+        // The created/deleted Machine follows the CAPI contract version the user
+        // declared on bootstrapSpec — never a hardcoded one.
+        assert_eq!(
+            machine_api_version_for(Some("bootstrap.cluster.x-k8s.io/v1beta2")),
+            "v1beta2"
+        );
+    }
+
+    #[test]
+    fn test_machine_api_version_for_passes_through_bootstrap_v1beta1() {
+        assert_eq!(
+            machine_api_version_for(Some("bootstrap.cluster.x-k8s.io/v1beta1")),
+            "v1beta1"
+        );
+    }
+
+    #[test]
+    fn test_machine_api_version_for_none_falls_back_to_served_version() {
+        // No bootstrapSpec apiVersion → fall back to the runtime-resolved served
+        // version. In unit tests (no discovery) that is the cfg(test) default.
+        assert_eq!(machine_api_version_for(None), capi_machine_api_version());
+    }
+
+    #[test]
+    fn test_machine_api_version_for_malformed_falls_back_to_served_version() {
+        // A value with no `/<version>` segment can't be parsed — fall back to the
+        // served version rather than producing a bogus apiVersion or panicking.
+        assert_eq!(
+            machine_api_version_for(Some("bogus-no-slash")),
+            capi_machine_api_version()
+        );
+        assert_eq!(
+            machine_api_version_for(Some("trailing-slash/")),
+            capi_machine_api_version()
+        );
+    }
+
+    // ========================================================================
+    // remove_machine_from_cluster — deletes the Machine at the bootstrapSpec version
+    // ========================================================================
+
+    fn sm_for_delete(
+        name: &str,
+        namespace: &str,
+        bootstrap_api_version: &str,
+    ) -> crate::crd::ScheduledMachine {
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+        crate::crd::ScheduledMachine {
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                namespace: Some(namespace.to_string()),
+                ..Default::default()
+            },
+            spec: crate::crd::ScheduledMachineSpec {
+                cluster_name: "test-cluster".to_string(),
+                bootstrap_spec: crate::crd::EmbeddedResource(serde_json::json!({
+                    "apiVersion": bootstrap_api_version,
+                    "kind": "K0sWorkerConfig",
+                    "spec": {}
+                })),
+                infrastructure_spec: crate::crd::EmbeddedResource(serde_json::json!({
+                    "apiVersion": "infrastructure.cluster.x-k8s.io/v1beta2",
+                    "kind": "RemoteMachine",
+                    "spec": {}
+                })),
+                machine_template: None,
+                schedule: crate::crd::SpotScheduleRef {
+                    api_version: "spotschedules.5spot.finos.org/v1alpha1".to_string(),
+                    kind: "TimeBasedSpotSchedule".to_string(),
+                    name: "weekdays-9-5".to_string(),
+                },
+                enabled: true,
+                priority: 50,
+                graceful_shutdown_timeout: "5m".to_string(),
+                node_drain_timeout: "5m".to_string(),
+                kill_switch: false,
+                node_taints: vec![],
+                kill_if_commands: None,
+                kubeconfig_secret_ref: None,
+                kata: None,
+            },
+            status: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_remove_machine_from_cluster_deletes_at_bootstrap_version() {
+        // The Machine DELETE must target the CAPI version declared on bootstrapSpec
+        // (v1beta2 here), proving delete is passthrough — not pinned to a default.
+        // remove_machine_from_cluster issues exactly 3 deletes (Machine, bootstrap,
+        // infra); 404 on each is treated as already-gone, so the call succeeds.
+        let (client, handle) = mock_client_pair();
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            // 1) Machine delete — assert the bootstrapSpec version is used.
+            let (req, send) = h.next_request().await.expect("expected DELETE Machine");
+            assert_eq!(req.method(), http::Method::DELETE);
+            assert!(
+                req.uri()
+                    .path()
+                    .contains("/apis/cluster.x-k8s.io/v1beta2/namespaces/default/machines/sm-del"),
+                "Machine delete must use the bootstrapSpec version (v1beta2), got: {}",
+                req.uri().path()
+            );
+            send.send_response(
+                Response::builder()
+                    .status(404)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_error_body(404, "machine not found")))
+                    .unwrap(),
+            );
+            // 2) bootstrap delete, 3) infrastructure delete — 404 (already-gone).
+            for _ in 0..2 {
+                let (_r, s) = h
+                    .next_request()
+                    .await
+                    .expect("expected bootstrap/infra DELETE");
+                s.send_response(
+                    Response::builder()
+                        .status(404)
+                        .header("content-type", "application/json")
+                        .body(Body::from(k8s_error_body(404, "not found")))
+                        .unwrap(),
+                );
+            }
+        });
+
+        let sm = sm_for_delete("sm-del", "default", "bootstrap.cluster.x-k8s.io/v1beta2");
+        remove_machine_from_cluster(&sm, &client, "default")
+            .await
+            .expect("404 on each delete must be treated as already-deleted");
         srv.await.unwrap();
     }
 
