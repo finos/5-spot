@@ -41,7 +41,7 @@ spec:
           # Pin to a released version tag — NEVER use :latest (Trivy KSV-0013).
           image: ghcr.io/finos/5-spot:v0.1.0
           imagePullPolicy: IfNotPresent
-          command: ["spot-schedule-capital-markets"]
+          command: ["/spot-schedule-capital-markets"]
           env:
             - name: RUST_LOG
               value: "info"

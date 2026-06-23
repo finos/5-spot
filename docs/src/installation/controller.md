@@ -15,6 +15,15 @@ The `-R` (recursive) flag is required so `deploy/deployment/rbac/`
 it the Deployment will be created but fail to schedule with
 `serviceaccount "5spot-controller" not found`.
 
+!!! important "You also need a spot-schedule provider"
+    The controller alone does not decide *when* a machine is active — it reads
+    `status.active` from a spot-schedule **provider** (ADR 0009). `deploy/deployment/`
+    does **not** include one, so install at least the first-party
+    [`TimeBasedSpotSchedule` provider](../guides/time-based-schedule.md#install)
+    (`kubectl apply -k deploy/spot-schedule-providers/time-based/`). Without a provider
+    running, `ScheduledMachine`s referencing a schedule never activate. The provider
+    binaries ship inside the same `ghcr.io/finos/5-spot` image (selected by `command:`).
+
 ### Using Helm (Coming Soon)
 
 ```bash

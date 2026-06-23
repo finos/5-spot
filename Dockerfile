@@ -37,6 +37,12 @@ LABEL org.opencontainers.image.source="https://github.com/finos/5-spot" \
 # Copy the pre-built binary for the target architecture
 COPY --chmod=755 binaries/${TARGETARCH}/5spot /5spot
 
+# First-party spot-schedule providers (ADR 0009). Shipped in the same image; their
+# deploy manifests select them with `command: ["/spot-schedule-<provider>"]`. Without
+# a provider running, ScheduledMachines never see status.active and never activate.
+COPY --chmod=755 binaries/${TARGETARCH}/spot-schedule-time-based /spot-schedule-time-based
+COPY --chmod=755 binaries/${TARGETARCH}/spot-schedule-capital-markets /spot-schedule-capital-markets
+
 USER nonroot
 
 EXPOSE 8080

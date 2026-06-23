@@ -134,19 +134,23 @@ build-linux-arm64: ## Build for Linux ARM64 (requires cross toolchain)
 		exit 1; \
 	fi
 
-prepare-binaries-linux-amd64: build-linux-amd64 ## Build and prepare Linux x86_64 binary
-	@echo "Preparing Linux x86_64 binary for Docker build..."
+prepare-binaries-linux-amd64: build-linux-amd64 ## Build and prepare Linux x86_64 binaries
+	@echo "Preparing Linux x86_64 binaries for Docker build..."
 	@mkdir -p binaries/amd64
 	@cp target/x86_64-unknown-linux-gnu/release/5spot binaries/amd64/
-	@echo "✓ Binary ready: binaries/amd64/5spot"
-	@ls -lh binaries/amd64/5spot
+	@cp target/x86_64-unknown-linux-gnu/release/spot-schedule-time-based binaries/amd64/
+	@cp target/x86_64-unknown-linux-gnu/release/spot-schedule-capital-markets binaries/amd64/
+	@echo "✓ Binaries ready: 5spot, spot-schedule-time-based, spot-schedule-capital-markets"
+	@ls -lh binaries/amd64/
 
-prepare-binaries-linux-arm64: build-linux-arm64 ## Build and prepare Linux ARM64 binary
-	@echo "Preparing Linux ARM64 binary for Docker build..."
+prepare-binaries-linux-arm64: build-linux-arm64 ## Build and prepare Linux ARM64 binaries
+	@echo "Preparing Linux ARM64 binaries for Docker build..."
 	@mkdir -p binaries/arm64
 	@cp target/aarch64-unknown-linux-gnu/release/5spot binaries/arm64/
-	@echo "✓ Binary ready: binaries/arm64/5spot"
-	@ls -lh binaries/arm64/5spot
+	@cp target/aarch64-unknown-linux-gnu/release/spot-schedule-time-based binaries/arm64/
+	@cp target/aarch64-unknown-linux-gnu/release/spot-schedule-capital-markets binaries/arm64/
+	@echo "✓ Binaries ready: 5spot, spot-schedule-time-based, spot-schedule-capital-markets"
+	@ls -lh binaries/arm64/
 
 test: ## Run all tests
 	cargo test --all

@@ -9,6 +9,56 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-06-23 11:45] - Ship the spot-schedule provider binaries in the image (ADR 0009 providers were unrunnable)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: added explicit `[[bin]]` entries for `spot-schedule-time-based`
+  (`src/bin/spot_schedule_time_based.rs`) and `spot-schedule-capital-markets`
+  (`src/bin/spot_schedule_capital_markets.rs`). They were previously only
+  auto-discovered under their underscore file-stem names, which did not match the
+  hyphenated `command:` in their deploy manifests.
+- `Dockerfile`, `Dockerfile.chainguard`: also `COPY` `spot-schedule-time-based` and
+  `spot-schedule-capital-markets` into the image (alongside `/5spot`). The main image
+  is now multi-binary; `ENTRYPOINT` stays `/5spot` and providers select via `command:`.
+- `Makefile` (`prepare-binaries-linux-amd64`, `-arm64`): copy the two provider binaries
+  into `binaries/<arch>/` so the Docker build can pick them up.
+- `.github/workflows/build.yaml` (Build job): the artifact upload (PR/push + release)
+  now includes `spot-schedule-time-based` and `spot-schedule-capital-markets` — CI
+  uploads only the named binary, so without this the providers never reach the Docker
+  job (the multi-arch build failed with `binaries/arm64/spot-schedule-time-based: not
+  found`). `cargo build --release` already builds all `[[bin]]`s.
+- `.github/actions/prepare-docker-binaries/action.yaml`: copy the two provider binaries
+  from the downloaded artifacts into `binaries/<arch>/` for both arches (the local
+  `make prepare-binaries` is not used by CI — this composite action is).
+- `deploy/spot-schedule-providers/{time-based,capital-markets}/deployment.yaml`:
+  `command` changed to absolute paths (`/spot-schedule-time-based`,
+  `/spot-schedule-capital-markets`) — the distroless image has no PATH entry for a bare
+  name; the binaries live at `/`.
+- `docs/src/guides/time-based-schedule.md`, `docs/src/guides/capital-markets-schedule.md`,
+  `docs/src/installation/controller.md`: documented that each provider is a separate,
+  **required** Deployment shipped inside the main image (selected by `command:`), and
+  that without a provider running no `ScheduledMachine` referencing a schedule activates.
+
+### Why
+The spot-schedule providers (ADR 0009) had source and deploy manifests but were never
+wired into the build: the binaries were not declared with their deployed names, were
+not copied by `prepare-binaries`, and were not in the Dockerfiles. The published image
+therefore could not run them — a deployed provider crash-looped with
+`exec: "spot-schedule-time-based": executable file not found`, leaving every
+`ScheduledMachine` stuck (no `status.active` is ever written). Surfaced while bringing
+up the k0smotron workshop tier on a v1beta1 image.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only (code + docs)
+
+Note: the next image build is required before the provider Deployments can run; their
+`:v0.1.0` placeholder tags are pinned at release by `make set-image-version`.
+
 ## [2026-06-22 12:00] - CAPI Machine API version: passthrough from bootstrapSpec + mandatory discovery (no hardcoded version)
 
 **Author:** Erick Bourgeois

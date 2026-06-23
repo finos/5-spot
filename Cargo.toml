@@ -1,6 +1,6 @@
 [package]
 name = "five_spot"
-version = "0.1.1"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.90"
 authors = ["Erick Bourgeois<erick.bourgeois@rbccm.com>"]
@@ -27,6 +27,17 @@ path = "src/bin/auto_vex_presence.rs"
 [[bin]]
 name = "auto-vex-reachability"
 path = "src/bin/auto_vex_reachability.rs"
+
+# First-party spot-schedule providers (ADR 0009). Declared explicitly so the binary
+# names are hyphenated (matching the `command:` in their deploy manifests) rather than
+# the auto-discovered underscore names. Shipped IN the main 5-Spot image.
+[[bin]]
+name = "spot-schedule-time-based"
+path = "src/bin/spot_schedule_time_based.rs"
+
+[[bin]]
+name = "spot-schedule-capital-markets"
+path = "src/bin/spot_schedule_capital_markets.rs"
 
 [dependencies]
 # `unstable-runtime` is opt-in for `Controller::reconcile_on`, which we

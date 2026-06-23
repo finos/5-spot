@@ -48,6 +48,26 @@ runs:
           exit 1
         fi
 
+        # Copy the spot-schedule provider binaries. The main image is multi-binary —
+        # the provider Deployments select them via `command:` — so the Dockerfile
+        # COPYs them alongside /5spot. Without this they are absent from the artifacts
+        # and the build fails ("binaries/<arch>/spot-schedule-time-based: not found").
+        for arch_dir in amd64 arm64; do
+          art="artifacts/5spot-linux-$arch_dir"
+          for prov in spot-schedule-time-based spot-schedule-capital-markets; do
+            PROV_BIN=$(find "$art" -type f -name "$prov" | head -1)
+            if [ -n "$PROV_BIN" ] && [ -f "$PROV_BIN" ]; then
+              cp "$PROV_BIN" "binaries/$arch_dir/$prov"
+              chmod +x "binaries/$arch_dir/$prov"
+              echo "Copied $prov ($arch_dir) from $PROV_BIN"
+            else
+              echo "ERROR: $prov ($arch_dir) not found in $art"
+              find "$art" -ls || echo "Directory does not exist"
+              exit 1
+            fi
+          done
+        done
+
         # Verify binaries
-        ls -lh binaries/amd64/5spot binaries/arm64/5spot
+        ls -lh binaries/amd64/* binaries/arm64/*
         file binaries/amd64/5spot binaries/arm64/5spot
