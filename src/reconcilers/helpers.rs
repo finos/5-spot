@@ -180,7 +180,12 @@ pub async fn add_finalizer(
     let api: Api<ScheduledMachine> = Api::namespaced(ctx.client.clone(), &namespace);
 
     let mut finalizers = resource.meta().finalizers.clone().unwrap_or_default();
-    finalizers.push(FINALIZER_SCHEDULED_MACHINE.to_string());
+    // Idempotent: only add ours if it is not already present, so a double-call (or a
+    // caller that forgets the has_finalizer() guard) can never write a duplicate
+    // finalizer — which would otherwise wedge deletion (the GC waits for every copy).
+    if !finalizers.iter().any(|f| f == FINALIZER_SCHEDULED_MACHINE) {
+        finalizers.push(FINALIZER_SCHEDULED_MACHINE.to_string());
+    }
 
     let patch = json!({
         "metadata": {
@@ -1557,9 +1562,24 @@ async fn create_dynamic_resource(
     let dyn_obj: kube::core::DynamicObject =
         serde_json::from_value(obj).map_err(kube::Error::SerdeError)?;
 
-    api.create(&kube::api::PostParams::default(), &dyn_obj)
-        .await?;
-    Ok(())
+    match api
+        .create(&kube::api::PostParams::default(), &dyn_obj)
+        .await
+    {
+        Ok(_) => Ok(()),
+        // Idempotent reconciliation: a prior reconcile already created this object
+        // (bootstrap / infrastructure / Machine), which IS the desired state. Treat
+        // 409 AlreadyExists as success — otherwise every re-reconcile after the first
+        // create fails the ScheduledMachine into the Error phase, which then skips all
+        // Active-phase work (node-taint reconciliation, status projection, …). This
+        // surfaced on the k0smotron tier as Flag 1 (worker joins) passing but Flag 2
+        // (node carries the spot taint) never happening.
+        Err(kube::Error::Api(ae)) if ae.code == 409 => {
+            debug!(kind = %kind, "resource already exists; treating create as idempotent success");
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Split a Kubernetes `apiVersion` string into `(group, version)`.
@@ -3139,7 +3159,7 @@ pub async fn reconcile_kata_config_delivery(
             )
             .await
             .map_err(|e| {
-                error!(node = %node_name, error = %e, "Failed to clear kata-config reference annotation");
+                error!(node = %node_name, error = %e, cause = %error_chain(&e), "Failed to clear kata-config reference annotation");
                 ReconcilerError::KubeError(e)
             })?;
         return Ok(KataDeliveryOutcome::Disabled);
@@ -3169,7 +3189,7 @@ pub async fn reconcile_kata_config_delivery(
             .patch(node_name, &PatchParams::default(), &Patch::Merge(&patch))
             .await
             .map_err(|e| {
-                error!(node = %node_name, error = %e, "Failed to stamp kata-config Node opt-in");
+                error!(node = %node_name, error = %e, cause = %error_chain(&e), "Failed to stamp kata-config Node opt-in");
                 ReconcilerError::KubeError(e)
             })?;
         debug!(
@@ -3199,7 +3219,7 @@ pub async fn reconcile_kata_config_delivery(
         )
         .await
         .map_err(|e| {
-            error!(node = %node_name, error = %e, "Failed to clear kata-config reference annotation");
+            error!(node = %node_name, error = %e, cause = %error_chain(&e), "Failed to clear kata-config reference annotation");
             ReconcilerError::KubeError(e)
         })?;
 
@@ -3354,6 +3374,26 @@ pub fn diff_node_taints(
     plan
 }
 
+/// Flatten an error's [`source`](std::error::Error::source) chain into one string.
+///
+/// kube/hyper surface child-cluster connection failures with a terse top-level
+/// `Display` ("client error (Connect)") that hides the real cause — most often a
+/// rustls certificate rejection (unknown issuer, name/SAN mismatch, unsupported
+/// signature scheme) when talking to a hosted control plane whose self-signed cert
+/// OpenSSL/curl would accept but rustls (stricter) will not. Logging this chain at
+/// the failure site makes that cause visible instead of guessing.
+#[must_use]
+pub fn error_chain(err: &dyn std::error::Error) -> String {
+    let mut out = err.to_string();
+    let mut source = err.source();
+    while let Some(cause) = source {
+        out.push_str(" -> ");
+        out.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    out
+}
+
 /// Apply a [`NodeTaintPlan`] to the named Node via a single server-side apply
 /// PATCH, and write the `5spot.finos.org/applied-taints` ownership annotation.
 ///
@@ -3383,7 +3423,7 @@ pub async fn apply_node_taints(
 
     let nodes: Api<Node> = Api::all(client.clone());
     let current_node = nodes.get(node_name).await.map_err(|e| {
-        error!(node = %node_name, error = %e, "Failed to GET Node for taint apply");
+        error!(node = %node_name, error = %e, cause = %error_chain(&e), "Failed to GET Node for taint apply");
         ReconcilerError::KubeError(e)
     })?;
 
@@ -3460,7 +3500,7 @@ pub async fn apply_node_taints(
         .patch(node_name, &params, &Patch::Apply(&patch))
         .await
         .map_err(|e| {
-            error!(node = %node_name, error = %e, "Failed to PATCH Node taints");
+            error!(node = %node_name, error = %e, cause = %error_chain(&e), "Failed to PATCH Node taints");
             ReconcilerError::KubeError(e)
         })?;
 
@@ -3539,7 +3579,7 @@ pub async fn reconcile_node_taints(
             return Ok(NodeTaintReconcileOutcome::NoNodeYet);
         }
         Err(e) => {
-            error!(node = %input.node_name, error = %e, "Failed to GET Node for taint reconcile");
+            error!(node = %input.node_name, error = %e, cause = %error_chain(&e), "Failed to GET Node for taint reconcile");
             return Err(ReconcilerError::KubeError(e));
         }
     };

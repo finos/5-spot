@@ -86,7 +86,7 @@ sequenceDiagram
             Note over Agent: Applied record written BEFORE<br/>the restart — the restart-loop guard
             Agent->>Host: nsenter -t 1 -m -u -i -n -p --<br/>systemctl restart k0sworker.service
             Host-->>Agent: containerd bounces → pod SIGKILLed
-            Note over Agent,Host: kubelet restarts the agent;<br/>next tick: hash matches → no-op.<br/>Single-cycle convergence.
+            Note over Agent,Host: kubelet restarts the agent,<br/>next tick: hash matches → no-op.<br/>Single-cycle convergence.
         else hashes match
             Agent->>Agent: no-op (sleep 30s)
         end

@@ -832,7 +832,7 @@
         {
           "sequence-number": 1,
           "relationship-unique-id": "rel-reclaim-agent-workload-kube-api",
-          "description": "Agent detects a process matching spec.killIfCommands via /proc scan and PATCHes the reclaim annotation triple (5spot.finos.org/reclaim-requested=\"true\", /reclaim-reason, /reclaim-requested-at) onto its own Node via the kubelet node-scoped token. Field manager: 5spot-reclaim-agent."
+          "description": "Agent detects a process matching spec.killIfCommands via /proc scan and PATCHes the reclaim annotation triple (5spot.finos.org/reclaim-requested=#quot;true#quot;, /reclaim-reason, /reclaim-requested-at) onto its own Node via the kubelet node-scoped token. Field manager: 5spot-reclaim-agent."
         },
         {
           "sequence-number": 2,
@@ -895,7 +895,7 @@
         {
           "sequence-number": 2,
           "relationship-unique-id": "rel-kata-agent-workload-kube-api",
-          "description": "The kata config agent DaemonSet (scheduled onto the node by the opt-in label) watches its per-node ConfigMap and reads the projected drop-in content at /etc/5spot/kata-config/<key>.",
+          "description": "The kata config agent DaemonSet (scheduled onto the node by the opt-in label) watches its per-node ConfigMap and reads the projected drop-in content at /etc/5spot/kata-config/#lt;key#gt;.",
           "direction": "destination-to-source"
         },
         {
@@ -911,7 +911,7 @@
         {
           "sequence-number": 5,
           "relationship-unique-id": "rel-kata-agent-writes-host",
-          "description": "Agent runs `nsenter -t 1 -m -u -i -n -p -- systemctl restart <restartService>` to restart the host k0s service; containerd reloads the new drop-in. The restart SIGKILLs the agent pod; systemd still completes the D-Bus job. Kubelet restarts the agent; on the next loop hashes match the applied annotation, so it is a no-op. Single-cycle convergence."
+          "description": "Agent runs `nsenter -t 1 -m -u -i -n -p -- systemctl restart #lt;restartService#gt;` to restart the host k0s service; containerd reloads the new drop-in. The restart SIGKILLs the agent pod; systemd still completes the D-Bus job. Kubelet restarts the agent; on the next loop hashes match the applied annotation, so it is a no-op. Single-cycle convergence."
         }
       ],
       "controls": {

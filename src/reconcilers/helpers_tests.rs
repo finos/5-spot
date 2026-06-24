@@ -1503,6 +1503,66 @@ mod tests {
     }
 
     // ========================================================================
+    // error_chain — flatten an error's source chain for diagnostics
+    // ========================================================================
+
+    #[test]
+    fn test_error_chain_walks_full_source_chain() {
+        use std::fmt;
+        #[derive(Debug)]
+        struct Leaf;
+        impl fmt::Display for Leaf {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "invalid peer certificate: UnknownIssuer")
+            }
+        }
+        impl std::error::Error for Leaf {}
+        #[derive(Debug)]
+        struct Mid(Leaf);
+        impl fmt::Display for Mid {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "tls handshake eof")
+            }
+        }
+        impl std::error::Error for Mid {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+        #[derive(Debug)]
+        struct Top(Mid);
+        impl fmt::Display for Top {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "client error (Connect)")
+            }
+        }
+        impl std::error::Error for Top {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+        // The terse top-level message that hid the real cause, now followed by it.
+        assert_eq!(
+            error_chain(&Top(Mid(Leaf))),
+            "client error (Connect) -> tls handshake eof -> invalid peer certificate: UnknownIssuer"
+        );
+    }
+
+    #[test]
+    fn test_error_chain_single_error_no_source() {
+        use std::fmt;
+        #[derive(Debug)]
+        struct Solo;
+        impl fmt::Display for Solo {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "boom")
+            }
+        }
+        impl std::error::Error for Solo {}
+        assert_eq!(error_chain(&Solo), "boom");
+    }
+
+    // ========================================================================
     // machine_api_version_for — bootstrapSpec passthrough + discovery fallback
     // ========================================================================
 
@@ -1543,6 +1603,128 @@ mod tests {
             machine_api_version_for(Some("trailing-slash/")),
             capi_machine_api_version()
         );
+    }
+
+    // ========================================================================
+    // create_dynamic_resource — 409 AlreadyExists is idempotent success
+    // ========================================================================
+
+    fn k0sworkerconfig_create_body() -> serde_json::Value {
+        serde_json::json!({
+            "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
+            "kind": "K0sWorkerConfig",
+            "metadata": { "name": "business-hours-worker", "namespace": "default" },
+            "spec": {}
+        })
+    }
+
+    #[tokio::test]
+    async fn test_create_dynamic_resource_409_already_exists_is_ok() {
+        // A re-reconcile re-creates an object a prior reconcile already made. The API
+        // returns 409 AlreadyExists — which IS the desired state, so create must return
+        // Ok (otherwise the ScheduledMachine flips to Error and skips Active-phase work
+        // like node-taint reconciliation).
+        let (client, handle) = mock_client_pair();
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (req, send) = h.next_request().await.expect("expected POST create");
+            assert_eq!(req.method(), http::Method::POST);
+            send.send_response(
+                Response::builder()
+                    .status(409)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_error_body(
+                        409,
+                        "k0sworkerconfigs \"business-hours-worker\" already exists",
+                    )))
+                    .unwrap(),
+            );
+        });
+        let result = create_dynamic_resource(
+            &client,
+            "default",
+            "bootstrap.cluster.x-k8s.io/v1beta1",
+            "K0sWorkerConfig",
+            k0sworkerconfig_create_body(),
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "409 AlreadyExists must be idempotent success, got: {result:?}"
+        );
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_create_dynamic_resource_non_409_propagates() {
+        // A genuine failure (500) must still surface as an error.
+        let (client, handle) = mock_client_pair();
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (_req, send) = h.next_request().await.expect("expected POST create");
+            send.send_response(
+                Response::builder()
+                    .status(500)
+                    .header("content-type", "application/json")
+                    .body(Body::from(k8s_error_body(500, "internal error")))
+                    .unwrap(),
+            );
+        });
+        let result = create_dynamic_resource(
+            &client,
+            "default",
+            "bootstrap.cluster.x-k8s.io/v1beta1",
+            "K0sWorkerConfig",
+            k0sworkerconfig_create_body(),
+        )
+        .await;
+        assert!(result.is_err(), "non-409 errors must propagate");
+        srv.await.unwrap();
+    }
+
+    // ========================================================================
+    // add_finalizer — idempotent: never writes a duplicate finalizer
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_add_finalizer_does_not_duplicate() {
+        // Called on an SM that ALREADY carries our finalizer, add_finalizer must PATCH
+        // a finalizers list with exactly one copy — a duplicate would wedge deletion
+        // (the garbage collector waits for every entry to clear).
+        let (client, handle) = mock_client_pair();
+        let ctx = std::sync::Arc::new(crate::reconcilers::Context::new(client, 0, 1));
+        let mut sm = sm_for_delete("sm-fin", "default", "bootstrap.cluster.x-k8s.io/v1beta1");
+        sm.metadata.finalizers = Some(vec![
+            crate::constants::FINALIZER_SCHEDULED_MACHINE.to_string()
+        ]);
+        let resp_body = serde_json::to_vec(&sm).expect("serialize SM");
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            let (req, send) = h.next_request().await.expect("expected finalizer PATCH");
+            assert_eq!(req.method(), http::Method::PATCH);
+            let body = collect_json_body(req.into_body()).await;
+            let fins = body["metadata"]["finalizers"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            let count = fins
+                .iter()
+                .filter(|f| f.as_str() == Some(crate::constants::FINALIZER_SCHEDULED_MACHINE))
+                .count();
+            assert_eq!(
+                count, 1,
+                "finalizer must appear exactly once, got: {fins:?}"
+            );
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(resp_body))
+                    .unwrap(),
+            );
+        });
+        let _ = add_finalizer(std::sync::Arc::new(sm), ctx).await;
+        srv.await.unwrap();
     }
 
     // ========================================================================

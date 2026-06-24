@@ -9,6 +9,126 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-06-24 11:00] - Silence RUSTSEC-2026-0173 (proc-macro-error2 unmaintained) with justification
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.cargo/audit.toml` and `deny.toml`: ignore `RUSTSEC-2026-0173` with a documented
+  justification (kept in sync across both tools).
+
+### Why
+CI `cargo audit` started failing on `proc-macro-error2` being **unmaintained** (a
+maintenance-status advisory, not a vulnerability). It is reached only transitively via
+`jiff 0.2.29 -> defmt -> defmt-macros`, and `defmt` is jiff's optional embedded/no_std
+feature — `cargo tree -e features -i defmt` prints "nothing to print" for the host
+target, so the crate is never compiled into the 5-Spot binary; it exists only as a
+`Cargo.lock` entry. No runtime or build exposure. Removal awaits upstream (kube bumping
+jiff, or defmt-macros dropping proc-macro-error2). Verified `cargo audit` passes.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+## [2026-06-24 10:30] - Idempotency sweep: 409 AlreadyExists / duplicate finalizers no longer Error the ScheduledMachine
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/helpers.rs` (`create_dynamic_resource`): treat a `409 AlreadyExists`
+  from `api.create(...)` as success instead of propagating it. The bootstrap config,
+  infrastructure object, and CAPI Machine are all created through this helper; a prior
+  reconcile having created them IS the desired state.
+- `src/reconcilers/helpers.rs` (`add_finalizer`): only append our finalizer if it isn't
+  already present — a double-call can no longer write a duplicate (which would wedge GC).
+- `src/reconcilers/helpers_tests.rs`: +3 unit tests (create 409 → Ok; create 500 still
+  propagates; add_finalizer writes exactly one copy).
+- Audited the rest of the codebase for idempotency and confirmed it already holds: the
+  only other `.create()` is a `SelfSubjectAccessReview` (a virtual auth check, never
+  409s); all `.delete()` sites swallow 404; the kata ConfigMap uses `Patch::Apply` (SSA);
+  Events go through the kube `recorder`; status/spec writes use `Patch::Merge`/`Apply`.
+
+### Why
+On every reconcile after the first, `add_machine_to_cluster` re-issues the create and
+got `409 AlreadyExists` (e.g. `k0sworkerconfigs "…" already exists`). That bubbled up as
+`MachineCreationFailed`, flipping the ScheduledMachine into the **Error** phase — which
+skips ALL Active-phase work, including node-taint reconciliation. On the k0smotron
+workshop tier this presented as **Flag 1 (worker joins) passing but Flag 2 (the Node
+carries the spot taint) never happening**: the SM was wedged in Error, so it never ran
+`handle_active_phase`. Idempotent create is standard controller behavior and fixes it.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-06-24 03:10] - Fix Mermaid flow diagrams broken by special characters
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/architecture/calm/architecture.json`: escaped Mermaid-hostile characters in
+  three flow transition descriptions using Mermaid entity codes (which render as the
+  literal characters):
+  - `flow-emergency-reclaim` t1: `reclaim-requested="true"` → `reclaim-requested=#quot;true#quot;`.
+    The embedded double quotes terminated the Mermaid label string early, causing a parse
+    error that left the **Emergency Reclaim** diagram blank on the docs site.
+  - `flow-kata-config-delivery` t2: `/etc/5spot/kata-config/<key>` → `…/#lt;key#gt;`.
+  - `flow-kata-config-delivery` t5: `restart <restartService>` → `restart #lt;restartService#gt;`.
+    Raw `<…>` placeholders were parsed as HTML tags and silently dropped from the rendered label.
+- `docs/src/architecture/flows.md`: regenerated via `make calm-diagrams` (auto-generated;
+  not hand-edited).
+- `docs/src/concepts/kata-config-delivery.md`: hand-written `sequenceDiagram` — replaced a
+  `;` with `,` inside a `Note over Agent,Host: …` label. Mermaid treats `;` as a statement
+  separator even inside note text, so it split the note mid-string and failed the whole
+  diagram to parse.
+
+### Why
+The `flows.md.hbs` template emits transition descriptions verbatim into `flowchart` node
+labels (`t1["…"]`). Mermaid cannot contain an unescaped `"` inside a quoted label, and
+treats `<…>` as HTML — so these characters either broke parsing (Emergency Reclaim) or
+ate label text (Kata Config Delivery). Fixing at the source-of-truth `architecture.json`
+keeps the diagrams correct after every regeneration. The `phase -> …` arrows in other
+flows contain only `>` and render fine, so they were left unchanged.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
+## [2026-06-24 02:30] - Surface the real cause of child-cluster connection failures (error_chain)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/helpers.rs`: new `error_chain(&dyn Error)` helper that flattens an
+  error's `source()` chain into one string, and wired it into all six child-cluster
+  failure logs (taint GET/PATCH/reconcile, kata clear/stamp). These previously logged
+  only the terse top-level `Display` ("client error (Connect)"), hiding the real cause.
+- `src/reconcilers/helpers_tests.rs`: +2 unit tests for `error_chain` (multi-level
+  source chain; single error with no source).
+
+### Why
+A k0smotron-hosted control plane (workshop k0smotron tier) exposes a self-signed API
+server cert that **rustls** (5-Spot's TLS backend, kube 3.1 default) rejects where
+OpenSSL/curl `-k` accept it — so 5-Spot's child client fails to taint/drain the worker
+Node with `client error (Connect)`, with no visible cause. Logging the full chain makes
+the exact rustls reason (unknown issuer / SAN mismatch / unsupported signature) visible
+so the fix can target it (a proper cert, `tls_server_name`, or `insecure-skip-tls-verify`
+on the child kubeconfig — kube already honors the latter via `Config::accept_invalid_certs`).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Diagnostics only (no behavior change)
+
 ## [2026-06-23 11:45] - Ship the spot-schedule provider binaries in the image (ADR 0009 providers were unrunnable)
 
 **Author:** Erick Bourgeois

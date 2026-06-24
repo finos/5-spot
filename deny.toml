@@ -43,7 +43,13 @@ name = "unicode-ident"
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+ignore = [
+    # See .cargo/audit.toml for the full justification. proc-macro-error2 is
+    # UNMAINTAINED (not a vulnerability), reached only via jiff's optional `defmt`
+    # feature which is never compiled for the host target — kept in sync with
+    # .cargo/audit.toml so `cargo deny` and `cargo audit` agree.
+    "RUSTSEC-2026-0173",
+]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Bans — prevent multiple versions of the same crate and wildcard deps.

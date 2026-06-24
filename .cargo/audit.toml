@@ -12,4 +12,13 @@ ignore = [
     #   2. Calls rand::rng() from within that logger
     # Neither condition applies to 5-spot.
     "RUSTSEC-2026-0097",
+
+    # RUSTSEC-2026-0173: proc-macro-error2 is UNMAINTAINED (a maintenance-status
+    # advisory, not a vulnerability — no known exploit). It is a build-time proc-macro
+    # pulled transitively via jiff 0.2.29 -> defmt -> defmt-macros, and defmt is jiff's
+    # OPTIONAL embedded (no_std) feature: `cargo tree -e features -i defmt` reports
+    # "nothing to print" for the host target, so proc-macro-error2 is never compiled
+    # into the 5-Spot binary — it exists only as a Cargo.lock entry. Removal awaits
+    # upstream (kube bumping jiff, or defmt-macros dropping proc-macro-error2).
+    "RUSTSEC-2026-0173",
 ]
