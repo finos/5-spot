@@ -9,6 +9,36 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-06-26 10:00] - Switch rustls crypto provider ring -> aws-lc-rs (fixes mTLS to k0smotron-hosted control planes)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: `kube` now uses `default-features = false` + `["…, "rustls-tls", "aws-lc-rs"]`
+  instead of the default that pulls the `ring` crypto provider. `ring` leaves the lock; the
+  rustls TLS stack now runs on aws-lc-rs (BoringSSL-derived). 682 lib tests pass, fmt/clippy clean.
+
+### Why
+5-Spot's child client could not complete the mTLS TLS-1.3 handshake against a k0smotron-hosted
+control plane — it stalled after the client-certificate step and timed out
+(`client error (Connect) -> deadline has elapsed`), so node taints/drains never happened on the
+hosted-CP tier. Proven on a live cluster that `curl --cert/--key` (OpenSSL) and `client-go`
+(kubelet/kubectl) complete the *identical* handshake to the *same* endpoint in ~13ms, while
+kube-rs/rustls-with-`ring` hangs (captured via `rustls=trace`). aws-lc-rs shares OpenSSL/BoringSSL's
+crypto lineage, so it behaves like the clients that work.
+
+### Build note
+CI builds **natively per arch** (`ubuntu-24.04` + `ubuntu-24.04-arm`, plain `cargo build --release`),
+so aws-lc-rs compiles natively (cmake + cc, present on GitHub runners) — no cross-toolchain and no
+OpenSSL runtime lib in the distroless image, i.e. it avoids the cross-compile problem that motivated
+`ring` in the first place.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-06-24 11:30] - Name the HTTP status codes used in API-error matching (no magic 404/409/429)
 
 **Author:** Erick Bourgeois
