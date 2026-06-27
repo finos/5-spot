@@ -9,7 +9,36 @@ The format is based on the regulated environment requirements:
 
 ---
 
-## [2026-06-26 10:00] - Switch rustls crypto provider ring -> aws-lc-rs (fixes mTLS to k0smotron-hosted control planes)
+## [2026-06-27 10:00] - Disable rustls TLS-1.3 session resumption for child clients (the real mTLS-to-hosted-CP fix)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/child_client.rs`: build the child-cluster `kube::Client` by hand (instead of
+  `Client::try_from`) so we can set `rustls::client::Resumption::disabled()` on its TLS config.
+  Otherwise mirrors kube's own connector stack (TimeoutConnector with the wire timeouts, base-URI
+  + auth layers, `BoxError` mapping).
+- `Cargo.toml`: add direct deps `hyper-rustls`, `rustls`, `hyper-timeout` for the custom connector.
+- 682 lib tests pass (incl. the 17 child-client tests through the custom connector), fmt/clippy clean.
+
+### Why
+A k0smotron-hosted control plane requires fresh **client-certificate (mTLS)** auth on every
+connection and — like Go's TLS server — will not complete a **resumed** TLS-1.3 session that skips
+client auth. kube-rs/rustls, however, offers a PSK (session ticket) on reconnect; the `rustls=trace`
+shows `Resuming using PSK` on every connection, the resumed handshake **stalls right after the
+server's EncryptedExtensions**, and times out (`client error (Connect) -> deadline has elapsed`) — so
+node taints/drains never happen on the hosted-CP tier. client-go and `curl` always do a *full* mTLS
+handshake (proven on the playground: both connect in ~10ms). Disabling resumption makes 5-Spot's
+child client do the same. NOTE: this is provider-independent — both `ring` and `aws-lc-rs` exhibit
+the stall, so the earlier provider swap was **not** the fix.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-06-26 10:00] - Switch rustls crypto provider ring -> aws-lc-rs (NOT the fix — superseded by disabling resumption)
 
 **Author:** Erick Bourgeois
 

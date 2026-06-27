@@ -39,7 +39,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use k8s_openapi::api::core::v1::Secret;
-use kube::{config::Kubeconfig, Api, Client, ResourceExt};
+use kube::{client::ConfigExt, config::Kubeconfig, Api, Client, ResourceExt};
 use tracing::{debug, info, warn};
 
 use crate::constants::{CHILD_CLIENT_CACHE_CAP, HTTP_NOT_FOUND, K8S_API_TIMEOUT_SECS};
@@ -453,12 +453,53 @@ impl ChildClientCache {
         // would stall reconciliation indefinitely.
         config.read_timeout = Some(std::time::Duration::from_secs(K8S_API_TIMEOUT_SECS));
         config.write_timeout = Some(std::time::Duration::from_secs(K8S_API_TIMEOUT_SECS));
+        config.connect_timeout = Some(std::time::Duration::from_secs(K8S_API_TIMEOUT_SECS));
 
-        let child = Client::try_from(config).map_err(|e| ReconcilerError::KubeconfigInvalid {
+        // Build the child client BY HAND with rustls TLS-1.3 session resumption DISABLED.
+        //
+        // kube-rs's default `Client::try_from` resumes the TLS session (PSK) on reconnect.
+        // A k0smotron-hosted control plane requires fresh client-certificate (mTLS) auth on
+        // every connection and will not complete a resumed handshake that skips it — so the
+        // connection stalls until the wire timeout ("client error (Connect) -> deadline has
+        // elapsed") and the Node is never tainted/drained. Disabling resumption forces a full
+        // mTLS handshake every time, which is exactly what client-go and curl do (both connect
+        // in ~10ms). This otherwise mirrors kube's own connector stack (timeouts, base-URI and
+        // auth layers).
+        let make_err = |reason: String| ReconcilerError::KubeconfigInvalid {
             namespace: namespace.to_string(),
             name: secret_name.to_string(),
-            reason: format!("could not build kube::Client: {e}"),
-        })?;
+            reason,
+        };
+        let mut tls = config
+            .rustls_client_config()
+            .map_err(|e| make_err(format!("could not build rustls config: {e}")))?;
+        tls.resumption = rustls::client::Resumption::disabled();
+        let mut http = hyper_util::client::legacy::connect::HttpConnector::new();
+        http.enforce_http(false);
+        let https = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(tls)
+            .https_or_http()
+            .enable_http1()
+            .enable_http2()
+            .wrap_connector(http);
+        let mut connector = hyper_timeout::TimeoutConnector::new(https);
+        connector.set_connect_timeout(config.connect_timeout);
+        connector.set_read_timeout(config.read_timeout);
+        connector.set_write_timeout(config.write_timeout);
+        let hyper_client: hyper_util::client::legacy::Client<_, kube::client::Body> =
+            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                .build(connector);
+        let auth = config
+            .auth_layer()
+            .map_err(|e| make_err(format!("could not build auth layer: {e}")))?;
+        let service = tower::ServiceBuilder::new()
+            .layer(config.base_uri_layer())
+            .option_layer(auth)
+            // Box the hyper client's error so the auth / base-URI layers see a uniform
+            // `BoxError` (mirrors kube's own `make_generic_builder`).
+            .map_err(tower::BoxError::from)
+            .service(hyper_client);
+        let child = Client::new(service, config.default_namespace.clone());
 
         // Insert (with LRU eviction if at cap) and return. Track whether
         // we're replacing an existing entry for the same key (RV change

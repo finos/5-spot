@@ -80,6 +80,14 @@ http-body-util = "0.1"
 # API error statuses we branch on, instead of hardcoding 404/409/429).
 http = "1"
 tower = "0.5"
+# Child-cluster client: kube-rs/rustls keeps RESUMING the TLS-1.3 session (PSK) against
+# a k0smotron-hosted control plane that requires fresh client-cert (mTLS) auth, and the
+# resumed handshake stalls (client error (Connect) -> deadline elapsed). We build the
+# child client's connector by hand with rustls session resumption DISABLED so every
+# connection performs a full mTLS handshake (what client-go/curl do, which works).
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "aws-lc-rs"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
+hyper-timeout = "0.5"
 regex = "1"
 lazy_static = "1.5"
 # warp 0.4 made every previously-default feature opt-in. We use
