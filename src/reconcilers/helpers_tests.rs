@@ -3733,6 +3733,14 @@ mod tests {
                 annotations.get("5spot.finos.org/applied-taints").is_some(),
                 "ownership annotation must be set: {annotations}"
             );
+            // Server-side apply REQUIRES the object's type meta in the body; without
+            // apiVersion + kind the API server rejects with
+            // `invalid object type: /, Kind=: BadRequest (400)`.
+            assert_eq!(
+                json["apiVersion"], "v1",
+                "SSA patch must carry apiVersion: {json}"
+            );
+            assert_eq!(json["kind"], "Node", "SSA patch must carry kind: {json}");
             send.send_response(
                 Response::builder()
                     .status(200)

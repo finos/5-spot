@@ -9,29 +9,32 @@ The format is based on the regulated environment requirements:
 
 ---
 
-## [2026-06-26 10:00] - Switch rustls crypto provider ring -> aws-lc-rs (fixes mTLS to k0smotron-hosted control planes)
+## [2026-06-27 14:00] - THE ACTUAL k0smotron taint/drain fix: NetworkPolicy egress + server-side-apply type meta
 
 **Author:** Erick Bourgeois
 
 ### Changed
-- `Cargo.toml`: `kube` now uses `default-features = false` + `["…, "rustls-tls", "aws-lc-rs"]`
-  instead of the default that pulls the `ring` crypto provider. `ring` leaves the lock; the
-  rustls TLS stack now runs on aws-lc-rs (BoringSSL-derived). 682 lib tests pass, fmt/clippy clean.
+- `src/reconcilers/helpers.rs` (`apply_node_taints`): the server-side-apply patch was missing
+  `apiVersion: v1` + `kind: Node`. SSA REQUIRES the object's type meta in the body; without it the
+  API server rejects with `invalid object type: /, Kind=: BadRequest (400)` and the taint never lands.
+- `src/reconcilers/helpers_tests.rs`: the apply-taints test now asserts `apiVersion`+`kind` are in the
+  patch body (would have caught this).
+- `deploy/deployment/networkpolicy.yaml`: egress allowed only `53` + `6443`, which **silently dropped
+  every child-cluster connection at the network layer** — k0smotron's hosted CP is on the NodePort
+  `apiPort` (default **30443**), not 6443. Added 30443 to the egress (with guidance for other ports).
+- `docs/src/security/index.md`, `docs/src/security/threat-model.md`: the egress-posture rows now
+  state the policy permits the mgmt apiserver (6443) + child/k0smotron-hosted CPs (30443) + DNS,
+  matching the updated NetworkPolicy.
 
-### Why
-5-Spot's child client could not complete the mTLS TLS-1.3 handshake against a k0smotron-hosted
-control plane — it stalled after the client-certificate step and timed out
-(`client error (Connect) -> deadline has elapsed`), so node taints/drains never happened on the
-hosted-CP tier. Proven on a live cluster that `curl --cert/--key` (OpenSSL) and `client-go`
-(kubelet/kubectl) complete the *identical* handshake to the *same* endpoint in ~13ms, while
-kube-rs/rustls-with-`ring` hangs (captured via `rustls=trace`). aws-lc-rs shares OpenSSL/BoringSSL's
-crypto lineage, so it behaves like the clients that work.
-
-### Build note
-CI builds **natively per arch** (`ubuntu-24.04` + `ubuntu-24.04-arm`, plain `cargo build --release`),
-so aws-lc-rs compiles natively (cmake + cc, present on GitHub runners) — no cross-toolchain and no
-OpenSSL runtime lib in the distroless image, i.e. it avoids the cross-compile problem that motivated
-`ring` in the first place.
+### Why — and a correction
+On the k0smotron tier the child client could never taint/drain. Live diagnosis on the playground proved
+**two** independent root causes, both above were confirmed by experiment (delete the NetworkPolicy →
+connection succeeds; a properly-typed `kubectl apply --server-side` → taint lands). The earlier
+TLS-centric changes — `insecure-skip-tls-verify`, the `ring`→`aws-lc-rs` provider swap, and disabling
+rustls session resumption — were **misdiagnoses**: the `rustls=trace` "resumption stall" was the
+*management* client's normal TLS, while the child client was firewalled before it ever reached TLS. Those
+TLS experiments have been **reverted** (back to the default `ring` provider + `Client::try_from`);
+this NetworkPolicy + server-side-apply change is the real fix.
 
 ### Impact
 - [ ] Breaking change
