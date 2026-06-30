@@ -104,7 +104,7 @@ path = "src/bin/kata_config_agent.rs"
 
 [dev-dependencies]
 tokio-test = "0.4"
-mockall = "0.14"
+mockall = "0.15"
 test-log = "0.2"
 tempfile = "3"
 tower-test = "0.4"
