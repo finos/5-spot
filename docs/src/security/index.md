@@ -34,7 +34,7 @@ Per-field validation status and downstream sinks for every attacker-controllable
 |---|---|---|
 | Non-root container, read-only rootfs, all caps dropped | ✅ | `deploy/deployment/deployment.yaml` |
 | Least-privilege RBAC — explicit resources, no wildcards | ✅ | `deploy/deployment/rbac/clusterrole.yaml` |
-| NetworkPolicy — egress to API server only | ✅ | `deploy/deployment/networkpolicy.yaml` |
+| NetworkPolicy — egress to API servers only (mgmt 6443 + child/k0smotron 30443) and DNS | ✅ | `deploy/deployment/networkpolicy.yaml` |
 | Admission validation — 13 CEL rules, `failurePolicy: Fail` | ✅ | `deploy/admission/` |
 | Finalizer cleanup timeout (10 min) — prevents deletion hangs | ✅ | `src/constants.rs` |
 | Cross-namespace resource creation prevented | ✅ | `namespace` field removed from `EmbeddedResource` |

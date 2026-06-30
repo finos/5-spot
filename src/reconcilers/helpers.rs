@@ -3485,7 +3485,12 @@ pub async fn apply_node_taints(
         .collect();
     let annotation_value = serde_json::to_string(&owned).unwrap_or_else(|_| "[]".to_string());
 
+    // Server-side apply REQUIRES the object's type meta in the body; without
+    // `apiVersion` + `kind` the API server rejects the patch with
+    // `invalid object type: /, Kind=: BadRequest (400)` and the taint never lands.
     let patch = json!({
+        "apiVersion": "v1",
+        "kind": "Node",
         "metadata": {
             "annotations": {
                 APPLIED_TAINTS_ANNOTATION: annotation_value,

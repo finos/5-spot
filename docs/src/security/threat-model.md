@@ -325,7 +325,7 @@ in `5spot-system`.
 |---|---|
 | Kubernetes ResourceQuota | Limit `ScheduledMachine` count per namespace (e.g., max 50) |
 | `ValidatingAdmissionPolicy` ✅ deployed 2026-04-08 | Validates `bootstrapSpec.apiVersion`, `infrastructureSpec.apiVersion`, `kind` fields, duration format, and day/hour item format at admission time — see `deploy/admission/` |
-| NetworkPolicy | Restrict controller pod egress to Kubernetes API server only |
+| NetworkPolicy | Restrict controller pod egress to the management API server (6443), child/k0smotron-hosted control planes (NodePort apiPort 30443), and DNS — all other egress denied |
 | Audit logging | Enable API server audit log at `RequestResponse` level for `scheduledmachines` resources |
 | RBAC for SM creation | Only grant `create` on `scheduledmachines` to trusted identities; do not grant to end users directly |
 | Secrets for bootstrap data | Move sensitive bootstrap config out of CR spec into Secrets; reference from spec |
