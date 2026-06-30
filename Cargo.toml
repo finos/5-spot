@@ -46,7 +46,7 @@ path = "src/bin/spot_schedule_capital_markets.rs"
 # may change between minor kube-runtime versions) but is the canonical
 # way to push external triggers into the controller loop.
 kube = { version = "3.1", features = ["runtime", "derive", "client", "ws", "unstable-runtime"] }
-kube-lease-manager = "0.11"
+kube-lease-manager = "0.12"
 k8s-openapi = { version = "0.27", features = ["latest", "schemars"] }
 tokio = { version = "1", features = ["full"] }
 # `ReceiverStream` adapter so an `mpsc::Receiver<ObjectRef<…>>` can be
