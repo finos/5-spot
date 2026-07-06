@@ -77,7 +77,7 @@ jobs:
 
       - name: Verify commits (PR)
         if: github.event_name == 'pull_request'
-        uses: firestoned/github-actions/security/verify-signed-commits@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        uses: firestoned/github-actions/security/verify-signed-commits@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           base-ref: origin/${{ github.base_ref }}
@@ -85,14 +85,14 @@ jobs:
 
       - name: Verify commits (push to main)
         if: github.event_name == 'push'
-        uses: firestoned/github-actions/security/verify-signed-commits@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        uses: firestoned/github-actions/security/verify-signed-commits@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           verify-mode: push
 
       - name: Verify commits (release)
         if: github.event_name == 'release'
-        uses: firestoned/github-actions/security/verify-signed-commits@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        uses: firestoned/github-actions/security/verify-signed-commits@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           verify-mode: release
