@@ -9,6 +9,10 @@ skill"* or *"do a verify-crd-sync"*.
 
 ## `verify-crd-sync`
 
+**Does NOT require a live cluster.** Verification is a local dry-run: regenerate
+each CRD/doc from `src/crd.rs` (the source of truth) into a scratch path and
+diff against the committed artifact — no `kubectl` context needed.
+
 **When to use:**
 - Before investigating reconciliation loops or infinite loops
 - Before debugging "field not appearing in kubectl output" issues
@@ -18,20 +22,30 @@ skill"* or *"do a verify-crd-sync"*.
 
 **Steps:**
 ```bash
-# 1. Check deployed CRD schema in cluster
-kubectl get crd scheduledmachines.5spot.eribourg.dev -o yaml | grep -A 20 "<field-name>:"
+# 1. Regenerate each CRD to a scratch file and diff against the committed copy
+#    (selectors: scheduledmachine, timebasedspotschedule, capitalmarketsschedule)
+for sel in scheduledmachine timebasedspotschedule capitalmarketsschedule; do
+  cargo run --quiet --bin crdgen -- "$sel" > "/tmp/$sel.yaml"
+  diff -u "deploy/crds/$sel.yaml" "/tmp/$sel.yaml" && echo "✓ $sel in sync"
+done
 
-# 2. Check Rust struct definition
-rg -A 10 "pub struct <StructName>" src/crd.rs
+# 2. Regenerate the API doc and diff it too
+cargo run --quiet --bin crddoc > /tmp/api.md
+diff -u docs/src/reference/api.md /tmp/api.md && echo "✓ api.md in sync"
 
-# 3. If mismatch detected, regenerate CRDs
-cargo run --bin crdgen > deploy/crds/scheduledmachine.yaml
-
-# 4. Apply updated CRDs
-kubectl apply -f deploy/crds/scheduledmachine.yaml
+# 3. If any diff is non-empty, the committed artifact is stale — regenerate for real
+make crds && make crddoc
 ```
 
-**Verification:** Field appears in `kubectl get` output after patch; no infinite reconciliation loop.
+**Optional — only if a cluster context is already configured and you want to
+confirm the *deployed* schema too** (skip entirely otherwise; never required):
+```bash
+kubectl get crd scheduledmachines.5spot.finos.org -o yaml | grep -A 20 "<field-name>:"
+```
+
+**Verification:** All three `diff -u` calls (plus the `api.md` diff) produce no
+output — committed artifacts byte-for-byte match what `src/crd.rs` generates
+right now.
 
 ---
 

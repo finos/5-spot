@@ -29,6 +29,13 @@ allow = [
     "CC0-1.0",
     "MPL-2.0",
     "OpenSSL",
+    # CDLA-Permissive-2.0: a data-only license (Community Data License
+    # Agreement), not a code license. Brought in by `webpki-root-certs`
+    # (via kube-client 4.x's new `rustls-platform-verifier` dependency) to
+    # cover the bundled Mozilla root CA certificate data — no copyleft or
+    # attribution-propagation terms, comparable in scope to the MPL-2.0
+    # allowance already granted for other CA-bundle crates in this tree.
+    "CDLA-Permissive-2.0",
 ]
 
 # Crates that do not publish a license in Cargo.toml but are known-safe.
