@@ -45,9 +45,9 @@ path = "src/bin/spot_schedule_capital_markets.rs"
 # Controller. The feature is "unstable" in the SemVer sense (the API
 # may change between minor kube-runtime versions) but is the canonical
 # way to push external triggers into the controller loop.
-kube = { version = "3.1", features = ["runtime", "derive", "client", "ws", "unstable-runtime"] }
-kube-lease-manager = "0.11"
-k8s-openapi = { version = "0.27", features = ["latest", "schemars"] }
+kube = { version = "4.0", features = ["runtime", "derive", "client", "ws", "unstable-runtime"] }
+kube-lease-manager = "0.12"
+k8s-openapi = { version = "0.28", features = ["latest", "schemars"] }
 tokio = { version = "1", features = ["full"] }
 # `ReceiverStream` adapter so an `mpsc::Receiver<ObjectRef<…>>` can be
 # fed into `Controller::reconcile_on`. Used by main.rs to plumb
@@ -64,18 +64,18 @@ chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 schemars = "1"
 futures = "0.3"
-async-trait = "0.1"
 clap = { version = "4", features = ["derive", "env"] }
-prometheus = { version = "0.14", features = ["process"] }
+# `protobuf` is prometheus's default feature but we only ever call
+# `TextEncoder` (src/metrics.rs) — never the protobuf exposition format —
+# so it's disabled here. That also drops the `protobuf`/`protobuf-support`
+# crates and the duplicate `thiserror` 1.x tree they pull in.
+prometheus = { version = "0.14", default-features = false, features = ["process"] }
 hyper = { version = "1", features = ["full"] }
-hyper-util = { version = "0.1", features = ["full"] }
 http-body-util = "0.1"
 # Canonical HTTP status codes (used in src/constants.rs to name the Kubernetes
 # API error statuses we branch on, instead of hardcoding 404/409/429).
 http = "1"
 tower = "0.5"
-regex = "1"
-lazy_static = "1.5"
 # warp 0.4 made every previously-default feature opt-in. We use
 # `warp::serve` for the metrics + health/readiness HTTP servers
 # (src/main.rs and src/health.rs), so the `server` feature must be
@@ -104,7 +104,7 @@ path = "src/bin/kata_config_agent.rs"
 
 [dev-dependencies]
 tokio-test = "0.4"
-mockall = "0.14"
+mockall = "0.15"
 test-log = "0.2"
 tempfile = "3"
 tower-test = "0.4"
