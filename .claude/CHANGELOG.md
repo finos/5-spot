@@ -9,7 +9,209 @@ The format is based on the regulated environment requirements:
 
 ---
 
-## [2026-06-27 14:00] - THE ACTUAL k0smotron taint/drain fix: NetworkPolicy egress + server-side-apply type meta
+## [2026-07-23 03:45] - Coordinated kube 4.x / k8s-openapi 0.28 / kube-lease-manager 0.12 upgrade (PR #89, #85, #90)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: `kube` `"3.1"` → `"4.0"`, `k8s-openapi` `"0.27"` → `"0.28"`,
+  `kube-lease-manager` `"0.11"` → `"0.12"` (bumped as a set — kube-lease-manager
+  0.12's own release requires kube v4/k8s-openapi 0.28/rand 0.10, so these
+  three cannot move independently). Resolved to `kube`/`kube-client`/
+  `kube-core`/`kube-derive`/`kube-runtime` 4.2.0, `k8s-openapi` 0.28.0,
+  `kube-lease-manager` 0.12.0.
+- `deploy/crds/{scheduledmachine,timebasedspotschedule,capitalmarketsschedule}.yaml`:
+  regenerated via `make crds`. Only change: `kube` 4.x's `CustomResourceExt`
+  no longer emits an empty `categories: []` when none are set (functionally
+  identical to omitting the field — not a schema/contract change).
+  `docs/src/reference/api.md` (`make crddoc`) was unaffected.
+- `deny.toml`: added `CDLA-Permissive-2.0` to the license allowlist. `kube`
+  4.x's `kube-client` now has a plain (non-optional, not feature-gated)
+  dependency on `rustls-platform-verifier`, which pulls in
+  `webpki-root-certs` (bundled Mozilla root CA certificate data) under that
+  license. It's a data-only license (Community Data License Agreement, no
+  copyleft/attribution-propagation terms), comparable in scope to the
+  existing `MPL-2.0` allowance already granted for other CA-bundle crates in
+  this tree. **Confirmed with the repo owner before adding** — license
+  allowlist changes are a compliance decision, not a default any agent should
+  make unilaterally in a regulated environment.
+
+### Why
+Applying the coordinated half of the currently-open Dependabot PRs
+(https://github.com/finos/5-spot/pulls), deliberately separated from the
+low-risk patch/minor batch above because kube 4.0's changelog documents real
+behavior changes: default global read timeouts removed in favor of per-watcher
+timeouts, and `RetryPolicy::server_retry` now enabled by default for
+non-watch queries (previously opt-in). Verified this compiles and passes the
+full test suite unchanged (682 tests) with no source changes required —
+5-Spot's own code didn't touch any of the APIs kube 4.0 altered. The only
+concrete fallout was the new license requirement above, which needed an
+explicit decision rather than a silent allowlist edit.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+Marked "requires cluster rollout" out of caution given the retry-policy and
+timeout behavior changes upstream in kube 4.0, even though no 5-Spot-level
+behavior was intentionally changed — recommend a normal rollout with metrics
+watched (`spot_schedule_resolution_errors_total`, reconcile error rates)
+rather than treating this as a pure dependency-only bump.
+
+---
+
+## [2026-07-23 03:00] - Apply the safe patch/minor Dependabot bumps (PR #113, #97)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.lock`: `cargo update -p tokio -p serde_json -p anyhow -p thiserror
+  -p clap -p http-body-util -p regex -p toml` per PR #113's group (`serde`
+  and `futures` were already at the newest version compatible with our
+  constraints — no-op). Resulting versions: tokio 1.53.1, serde_json
+  1.0.151, anyhow 1.0.104, thiserror 2.0.19, clap 4.6.4, http-body-util
+  0.1.4, regex 1.13.1, toml 1.1.3+spec-1.1.0.
+- `Cargo.toml`/`Cargo.lock`: `mockall` 0.14 → 0.15 (PR #97, dev-dependency
+  only). This is a `0.x` version bump, which Cargo's caret rules treat as
+  SemVer-breaking, so the `Cargo.toml` constraint needed a manual edit
+  (`cargo update -p mockall` alone was a no-op against `"0.14"`).
+
+### Why
+Applying the low-risk half of the currently-open Dependabot PRs
+(https://github.com/finos/5-spot/pulls) while already deep in dependency
+hygiene work this session. Deliberately split from the three PRs that bump
+`kube`/`k8s-openapi`/`kube-lease-manager` to major versions (#89, #85, #90) —
+those are a coordinated, behavior-changing upgrade (kube 4.0 enables
+server-side retry-by-default and removes global read timeouts) that needs its
+own dedicated pass, not a blind `cargo update`. Noted in passing: `clap_derive`
+4.6.4 and `thiserror-impl` 2.0.19 both moved to `syn` v3, so `syn` v2 and v3
+now coexist in the tree — accepted as-is since `syn` is a build-time-only
+proc-macro dependency (never shipped in the compiled binary), so this is a
+compile-time cost, not a supply-chain or runtime concern.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+---
+
+## [2026-07-22 22:30] - Drop the now-dead RUSTSEC-2026-0097 suppression — rand was already patched
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.cargo/audit.toml`: emptied the `ignore` list, removing the
+  `RUSTSEC-2026-0097` entry (rand unsound with a custom logger calling
+  `rand::rng()`). `deny.toml`'s advisories `ignore` list was already empty —
+  the two configs are now in sync at zero exceptions.
+
+### Why
+Verified directly: temporarily emptying the ignore list and re-running
+`cargo audit` still exited clean with zero findings. The advisory's own
+metadata (`~/.cargo/advisory-db/crates/rand/RUSTSEC-2026-0097.md`) lists
+`patched = [">= 0.10.1", "< 0.10.0, >= 0.9.3", "< 0.9.0, >= 0.8.6"]`; the
+`rand` in the current tree (`v0.9.4`, pulled in via `kube-lease-manager` and
+`tungstenite`/`kube-client`) already falls inside the `>= 0.9.3, < 0.10.0`
+patched range. The suppression was written when `rand` was on an earlier,
+genuinely-affected 0.9.x version and simply never got cleaned up after a
+later dependency bump moved it past 0.9.3. No code or manifest change was
+needed beyond removing the stale ignore entry — the underlying dependency was
+already fixed by prior routine `cargo update` activity.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+---
+
+## [2026-07-22 22:15] - Full dependency-tree audit: drop unused direct deps, disable prometheus's protobuf feature
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: `prometheus` now sets `default-features = false` (keeping only
+  `process`). Its `default` feature set is `["protobuf"]`, but `src/metrics.rs`
+  only ever constructs `prometheus::TextEncoder` — the protobuf exposition
+  encoder was never called. Disabling it drops the `protobuf` and
+  `protobuf-support` crates and, with them, an entire duplicate `thiserror 1.x`
+  / `thiserror-impl 1.x` tree that existed solely for this unused path
+  (everything else in the workspace — `five_spot`, `kube`, `kube-lease-manager`
+  — is already on `thiserror` 2.x).
+- `Cargo.toml`: removed three direct dependencies with **zero** references
+  anywhere in `src/` (verified via `rg` across the whole tree, including
+  `src/bin/*.rs`): `lazy_static`, `async-trait`, `regex`. `hyper-util` was
+  also removed as a direct dependency (unused directly; its `features =
+  ["full"]` request was pure unification pressure with no caller).
+  - `async-trait` had **no other consumer** in the graph — removing it drops
+    the crate (and its proc-macro build cost) entirely.
+  - `lazy_static`, `regex`, `hyper-util` remain in `Cargo.lock` transitively
+    (via `prometheus`/`tracing-subscriber`'s `sharded-slab`; `kube-client`'s
+    `jsonpath-rust`; and `hyper-rustls`/`warp` respectively) — removing our
+    own dead edges to them doesn't shrink the tree further, but it's honest
+    manifest hygiene and, for `hyper-util`, drops an unnecessary `"full"`
+    feature request.
+- `Cargo.lock`: crate count (`cargo tree --target all | wc -l`) went from 785
+  to 753 lines across this pass.
+
+### Why
+Follow-up to the RUSTSEC-2026-0173 fix above: audited the full dependency tree
+(`cargo tree -d` for duplicate-version bloat, plus a per-dependency `rg` usage
+sweep) for anything else genuinely removable rather than merely suppressible,
+per a direct ask to find dependencies we don't need or that can be
+updated/dropped to eliminate transitive weight. Remaining `cargo tree -d`
+duplicates (`digest`/`sha2`/`block-buffer` 0.10.x-vs-0.11.x split via
+`warp`/`tungstenite`'s `sha1`; `getrandom` 0.2/0.3/0.4 via `ring`/`kube-runtime`
+`rand`/dev-only `tempfile`; `rustix`/`linux-raw-sys` via `procfs` vs.
+`tempfile`; `windows-sys`/`r-efi`, Windows/UEFI-only and irrelevant to this
+project's Linux container target) all trace to upstream crates' own version
+choices and are not fixable from this repo.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+---
+
+## [2026-07-22 21:30] - Genuinely remove RUSTSEC-2026-0173 by bumping jiff/defmt, instead of re-suppressing it
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.lock`: `cargo update -p jiff` (0.2.31 → 0.2.34, pulling in the new
+  `jiff-core` split crate) followed by `cargo update -p defmt` (1.1.0 → 1.1.1).
+  The updated `defmt`/`defmt-macros` no longer depend on `proc-macro-error2` —
+  it and its own dependency `proc-macro-error-attr2` are fully removed from the
+  dependency graph. No `Cargo.toml` change needed; `jiff` was always a
+  transitive dependency (via `k8s-openapi`/`kube-core`), never a direct one.
+
+### Why
+The `v0.3.0` release-tag build's "Security Vulnerability Scan (release)" job
+failed on `RUSTSEC-2026-0173` (`proc-macro-error2`, unmaintained). Investigating
+showed the advisory's suppression — originally added in #93 with a documented
+"unreachable feature, never compiled for host" justification — had been
+accidentally deleted from both `.cargo/audit.toml` and `deny.toml` by #100
+(which only meant to note `RUSTSEC-2026-0190` was cleared elsewhere; no
+`RUSTSEC-2026-0190` entry ever existed in those ignore lists, so the wrong
+block was removed). Rather than restore a suppression for a dependency that's
+merely unreachable-but-present, `cargo update --dry-run` showed upstream had
+already dropped the offending dependency in newer point releases — so the
+correct fix is to genuinely remove it from the tree, not re-suppress it.
+`cargo audit` and `cargo deny check advisories` both now report zero findings
+with an **empty** ignore list — no advisory suppression is needed at all.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
 
 **Author:** Erick Bourgeois
 
