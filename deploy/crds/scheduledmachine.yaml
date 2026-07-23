@@ -5,7 +5,6 @@ metadata:
 spec:
   group: 5spot.finos.org
   names:
-    categories: []
     kind: ScheduledMachine
     plural: scheduledmachines
     shortNames:
