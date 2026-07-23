@@ -77,7 +77,7 @@ jobs:
         run: cargo install cargo-fuzz
 
       - name: Cache cargo dependencies
-        uses: firestoned/github-actions/rust/cache-cargo@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        uses: firestoned/github-actions/rust/cache-cargo@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
 
       - name: Run fuzz target (60 s)
         working-directory: fuzz
