@@ -48,6 +48,7 @@ use crate::constants::{
 };
 use crate::crd::{
     parse_day_ranges, parse_hour_ranges, CapitalMarketsSchedule, CapitalMarketsScheduleSpec,
+    CapitalMarketsScheduleStatus,
 };
 
 /// Errors raised while reconciling a `CapitalMarketsSchedule`.
@@ -162,6 +163,63 @@ pub fn next_transition(
     Ok(None)
 }
 
+/// Compute the full `status` patch body for a reconcile — pure, no I/O.
+///
+/// Extracted so the "no field changes unconditionally on every reconcile"
+/// invariant is unit-testable without a mocked Kubernetes client: previously
+/// the `Ready` condition's own `lastTransitionTime` was set to `now` on
+/// *every* call regardless of whether anything actually transitioned, which
+/// made the computed status never equal the stored one — `patch_status`
+/// therefore always wrote a change, which re-triggered the watch, which
+/// reconciled again immediately, forever. Both `lastTransitionTime` fields
+/// (top-level and inside the condition) now share the single conditionally-
+/// computed value below.
+fn compute_status(
+    spec: &CapitalMarketsScheduleSpec,
+    previous: Option<&CapitalMarketsScheduleStatus>,
+    generation: Option<i64>,
+    now: DateTime<Utc>,
+) -> Result<serde_json::Value, ProviderError> {
+    let active = is_active_at(spec, now)?;
+    let next = next_transition(spec, now)?;
+
+    let previous_active = previous.map(|status| status.active);
+    let transitioned = previous_active != Some(active);
+    let last_transition_time = if transitioned {
+        now.to_rfc3339()
+    } else {
+        previous
+            .and_then(|status| status.last_transition_time.clone())
+            .unwrap_or_else(|| now.to_rfc3339())
+    };
+
+    let (reason, message) = if active {
+        (REASON_CAPITAL_MARKETS_SESSION_OPEN, "market session open")
+    } else {
+        (
+            REASON_CAPITAL_MARKETS_SESSION_CLOSED,
+            "market session closed",
+        )
+    };
+
+    let mut status = json!({
+        "active": active,
+        "observedGeneration": generation,
+        "lastTransitionTime": last_transition_time,
+        "conditions": [{
+            "type": CONDITION_TYPE_READY,
+            "status": CONDITION_STATUS_TRUE,
+            "reason": reason,
+            "message": message,
+            "lastTransitionTime": last_transition_time,
+        }],
+    });
+    if let Some(next) = next {
+        status["nextTransitionTime"] = json!(next.to_rfc3339());
+    }
+    Ok(status)
+}
+
 /// Reconcile one `CapitalMarketsSchedule`: compute `active` + the next
 /// transition, patch `status`, and requeue at the boundary.
 ///
@@ -178,43 +236,9 @@ pub async fn reconcile(
 
     let active = is_active_at(&cms.spec, now)?;
     let next = next_transition(&cms.spec, now)?;
-
     let previous_active = cms.status.as_ref().map(|status| status.active);
     let transitioned = previous_active != Some(active);
-    let last_transition_time = if transitioned {
-        Some(now.to_rfc3339())
-    } else {
-        cms.status
-            .as_ref()
-            .and_then(|status| status.last_transition_time.clone())
-    };
-
-    let (reason, message) = if active {
-        (REASON_CAPITAL_MARKETS_SESSION_OPEN, "market session open")
-    } else {
-        (
-            REASON_CAPITAL_MARKETS_SESSION_CLOSED,
-            "market session closed",
-        )
-    };
-
-    let mut status = json!({
-        "active": active,
-        "observedGeneration": cms.metadata.generation,
-        "conditions": [{
-            "type": CONDITION_TYPE_READY,
-            "status": CONDITION_STATUS_TRUE,
-            "reason": reason,
-            "message": message,
-            "lastTransitionTime": now.to_rfc3339(),
-        }],
-    });
-    if let Some(time) = last_transition_time {
-        status["lastTransitionTime"] = json!(time);
-    }
-    if let Some(next) = next {
-        status["nextTransitionTime"] = json!(next.to_rfc3339());
-    }
+    let status = compute_status(&cms.spec, cms.status.as_ref(), cms.metadata.generation, now)?;
 
     let api: Api<CapitalMarketsSchedule> = Api::namespaced(ctx.client.clone(), &namespace);
     api.patch_status(

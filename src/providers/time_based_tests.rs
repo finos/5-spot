@@ -141,4 +141,83 @@ mod tests {
         let from = local_instant(NY, 2026, 6, 10, 8, 0);
         assert!(next_transition(&spec, from).unwrap().is_none());
     }
+
+    // ── compute_status ───────────────────────────────────────────────────────
+    //
+    // Regression coverage for the hot-loop bug: the `Ready` condition's own
+    // `lastTransitionTime` used to be set to `now` on every reconcile
+    // regardless of whether anything transitioned, so the computed status
+    // never equalled the stored one and `patch_status` always wrote a change
+    // — which re-triggered the watch and reconciled again immediately.
+
+    fn status_with(active: bool, last_transition_time: &str) -> TimeBasedSpotScheduleStatus {
+        TimeBasedSpotScheduleStatus {
+            active,
+            last_transition_time: Some(last_transition_time.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_compute_status_no_transition_keeps_previous_timestamp() {
+        // Already active, still active at `now` — nothing transitioned, so
+        // both lastTransitionTime fields must keep the *old* timestamp, not
+        // be rewritten to `now`.
+        let previous = status_with(true, "2026-01-01T00:00:00+00:00");
+        let now = local_instant(NY, 2026, 6, 10, 11, 0);
+
+        let status = compute_status(&weekday_spec(), Some(&previous), Some(1), now).unwrap();
+
+        assert_eq!(status["lastTransitionTime"], "2026-01-01T00:00:00+00:00");
+        assert_eq!(
+            status["conditions"][0]["lastTransitionTime"],
+            "2026-01-01T00:00:00+00:00"
+        );
+    }
+
+    #[test]
+    fn test_compute_status_is_idempotent_across_repeated_reconciles() {
+        // The literal hot-loop regression test: feeding compute_status's own
+        // output back in as `previous` (as a real reconcile loop would, one
+        // resourceVersion apart) must produce byte-for-byte identical output
+        // when nothing about the world has changed between calls.
+        let now = local_instant(NY, 2026, 6, 10, 11, 0);
+        let first = compute_status(&weekday_spec(), None, Some(1), now).unwrap();
+
+        let previous = TimeBasedSpotScheduleStatus {
+            active: first["active"].as_bool().unwrap(),
+            last_transition_time: first["lastTransitionTime"].as_str().map(String::from),
+            ..Default::default()
+        };
+        // A later reconcile, still inside the same window.
+        let later = now + Duration::from_secs(5);
+        let second = compute_status(&weekday_spec(), Some(&previous), Some(1), later).unwrap();
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn test_compute_status_transition_sets_now() {
+        // Was inactive, now active — a real transition, so both
+        // lastTransitionTime fields must move to `now`.
+        let previous = status_with(false, "2026-01-01T00:00:00+00:00");
+        let now = local_instant(NY, 2026, 6, 10, 11, 0);
+
+        let status = compute_status(&weekday_spec(), Some(&previous), Some(1), now).unwrap();
+
+        let expected = now.to_rfc3339();
+        assert_eq!(status["lastTransitionTime"], expected);
+        assert_eq!(status["conditions"][0]["lastTransitionTime"], expected);
+    }
+
+    #[test]
+    fn test_compute_status_first_reconcile_with_no_previous_status_sets_now() {
+        let now = local_instant(NY, 2026, 6, 10, 11, 0);
+
+        let status = compute_status(&weekday_spec(), None, Some(1), now).unwrap();
+
+        let expected = now.to_rfc3339();
+        assert_eq!(status["lastTransitionTime"], expected);
+        assert_eq!(status["conditions"][0]["lastTransitionTime"], expected);
+    }
 }

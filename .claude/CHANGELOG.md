@@ -9,6 +9,66 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-08-29 20:55] - Fix killSwitch hot reconcile loop (unconditional status PATCH)
+
+**Author:** Pooja Maiti
+
+### Changed
+- `src/reconcilers/helpers.rs`: `handle_kill_switch` now returns early (no HTTP call) when the
+  `ScheduledMachine` is already in the `Terminated` phase, instead of unconditionally re-patching
+  status `Terminated -> Terminated` on every reconcile.
+- `src/reconcilers/scheduled_machine.rs`: `persist_spot_schedule_status` now compares the computed
+  `SpotScheduleStatus` against the currently-stored one and skips the PATCH entirely when nothing
+  changed, instead of PATCHing unconditionally on every reconcile of every `ScheduledMachine`.
+- `src/reconcilers/helpers_tests.rs`, `src/reconcilers/scheduled_machine_tests.rs`: added
+  regression tests for both no-op guards (and fixed a self-inflicted flaky test where the test's
+  own `Arc<Context>` clone was dropped before the mock HTTP channel's 50ms assertion window
+  elapsed, producing a false failure).
+
+### Why
+Setting `killSwitch: true` triggered an unbounded tight reconcile loop that hammered the
+Kubernetes/k0rdent API for as long as the flag stayed `true` — every reconcile re-PATCHed status
+even when the value was already correct, which re-triggered the resource's own watch, causing
+another immediate reconcile. Confirmed via live retest on `forge-exp`: with the fix, `killSwitch`
+correctly removes the Machine and terminates the host cleanly (verified via SSH — all k0s/
+containerd/CSI processes and directories removed) with zero resourceVersion churn afterward.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-08-29 21:20] - Fix spot-schedule provider hot reconcile loop (unconditional condition timestamp)
+
+**Author:** Pooja Maiti
+
+### Changed
+- `src/providers/time_based.rs`, `src/providers/capital_markets.rs`: extracted a pure
+  `compute_status` helper from `reconcile`; the `Ready` condition's own `lastTransitionTime` now
+  shares the same conditionally-computed value as the top-level `status.lastTransitionTime`,
+  instead of being unconditionally set to `now()` on every reconcile.
+- `src/providers/time_based_tests.rs`, `src/providers/capital_markets_tests.rs`: added
+  `compute_status` regression tests, including an idempotency test that feeds a reconcile's own
+  output back in as `previous` and asserts a later reconcile (same window, no real transition)
+  produces byte-for-byte identical output.
+
+### Why
+Discovered live on `forge-exp` while retesting the killSwitch fix above: both provider binaries
+(`spot-schedule-time-based`, and by inspection `spot-schedule-capital-markets`) were hammering the
+API at 400+ reconciles/sec on `TimeBasedSpotSchedule`/`CapitalMarketsSchedule` objects, completely
+independent of `killSwitch` or `ScheduledMachine` state. Root cause: the `Ready` condition's
+`lastTransitionTime` field was hardcoded to `now.to_rfc3339()` regardless of whether the condition
+actually changed, so the computed status JSON never equalled the stored one — `patch_status`
+always wrote a change, which re-triggered the watch, forever. This is the same
+unconditional-status-write anti-pattern as the killSwitch bug above, in a different binary.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-08-29 00:15] - Bump stale reference-manifest image tags v0.1.0 → v0.3.0
 
 **Author:** Pooja Maiti
