@@ -40,7 +40,7 @@ spec:
           # Pin to a released version tag — NEVER use :latest in production
           # manifests (Trivy KSV-0013). Update the tag via CI/CD release
           # workflow or your GitOps tool rather than editing in place.
-          image: ghcr.io/finos/5-spot:v0.1.0
+          image: ghcr.io/finos/5-spot:v0.3.0
           imagePullPolicy: IfNotPresent
           env:
             - name: RUST_LOG

@@ -9,6 +9,64 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-08-29 00:15] - Bump stale reference-manifest image tags v0.1.0 → v0.3.0
+
+**Author:** Pooja Maiti
+
+### Changed
+- `deploy/deployment/deployment.yaml`: `image: ghcr.io/finos/5-spot:v0.1.0` → `:v0.3.0`
+- `deploy/spot-schedule-providers/time-based/deployment.yaml`: same bump
+- `deploy/spot-schedule-providers/capital-markets/deployment.yaml`: same bump
+
+### Why
+All three reference Deployments were still pinned to `v0.1.0` — three releases behind the current
+`v0.3.0` tag — missing the provider architecture (ADR 0009), the `NetworkPolicy` port-30443 fix,
+and the node-taint-patch `apiVersion`/`kind` fix. Anyone following the quickstart got a stale
+image with none of that. **Not independently verified that `ghcr.io/finos/5-spot:v0.3.0` was
+actually published by the release pipeline** — revert this if the `v0.3.0` tag turns out not to
+have a corresponding image.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation/reference-manifest only — does not affect the controller's own source code
+
+---
+
+## [2026-08-29 00:00] - Quickstart docs: add the missing spot-schedule provider install step
+
+**Author:** Pooja Maiti
+
+### Changed
+- `docs/src/installation/quickstart.md`: inserted a new "Deploy a Spot-Schedule Provider" step
+  between "Deploy the Operator" and "Verify Installation" (renumbered accordingly), with the
+  `kubectl apply -k deploy/spot-schedule-providers/time-based/` command. Previously the only hint
+  that a provider was required was a comment inside the example YAML, discovered only after
+  already applying an SM that would then never activate — `controller.md` already documents this
+  correctly via a `!!! important` callout, but `quickstart.md` (the first doc a new user reads)
+  did not. Also added a note in the same step covering the second first-party provider,
+  `CapitalMarketsSchedule` (`kubectl apply -k deploy/spot-schedule-providers/capital-markets/`),
+  marked optional since the quickstart's own example uses `TimeBasedSpotSchedule`.
+- `Makefile`: added a generic `docker-image` target (`ARCH`/`PUSH`/`REGISTRY`/`ORG`/`IMAGE_TAG`/
+  `BASE_IMAGE` knobs, mirroring the pattern from `firestoned/banlieue`'s `Makefile`) alongside the
+  existing fixed per-arch/per-registry targets, for ad-hoc test builds without needing a new named
+  target per registry/tag combination.
+
+### Why
+Found while standing up a local test deployment against a newer, unreleased build: every
+`ScheduledMachine` sat with `status.spotSchedule.resolved: false` indefinitely with no controller
+log pointing at the cause, because the `spot-schedule-time-based` provider Deployment was never
+applied — `quickstart.md`'s numbered steps never mention it.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (plus one non-functional Makefile addition — no existing targets changed)
+
+---
+
 ## [2026-07-23 03:45] - Coordinated kube 4.x / k8s-openapi 0.28 / kube-lease-manager 0.12 upgrade (PR #89, #85, #90)
 
 **Author:** Erick Bourgeois

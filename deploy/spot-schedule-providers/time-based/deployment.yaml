@@ -39,7 +39,7 @@ spec:
       containers:
         - name: provider
           # Pin to a released version tag — NEVER use :latest (Trivy KSV-0013).
-          image: ghcr.io/finos/5-spot:v0.1.0
+          image: ghcr.io/finos/5-spot:v0.3.0
           imagePullPolicy: IfNotPresent
           command: ["/spot-schedule-time-based"]
           env:
