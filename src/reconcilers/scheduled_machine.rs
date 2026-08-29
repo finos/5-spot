@@ -50,7 +50,7 @@ use crate::constants::{
     REASON_GRACE_PERIOD, REASON_MACHINE_CREATED, REASON_MACHINE_DELETED, REASON_SCHEDULE_ACTIVE,
     REASON_SCHEDULE_DISABLED, REASON_SCHEDULE_INACTIVE, TIMER_REQUEUE_SECS,
 };
-use crate::crd::ScheduledMachine;
+use crate::crd::{ScheduledMachine, SpotScheduleStatus};
 use crate::metrics::{
     record_error, record_reconciliation_failure, record_reconciliation_success,
     record_schedule_evaluation, KILL_SWITCH_ACTIVATIONS_TOTAL,
@@ -558,11 +558,11 @@ async fn reconcile_inner(
     }
 
     // Hold-last-state input: the provider-active value persisted last reconcile.
-    let last_known_spot_active = resource
+    let current_spot_schedule_status = resource
         .status
         .as_ref()
-        .and_then(|status| status.spot_schedule.as_ref())
-        .and_then(|spot| spot.active);
+        .and_then(|s| s.spot_schedule.as_ref());
+    let last_known_spot_active = current_spot_schedule_status.and_then(|spot| spot.active);
 
     // Resolve the single spot-schedule provider named by `spec.schedule`
     // (required since ADR 0009). A transient API error propagates so the
@@ -585,6 +585,7 @@ async fn reconcile_inner(
         &name,
         &spot_verdict,
         last_known_spot_active,
+        current_spot_schedule_status,
     )
     .await?;
 
@@ -670,6 +671,7 @@ async fn persist_spot_schedule_status(
     name: &str,
     verdict: &spot_schedule::SpotScheduleVerdict,
     previous_active: Option<bool>,
+    current: Option<&SpotScheduleStatus>,
 ) -> Result<(), ReconcilerError> {
     use kube::api::{Api, Patch, PatchParams};
 
@@ -678,11 +680,43 @@ async fn persist_spot_schedule_status(
     let transitioned = matches!((verdict.active(), previous_active), (Some(now), Some(before)) if now != before)
         || matches!((verdict.active(), previous_active), (Some(_), None));
 
-    let last_transition_time = if transitioned {
-        Some(chrono::Utc::now().to_rfc3339())
+    let message = if let spot_schedule::SpotScheduleVerdict::Unresolved { message, .. } = verdict {
+        Some(message.clone())
     } else {
         None
     };
+
+    // Only bump lastTransitionTime on an actual transition; otherwise leave
+    // it out of the outgoing patch below (a JSON merge patch omission leaves
+    // the existing field untouched server-side).
+    let last_transition_time = transitioned.then(|| chrono::Utc::now().to_rfc3339());
+
+    // No-op guard: skip the PATCH entirely when nothing has actually changed.
+    // A same-value status write still counts as an object update and
+    // re-triggers this reconciler's own watch, creating an unbounded tight
+    // reconcile loop (measured: thousands of reconciles/sec) -- this function
+    // runs on every single reconcile of every ScheduledMachine, regardless of
+    // phase or killSwitch, so an unconditional PATCH here is the most
+    // impactful place to guard.
+    //
+    // lastTransitionTime is carried forward from `current` for this
+    // comparison only, since it's intentionally omitted from the outgoing
+    // patch (above) when not transitioning -- without this, the comparison
+    // would see None vs. Some(old_time) and never consider two reconciles
+    // equal.
+    let comparison_value = SpotScheduleStatus {
+        resolved: verdict.is_resolved(),
+        active,
+        reason: Some(verdict.reason().to_string()),
+        message: message.clone(),
+        provider_generation: verdict.provider_generation(),
+        last_transition_time: last_transition_time
+            .clone()
+            .or_else(|| current.and_then(|c| c.last_transition_time.clone())),
+    };
+    if current == Some(&comparison_value) {
+        return Ok(());
+    }
 
     let mut spot_status = serde_json::json!({
         "resolved": verdict.is_resolved(),
@@ -691,13 +725,13 @@ async fn persist_spot_schedule_status(
     if let Some(active) = active {
         spot_status["active"] = serde_json::json!(active);
     }
-    if let spot_schedule::SpotScheduleVerdict::Unresolved { message, .. } = verdict {
+    if let Some(message) = &message {
         spot_status["message"] = serde_json::json!(message);
     }
     if let Some(generation) = verdict.provider_generation() {
         spot_status["providerGeneration"] = serde_json::json!(generation);
     }
-    if let Some(time) = last_transition_time {
+    if let Some(time) = &last_transition_time {
         spot_status["lastTransitionTime"] = serde_json::json!(time);
     }
 
