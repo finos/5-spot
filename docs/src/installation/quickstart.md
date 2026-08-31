@@ -42,7 +42,36 @@ ClusterRole, and ClusterRoleBinding under `deploy/deployment/rbac/` are
 applied. Without it the Deployment is created but cannot schedule pods
 (`serviceaccount "5spot-controller" not found`).
 
-### 3. Verify Installation
+### 3. Deploy a Spot-Schedule Provider
+
+The controller you just deployed does **not** decide *when* a machine is
+active — it only reads `status.active` from a spot-schedule **provider**
+(ADR 0009). Without one running, every `ScheduledMachine` you create later
+will sit forever with `status.spotSchedule.resolved: false` and never
+activate, with nothing in the controller's own logs pointing at why.
+
+Install the first-party `TimeBasedSpotSchedule` provider (its binary ships
+inside the same image you just deployed, selected via `command:`):
+
+```bash
+kubectl apply -k deploy/spot-schedule-providers/time-based/
+```
+
+5-Spot also ships a second first-party provider, `CapitalMarketsSchedule`, for
+market-hours-based scheduling instead of a plain day/hour window. It's
+optional — most of this quickstart (and the example below) uses
+`TimeBasedSpotSchedule` — but if you need market-hours scheduling, install it
+the same way, from its own subdirectory (same image, different `command:`):
+
+```bash
+kubectl apply -k deploy/spot-schedule-providers/capital-markets/
+```
+
+Only install the provider(s) you actually reference from a `ScheduledMachine`'s
+`spec.schedule` — an unused provider is harmless but is one more thing running
+for nothing.
+
+### 4. Verify Installation
 
 ```bash
 kubectl get pods -n 5spot-system

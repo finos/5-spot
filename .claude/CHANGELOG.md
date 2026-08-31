@@ -9,6 +9,124 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-08-29 20:55] - Fix killSwitch hot reconcile loop (unconditional status PATCH)
+
+**Author:** Pooja Maiti
+
+### Changed
+- `src/reconcilers/helpers.rs`: `handle_kill_switch` now returns early (no HTTP call) when the
+  `ScheduledMachine` is already in the `Terminated` phase, instead of unconditionally re-patching
+  status `Terminated -> Terminated` on every reconcile.
+- `src/reconcilers/scheduled_machine.rs`: `persist_spot_schedule_status` now compares the computed
+  `SpotScheduleStatus` against the currently-stored one and skips the PATCH entirely when nothing
+  changed, instead of PATCHing unconditionally on every reconcile of every `ScheduledMachine`.
+- `src/reconcilers/helpers_tests.rs`, `src/reconcilers/scheduled_machine_tests.rs`: added
+  regression tests for both no-op guards (and fixed a self-inflicted flaky test where the test's
+  own `Arc<Context>` clone was dropped before the mock HTTP channel's 50ms assertion window
+  elapsed, producing a false failure).
+
+### Why
+Setting `killSwitch: true` triggered an unbounded tight reconcile loop that hammered the
+Kubernetes/k0rdent API for as long as the flag stayed `true` — every reconcile re-PATCHed status
+even when the value was already correct, which re-triggered the resource's own watch, causing
+another immediate reconcile. Confirmed via live retest on `forge-exp`: with the fix, `killSwitch`
+correctly removes the Machine and terminates the host cleanly (verified via SSH — all k0s/
+containerd/CSI processes and directories removed) with zero resourceVersion churn afterward.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-08-29 21:20] - Fix spot-schedule provider hot reconcile loop (unconditional condition timestamp)
+
+**Author:** Pooja Maiti
+
+### Changed
+- `src/providers/time_based.rs`, `src/providers/capital_markets.rs`: extracted a pure
+  `compute_status` helper from `reconcile`; the `Ready` condition's own `lastTransitionTime` now
+  shares the same conditionally-computed value as the top-level `status.lastTransitionTime`,
+  instead of being unconditionally set to `now()` on every reconcile.
+- `src/providers/time_based_tests.rs`, `src/providers/capital_markets_tests.rs`: added
+  `compute_status` regression tests, including an idempotency test that feeds a reconcile's own
+  output back in as `previous` and asserts a later reconcile (same window, no real transition)
+  produces byte-for-byte identical output.
+
+### Why
+Discovered live on `forge-exp` while retesting the killSwitch fix above: both provider binaries
+(`spot-schedule-time-based`, and by inspection `spot-schedule-capital-markets`) were hammering the
+API at 400+ reconciles/sec on `TimeBasedSpotSchedule`/`CapitalMarketsSchedule` objects, completely
+independent of `killSwitch` or `ScheduledMachine` state. Root cause: the `Ready` condition's
+`lastTransitionTime` field was hardcoded to `now.to_rfc3339()` regardless of whether the condition
+actually changed, so the computed status JSON never equalled the stored one — `patch_status`
+always wrote a change, which re-triggered the watch, forever. This is the same
+unconditional-status-write anti-pattern as the killSwitch bug above, in a different binary.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-08-29 00:15] - Bump stale reference-manifest image tags v0.1.0 → v0.3.0
+
+**Author:** Pooja Maiti
+
+### Changed
+- `deploy/deployment/deployment.yaml`: `image: ghcr.io/finos/5-spot:v0.1.0` → `:v0.3.0`
+- `deploy/spot-schedule-providers/time-based/deployment.yaml`: same bump
+- `deploy/spot-schedule-providers/capital-markets/deployment.yaml`: same bump
+
+### Why
+All three reference Deployments were still pinned to `v0.1.0` — three releases behind the current
+`v0.3.0` tag — missing the provider architecture (ADR 0009), the `NetworkPolicy` port-30443 fix,
+and the node-taint-patch `apiVersion`/`kind` fix. Anyone following the quickstart got a stale
+image with none of that. **Not independently verified that `ghcr.io/finos/5-spot:v0.3.0` was
+actually published by the release pipeline** — revert this if the `v0.3.0` tag turns out not to
+have a corresponding image.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation/reference-manifest only — does not affect the controller's own source code
+
+---
+
+## [2026-08-29 00:00] - Quickstart docs: add the missing spot-schedule provider install step
+
+**Author:** Pooja Maiti
+
+### Changed
+- `docs/src/installation/quickstart.md`: inserted a new "Deploy a Spot-Schedule Provider" step
+  between "Deploy the Operator" and "Verify Installation" (renumbered accordingly), with the
+  `kubectl apply -k deploy/spot-schedule-providers/time-based/` command. Previously the only hint
+  that a provider was required was a comment inside the example YAML, discovered only after
+  already applying an SM that would then never activate — `controller.md` already documents this
+  correctly via a `!!! important` callout, but `quickstart.md` (the first doc a new user reads)
+  did not. Also added a note in the same step covering the second first-party provider,
+  `CapitalMarketsSchedule` (`kubectl apply -k deploy/spot-schedule-providers/capital-markets/`),
+  marked optional since the quickstart's own example uses `TimeBasedSpotSchedule`.
+- `Makefile`: added a generic `docker-image` target (`ARCH`/`PUSH`/`REGISTRY`/`ORG`/`IMAGE_TAG`/
+  `BASE_IMAGE` knobs, mirroring the pattern from `firestoned/banlieue`'s `Makefile`) alongside the
+  existing fixed per-arch/per-registry targets, for ad-hoc test builds without needing a new named
+  target per registry/tag combination.
+
+### Why
+Found while standing up a local test deployment against a newer, unreleased build: every
+`ScheduledMachine` sat with `status.spotSchedule.resolved: false` indefinitely with no controller
+log pointing at the cause, because the `spot-schedule-time-based` provider Deployment was never
+applied — `quickstart.md`'s numbered steps never mention it.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (plus one non-functional Makefile addition — no existing targets changed)
+
+---
+
 ## [2026-07-23 03:45] - Coordinated kube 4.x / k8s-openapi 0.28 / kube-lease-manager 0.12 upgrade (PR #89, #85, #90)
 
 **Author:** Erick Bourgeois

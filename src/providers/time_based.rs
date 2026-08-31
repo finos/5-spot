@@ -41,7 +41,7 @@ use crate::constants::{
     PROVIDER_FALLBACK_REQUEUE_SECS, PROVIDER_TRANSITION_HORIZON_HOURS,
     REASON_TIME_BASED_WINDOW_CLOSED, REASON_TIME_BASED_WINDOW_OPEN,
 };
-use crate::crd::{TimeBasedSpotSchedule, TimeBasedSpotScheduleSpec};
+use crate::crd::{TimeBasedSpotSchedule, TimeBasedSpotScheduleSpec, TimeBasedSpotScheduleStatus};
 
 /// Errors raised while reconciling a `TimeBasedSpotSchedule`.
 #[derive(Debug, thiserror::Error)]
@@ -132,6 +132,60 @@ pub fn next_transition(
     Ok(None)
 }
 
+/// Compute the full `status` patch body for a reconcile — pure, no I/O.
+///
+/// Extracted so the "no field changes unconditionally on every reconcile"
+/// invariant is unit-testable without a mocked Kubernetes client: previously
+/// the `Ready` condition's own `lastTransitionTime` was set to `now` on
+/// *every* call regardless of whether anything actually transitioned, which
+/// made the computed status never equal the stored one — `patch_status`
+/// therefore always wrote a change, which re-triggered the watch, which
+/// reconciled again immediately, forever. Both `lastTransitionTime` fields
+/// (top-level and inside the condition) now share the single conditionally-
+/// computed value below.
+fn compute_status(
+    spec: &TimeBasedSpotScheduleSpec,
+    previous: Option<&TimeBasedSpotScheduleStatus>,
+    generation: Option<i64>,
+    now: DateTime<Utc>,
+) -> Result<serde_json::Value, ProviderError> {
+    let active = is_active_at(spec, now)?;
+    let next = next_transition(spec, now)?;
+
+    let previous_active = previous.map(|status| status.active);
+    let transitioned = previous_active != Some(active);
+    let last_transition_time = if transitioned {
+        now.to_rfc3339()
+    } else {
+        previous
+            .and_then(|status| status.last_transition_time.clone())
+            .unwrap_or_else(|| now.to_rfc3339())
+    };
+
+    let (reason, message) = if active {
+        (REASON_TIME_BASED_WINDOW_OPEN, "schedule window open")
+    } else {
+        (REASON_TIME_BASED_WINDOW_CLOSED, "schedule window closed")
+    };
+
+    let mut status = json!({
+        "active": active,
+        "observedGeneration": generation,
+        "lastTransitionTime": last_transition_time,
+        "conditions": [{
+            "type": CONDITION_TYPE_READY,
+            "status": CONDITION_STATUS_TRUE,
+            "reason": reason,
+            "message": message,
+            "lastTransitionTime": last_transition_time,
+        }],
+    });
+    if let Some(next) = next {
+        status["nextTransitionTime"] = json!(next.to_rfc3339());
+    }
+    Ok(status)
+}
+
 /// Reconcile one `TimeBasedSpotSchedule`: compute `active` + the next
 /// transition, patch `status`, and requeue at the boundary.
 ///
@@ -148,40 +202,14 @@ pub async fn reconcile(
 
     let active = is_active_at(&tbss.spec, now)?;
     let next = next_transition(&tbss.spec, now)?;
-
     let previous_active = tbss.status.as_ref().map(|status| status.active);
     let transitioned = previous_active != Some(active);
-    let last_transition_time = if transitioned {
-        Some(now.to_rfc3339())
-    } else {
-        tbss.status
-            .as_ref()
-            .and_then(|status| status.last_transition_time.clone())
-    };
-
-    let (reason, message) = if active {
-        (REASON_TIME_BASED_WINDOW_OPEN, "schedule window open")
-    } else {
-        (REASON_TIME_BASED_WINDOW_CLOSED, "schedule window closed")
-    };
-
-    let mut status = json!({
-        "active": active,
-        "observedGeneration": tbss.metadata.generation,
-        "conditions": [{
-            "type": CONDITION_TYPE_READY,
-            "status": CONDITION_STATUS_TRUE,
-            "reason": reason,
-            "message": message,
-            "lastTransitionTime": now.to_rfc3339(),
-        }],
-    });
-    if let Some(time) = last_transition_time {
-        status["lastTransitionTime"] = json!(time);
-    }
-    if let Some(next) = next {
-        status["nextTransitionTime"] = json!(next.to_rfc3339());
-    }
+    let status = compute_status(
+        &tbss.spec,
+        tbss.status.as_ref(),
+        tbss.metadata.generation,
+        now,
+    )?;
 
     let api: Api<TimeBasedSpotSchedule> = Api::namespaced(ctx.client.clone(), &namespace);
     api.patch_status(

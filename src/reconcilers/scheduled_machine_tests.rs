@@ -1333,9 +1333,134 @@ mod tests {
             "sm",
             &verdict,
             None,
+            None,
         )
         .await
         .expect("persist should succeed");
+
+        srv.await.unwrap();
+    }
+
+    // ========================================================================
+    // persist_spot_schedule_status — no-op guard (BUG-002 hot-loop fix)
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_persist_spot_schedule_status_skips_patch_when_unchanged() {
+        // Same resolved verdict, same previously-recorded status: nothing
+        // changed, so this must NOT issue a PATCH. An unconditional PATCH
+        // here — even with an unchanged value — re-triggers the reconciler's
+        // own watch and creates an unbounded tight reconcile loop, since this
+        // function runs on every single reconcile of every ScheduledMachine.
+        use crate::constants::REASON_SPOT_SCHEDULE_RESOLVED;
+        use crate::crd::SpotScheduleStatus;
+        use crate::reconcilers::spot_schedule::SpotScheduleVerdict;
+
+        let (client, handle) = taint_mock_client_pair();
+        let watcher = spawn_no_http_watcher("unchanged spotSchedule status guard", handle);
+        let ctx = Context::new(client, 0, 1);
+
+        let verdict = SpotScheduleVerdict::Active {
+            provider_generation: Some(3),
+        };
+        let current = SpotScheduleStatus {
+            resolved: true,
+            active: Some(true),
+            reason: Some(REASON_SPOT_SCHEDULE_RESOLVED.to_string()),
+            message: None,
+            provider_generation: Some(3),
+            last_transition_time: Some("2026-01-01T00:00:00+00:00".to_string()),
+        };
+
+        crate::reconcilers::scheduled_machine::persist_spot_schedule_status(
+            &ctx,
+            "capital-markets",
+            "sm",
+            &verdict,
+            Some(true), // previous_active matches verdict.active() -- no transition
+            Some(&current),
+        )
+        .await
+        .expect("no-op persist should still succeed");
+
+        watcher.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_persist_spot_schedule_status_patches_when_active_changes() {
+        // Sanity check for the no-op guard: a genuinely different verdict
+        // (active flips false -> true relative to `current`) must still
+        // result in a PATCH. Guards against a too-broad comparison that
+        // would swallow real transitions.
+        use crate::constants::REASON_SPOT_SCHEDULE_RESOLVED;
+        use crate::crd::SpotScheduleStatus;
+        use crate::reconcilers::spot_schedule::SpotScheduleVerdict;
+
+        let (svc, mut handle) = mock::pair::<Request<Body>, Response<Body>>();
+        let client = kube::Client::new(svc, "capital-markets");
+        let ctx = Context::new(client, 0, 1);
+
+        let srv = tokio::spawn(async move {
+            let (req, send) = handle
+                .next_request()
+                .await
+                .expect("expected patch_status call for a genuine transition");
+            assert_eq!(req.method(), http::Method::PATCH);
+            let body = serde_json::to_vec(&json!({
+                "apiVersion": "5spot.finos.org/v1beta1",
+                "kind": "ScheduledMachine",
+                "metadata": { "name": "sm", "namespace": "capital-markets", "resourceVersion": "2" },
+                "spec": {
+                    "clusterName": "test",
+                    "schedule": {
+                        "apiVersion": "spotschedules.5spot.finos.org/v1alpha1",
+                        "kind": "CapitalMarketsSchedule",
+                        "name": "nyse-equities"
+                    },
+                    "bootstrapSpec": {
+                        "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
+                        "kind": "K0sWorkerConfig",
+                        "spec": {}
+                    },
+                    "infrastructureSpec": {
+                        "apiVersion": "infrastructure.cluster.x-k8s.io/v1beta1",
+                        "kind": "RemoteMachine",
+                        "spec": {}
+                    }
+                }
+            }))
+            .unwrap();
+            send.send_response(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            );
+        });
+
+        let verdict = SpotScheduleVerdict::Active {
+            provider_generation: Some(3),
+        };
+        let current = SpotScheduleStatus {
+            resolved: true,
+            active: Some(false),
+            reason: Some(REASON_SPOT_SCHEDULE_RESOLVED.to_string()),
+            message: None,
+            provider_generation: Some(3),
+            last_transition_time: Some("2026-01-01T00:00:00+00:00".to_string()),
+        };
+
+        crate::reconcilers::scheduled_machine::persist_spot_schedule_status(
+            &ctx,
+            "capital-markets",
+            "sm",
+            &verdict,
+            Some(false), // previous_active differs from verdict.active() -- real transition
+            Some(&current),
+        )
+        .await
+        .expect("persist should succeed on a real transition");
 
         srv.await.unwrap();
     }

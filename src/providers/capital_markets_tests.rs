@@ -4,7 +4,9 @@
 #[allow(clippy::module_inception)]
 mod tests {
     use super::super::*;
-    use crate::crd::{CapitalMarketsScheduleSpec, EarlyClose, TradingSession};
+    use crate::crd::{
+        CapitalMarketsScheduleSpec, CapitalMarketsScheduleStatus, EarlyClose, TradingSession,
+    };
 
     const NY: &str = "America/New_York";
 
@@ -134,5 +136,74 @@ mod tests {
         };
         let from = local_instant(NY, 2026, 6, 10, 11, 0);
         assert!(next_transition(&spec, from).unwrap().is_none());
+    }
+
+    // ── compute_status ───────────────────────────────────────────────────────
+    //
+    // Regression coverage for the hot-loop bug: the `Ready` condition's own
+    // `lastTransitionTime` used to be set to `now` on every reconcile
+    // regardless of whether anything transitioned, so the computed status
+    // never equalled the stored one and `patch_status` always wrote a change
+    // — which re-triggered the watch and reconciled again immediately.
+
+    fn status_with(active: bool, last_transition_time: &str) -> CapitalMarketsScheduleStatus {
+        CapitalMarketsScheduleStatus {
+            active,
+            last_transition_time: Some(last_transition_time.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_compute_status_no_transition_keeps_previous_timestamp() {
+        let previous = status_with(true, "2026-01-01T00:00:00+00:00");
+        let now = local_instant(NY, 2026, 6, 10, 11, 0);
+
+        let status = compute_status(&nyse_spec(), Some(&previous), Some(1), now).unwrap();
+
+        assert_eq!(status["lastTransitionTime"], "2026-01-01T00:00:00+00:00");
+        assert_eq!(
+            status["conditions"][0]["lastTransitionTime"],
+            "2026-01-01T00:00:00+00:00"
+        );
+    }
+
+    #[test]
+    fn test_compute_status_is_idempotent_across_repeated_reconciles() {
+        let now = local_instant(NY, 2026, 6, 10, 11, 0);
+        let first = compute_status(&nyse_spec(), None, Some(1), now).unwrap();
+
+        let previous = CapitalMarketsScheduleStatus {
+            active: first["active"].as_bool().unwrap(),
+            last_transition_time: first["lastTransitionTime"].as_str().map(String::from),
+            ..Default::default()
+        };
+        let later = now + Duration::from_secs(5);
+        let second = compute_status(&nyse_spec(), Some(&previous), Some(1), later).unwrap();
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn test_compute_status_transition_sets_now() {
+        let previous = status_with(false, "2026-01-01T00:00:00+00:00");
+        let now = local_instant(NY, 2026, 6, 10, 11, 0);
+
+        let status = compute_status(&nyse_spec(), Some(&previous), Some(1), now).unwrap();
+
+        let expected = now.to_rfc3339();
+        assert_eq!(status["lastTransitionTime"], expected);
+        assert_eq!(status["conditions"][0]["lastTransitionTime"], expected);
+    }
+
+    #[test]
+    fn test_compute_status_first_reconcile_with_no_previous_status_sets_now() {
+        let now = local_instant(NY, 2026, 6, 10, 11, 0);
+
+        let status = compute_status(&nyse_spec(), None, Some(1), now).unwrap();
+
+        let expected = now.to_rfc3339();
+        assert_eq!(status["lastTransitionTime"], expected);
+        assert_eq!(status["conditions"][0]["lastTransitionTime"], expected);
     }
 }

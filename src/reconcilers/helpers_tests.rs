@@ -5068,4 +5068,134 @@ mod tests {
             "controller-owned label must win over any user value"
         );
     }
+
+    // ========================================================================
+    // handle_kill_switch — already-Terminated no-op guard (BUG-001/002/002b)
+    //
+    // Regression: once phase reaches Terminated, handle_kill_switch was still
+    // reached on every reconcile (the kill_switch check runs before the phase
+    // dispatch) and unconditionally called update_phase(Terminated ->
+    // Terminated), which unconditionally PATCHes status. A same-value status
+    // write still counts as an object update and re-triggers the
+    // reconciler's own watch — measured live at thousands of reconciles/sec,
+    // sustained, with no way to stop it short of deleting the resource
+    // entirely (reverting killSwitch to false did NOT stop it, since this
+    // code path doesn't check killSwitch's value, only the current phase).
+    // ========================================================================
+
+    fn sm_with_phase_and_kill_switch(
+        phase: &str,
+        kill_switch: bool,
+    ) -> crate::crd::ScheduledMachine {
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+        crate::crd::ScheduledMachine {
+            metadata: ObjectMeta {
+                name: Some("sm-kill-switch".to_string()),
+                namespace: Some("default".to_string()),
+                ..Default::default()
+            },
+            spec: crate::crd::ScheduledMachineSpec {
+                cluster_name: "test-cluster".to_string(),
+                bootstrap_spec: crate::crd::EmbeddedResource(serde_json::json!({
+                    "apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
+                    "kind": "K0sWorkerConfig",
+                    "spec": {}
+                })),
+                infrastructure_spec: crate::crd::EmbeddedResource(serde_json::json!({
+                    "apiVersion": "infrastructure.cluster.x-k8s.io/v1beta1",
+                    "kind": "RemoteMachine",
+                    "spec": {}
+                })),
+                machine_template: None,
+                schedule: crate::crd::SpotScheduleRef {
+                    api_version: "spotschedules.5spot.finos.org/v1alpha1".to_string(),
+                    kind: "TimeBasedSpotSchedule".to_string(),
+                    name: "weekdays-9-5".to_string(),
+                },
+                enabled: true,
+                priority: 50,
+                graceful_shutdown_timeout: "5m".to_string(),
+                node_drain_timeout: "5m".to_string(),
+                kill_switch,
+                node_taints: vec![],
+                kill_if_commands: None,
+                kubeconfig_secret_ref: None,
+                kata: None,
+            },
+            status: Some(crate::crd::ScheduledMachineStatus {
+                phase: Some(phase.to_string()),
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_kill_switch_short_circuits_when_already_terminated() {
+        use crate::constants::PHASE_TERMINATED;
+        use std::sync::Arc;
+
+        let (client, handle) = mock_client_pair();
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            tokio::select! {
+                req = h.next_request() => {
+                    panic!(
+                        "already-Terminated guard: no HTTP call expected, got: {:?}",
+                        req.map(|(r, _)| r.uri().to_string())
+                    );
+                }
+                () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
+                    // expected path: no request arrives within the budget
+                }
+            }
+        });
+
+        let sm = Arc::new(sm_with_phase_and_kill_switch(PHASE_TERMINATED, true));
+        let ctx = Arc::new(make_test_context(client));
+        // Keep a second Arc clone alive so the mock Client (and its channel
+        // to `srv`) isn't dropped the instant handle_kill_switch's early
+        // return drops its own clone — that premature drop closes the mock
+        // channel and makes next_request() resolve to None immediately,
+        // producing a false failure instead of waiting out the 50ms budget.
+        let _ctx_keepalive = ctx.clone();
+
+        super::super::handle_kill_switch(sm, ctx)
+            .await
+            .expect("already-Terminated short-circuit must not error");
+
+        srv.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_handle_kill_switch_still_terminates_when_active() {
+        // Sanity check for the guard above: a machine that is NOT yet
+        // Terminated must still go through the normal kill-switch flow
+        // (remove_machine_from_cluster + update_phase), so the new
+        // early-return doesn't accidentally swallow the real activation path.
+        use crate::constants::PHASE_ACTIVE;
+        use std::sync::Arc;
+
+        let (client, handle) = mock_client_pair();
+        let srv = tokio::spawn(async move {
+            let mut h = pin!(handle);
+            // Expect at least one HTTP call (Machine lookup/delete and/or the
+            // status PATCH) -- the exact sequence is covered by other tests;
+            // here we only assert the short-circuit does NOT fire.
+            let maybe = h.next_request().await;
+            assert!(
+                maybe.is_some(),
+                "expected the normal kill-switch flow to make an HTTP call"
+            );
+        });
+
+        let sm = Arc::new(sm_with_phase_and_kill_switch(PHASE_ACTIVE, true));
+        let ctx = Arc::new(make_test_context(client));
+
+        // We only care that the short-circuit didn't fire; a downstream
+        // Machine-lookup failure (no mock response queued) is an expected,
+        // acceptable outcome for this test.
+        let _ = super::super::handle_kill_switch(sm, ctx).await;
+
+        srv.await.unwrap();
+    }
 }
