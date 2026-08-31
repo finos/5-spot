@@ -454,12 +454,18 @@ pub async fn handle_kill_switch(
 
     let current_phase = resource.status.as_ref().and_then(|s| s.phase.as_deref());
 
-    // Only remove if not already inactive or terminated
+    // Already terminated: nothing left to do. Return before the unconditional
+    // update_phase() call below — re-patching status Terminated -> Terminated
+    // still counts as an object update, which re-triggers this reconciler's
+    // own watch and creates an unbounded tight reconcile loop (no upper bound
+    // on requeue rate) for as long as `killSwitch` stays true.
+    if current_phase == Some(PHASE_TERMINATED) {
+        return Ok(Action::requeue(Duration::from_secs(TIMER_REQUEUE_SECS)));
+    }
+
+    // Only remove if not already inactive
     if let Some(phase) = current_phase {
-        if phase != PHASE_INACTIVE
-            && phase != PHASE_TERMINATED
-            && matches!(phase, PHASE_ACTIVE | PHASE_SHUTTING_DOWN)
-        {
+        if phase != PHASE_INACTIVE && matches!(phase, PHASE_ACTIVE | PHASE_SHUTTING_DOWN) {
             info!(
                 resource = %name,
                 namespace = %namespace,

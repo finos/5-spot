@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
 # SPDX-License-Identifier: Apache-2.0
 
-.PHONY: help install build build-debug build-linux-amd64 build-linux-arm64 build-macos-arm64 prepare-binaries-linux-amd64 prepare-binaries-linux-arm64 test test-lib lint format clean crds crddoc docs docs-serve docs-clean docs-rustdoc calm-diagrams calm-validate run-local docker-build docker-build-amd64 docker-build-arm64 docker-build-chainguard docker-push docker-buildx docker-buildx-chainguard gitleaks gitleaks-install install-git-hooks security-scan-local sbom audit vexctl-install vex-validate vex-assemble vex-auto-presence vex-auto-reachability vex-auto vex-auto-check set-image-version kind-install kind-create kind-delete kind-load kind-deploy kind-example kind-setup kind-status
+.PHONY: help install build build-debug build-linux-amd64 build-linux-arm64 build-macos-arm64 prepare-binaries-linux-amd64 prepare-binaries-linux-arm64 test test-lib lint format clean crds crddoc docs docs-serve docs-clean docs-rustdoc calm-diagrams calm-validate run-local docker-build docker-build-amd64 docker-build-arm64 docker-build-chainguard docker-image docker-push docker-buildx docker-buildx-chainguard gitleaks gitleaks-install install-git-hooks security-scan-local sbom audit vexctl-install vex-validate vex-assemble vex-auto-presence vex-auto-reachability vex-auto vex-auto-check set-image-version kind-install kind-create kind-delete kind-load kind-deploy kind-example kind-setup kind-status
 
 # CALM (FINOS Common Architecture Language Model) configuration
 CALM_CLI_VERSION ?= 1.37.0
@@ -11,9 +11,20 @@ CALM_DIAGRAMS_OUT := docs/src/architecture
 
 # Image configuration
 REGISTRY ?= ghcr.io
+ORG      ?=
 IMAGE_NAME ?= 5spot
 IMAGE_TAG ?= latest-dev
 NAMESPACE ?= 5spot-system
+
+# Generic single-knob build target (see `docker-image` below). ARCH selects
+# linux/amd64 or linux/arm64; PUSH=true pushes instead of --load-ing locally.
+ARCH ?= amd64
+PUSH ?=
+
+# ORG is optional (some registries have no org/namespace segment, e.g. a
+# bare Artifactory repo path) — omit the segment entirely when empty rather
+# than emitting a double slash.
+IMAGE_REF = $(REGISTRY)$(if $(strip $(ORG)),/$(ORG),)/$(IMAGE_NAME):$(IMAGE_TAG)
 
 # Platform configuration for builds
 # Default is linux/amd64 (most common for Kubernetes deployments)
@@ -381,6 +392,33 @@ docker-buildx-chainguard: prepare-binaries-linux-amd64 ## Build and push Chaingu
 		--build-arg VERSION="$(VERSION)" \
 		--build-arg GIT_SHA="$(GIT_SHA)" \
 		--build-arg BASE_IMAGE="$(CHAINGUARD_BASE_IMAGE)" \
+		.
+
+# Generic, single knob for both build and build+push, any arch, any registry.
+#   make docker-image ARCH=amd64                       # --load to local docker
+#   make docker-image ARCH=amd64 PUSH=true \           # build + push
+#     REGISTRY=<registry> ORG= IMAGE_TAG=local-dev     # -> <registry>/5spot:local-dev
+# Stages binaries/$(ARCH) first (prepare-binaries-linux-$(ARCH), which copies
+# all three binaries the Dockerfile COPYs: 5spot, spot-schedule-time-based,
+# spot-schedule-capital-markets), then buildx-builds $(IMAGE_REF).
+.PHONY: docker-image
+docker-image: ## Generic $(ARCH) image build of $(IMAGE_REF); PUSH=true to push instead of --load
+	@case "$(ARCH)" in \
+	  amd64) $(MAKE) prepare-binaries-linux-amd64 ;; \
+	  arm64) $(MAKE) prepare-binaries-linux-arm64 ;; \
+	  *) echo "ERROR: unsupported ARCH=$(ARCH) (use amd64 or arm64)"; exit 1 ;; \
+	esac
+	@$(CONTAINER_TOOL) buildx inspect fivespot-builder >/dev/null 2>&1 || \
+		$(CONTAINER_TOOL) buildx create --name fivespot-builder --config ~/.docker/buildx/buildkitd.toml
+	$(CONTAINER_TOOL) buildx use fivespot-builder
+	@echo "Building $(IMAGE_REF) (linux/$(ARCH), $(if $(filter true,$(PUSH)),push,load))..."
+	$(CONTAINER_TOOL) buildx build $(if $(filter true,$(PUSH)),--push,--load) \
+		--platform=linux/$(ARCH) \
+		-t $(IMAGE_REF) \
+		--build-arg TARGETARCH=$(ARCH) \
+		--build-arg VERSION="$(VERSION)" \
+		--build-arg GIT_SHA="$(GIT_SHA)" \
+		--build-arg BASE_IMAGE="$(BASE_IMAGE)" \
 		.
 
 # ============================================================
