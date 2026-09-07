@@ -24,6 +24,10 @@ updates:
       day: "monday"
       time: "09:00"
       timezone: "America/Toronto"
+    # Let freshly published releases bake for a week before proposing them —
+    # supply-chain attacks on new action releases usually surface within days.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 10
     commit-message:
       prefix: "ci"
@@ -64,6 +68,10 @@ updates:
       day: "monday"
       time: "09:00"
       timezone: "America/Toronto"
+    # Same 7-day bake-in as above — a malicious crates.io release is typically
+    # yanked or flagged within days, and cargo-deny/audit still gate the merge.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     commit-message:
       prefix: "chore"
@@ -91,6 +99,9 @@ updates:
       day: "monday"
       time: "09:00"
       timezone: "America/Toronto"
+    # Same 7-day bake-in for freshly pushed base-image digests.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 3
     commit-message:
       prefix: "chore"
