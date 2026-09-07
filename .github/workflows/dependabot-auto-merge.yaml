@@ -1,0 +1,139 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: Apache-2.0
+#
+# Dependabot auto-merge.
+#
+# On every Dependabot pull request, run the build + test gate (`make build`,
+# `make test` — the cluster-level integration scripts under tests/ are not a
+# CI gate). If it passes:
+#   - patch / minor updates  -> enable auto-merge (squash).
+#   - major updates          -> leave the PR OPEN and comment, for manual review.
+# If the gate fails (or anything errors), nothing is merged — the PR is left
+# open with a comment, which is the desired "leave open for me to investigate"
+# fallback. This workflow is fail-safe: it can only ever ENABLE a merge on an
+# explicit green run; every other path leaves the PR untouched.
+#
+# ── Prerequisites (repo settings — one-time, not code) ───────────────────────
+#   1. Settings > General > "Allow auto-merge"  ......................  ENABLED
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Dependabot Auto-merge
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# Top-level read-only (OpenSSF Scorecard Token-Permissions). Jobs that need to
+# enable auto-merge or comment declare elevated scopes at the job level.
+permissions:
+  contents: read
+
+# .cargo/config.toml pins Homebrew cross-compilers for local macOS builds; on
+# Linux CI runners the native target IS x86_64/aarch64-unknown-linux-gnu, so
+# these restore the default system linker (same override as build.yaml).
+env:
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: cc
+
+concurrency:
+  group: dependabot-automerge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  metadata:
+    name: Fetch Dependabot metadata
+    # Gate on the PR *author* (who opened it), not github.actor (who triggered
+    # the run). github.actor flips to a human the moment anyone merges/rebases/
+    # pushes to a Dependabot branch, which would skip this and every downstream
+    # job. pull_request.user.login stays 'dependabot[bot]' for the PR's life, so
+    # auto-merge keeps working after a maintainer merges main in. For any other
+    # author this (and every downstream job) is skipped, so the workflow no-ops
+    # on human PRs.
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-24.04
+    permissions:
+      pull-requests: read
+    outputs:
+      update-type: ${{ steps.meta.outputs.update-type }}
+      dependency-names: ${{ steps.meta.outputs.dependency-names }}
+    steps:
+      - name: Fetch metadata
+        id: meta
+        # SHA-pinned per repo policy; Dependabot's github-actions updater will
+        # keep this current.
+        uses: dependabot/fetch-metadata@21025c705c08248db411dc16f3619e6b5f9ea21a # v2.5.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  gate:
+    name: Build + test gate
+    needs: metadata
+    # Skipped automatically when `metadata` is skipped (non-Dependabot PR).
+    # Tool setup mirrors the build/test jobs in build.yaml.
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (moving ref — re-pin quarterly)
+
+      - name: Cache cargo dependencies
+        uses: firestoned/github-actions/rust/cache-cargo@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+
+      - name: Build
+        run: make build
+
+      - name: Test
+        run: make test
+
+  auto-merge:
+    name: Enable auto-merge (patch/minor)
+    needs: [metadata, gate]
+    # success() ensures BOTH metadata and the gate passed before we ever
+    # enable a merge. Major bumps are excluded — held for manual review.
+    if: ${{ success() && needs.metadata.outputs.update-type != 'version-update:semver-major' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Enable auto-merge (squash)
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge --auto --squash "$PR_URL"
+
+  hold-major:
+    name: Hold major update for review
+    needs: [metadata, gate]
+    # Gate passed but it is a major bump — leave open, tell the reviewer.
+    if: ${{ success() && needs.metadata.outputs.update-type == 'version-update:semver-major' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Comment (major held)
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment "$PR_URL" --body \
+            "✅ build + test passed, but this is a **major** version update — left open for manual review before merge."
+
+  report-failure:
+    name: Report gate failure
+    needs: [metadata, gate]
+    # Any failure in metadata or the gate. Leaves the PR open and flags it.
+    if: ${{ failure() }}
+    runs-on: ubuntu-24.04
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Comment (gate failed)
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment "$PR_URL" --body \
+            "❌ build + test failed — auto-merge withheld. Left open for investigation. See the **Build + test gate** job for logs."

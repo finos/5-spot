@@ -9,6 +9,35 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-09-07 13:23] - Dependabot 7-day cooldown + auto-merge workflow
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/dependabot.yml`: added `cooldown: default-days: 7` to every
+  `package-ecosystem` entry (github-actions, cargo, docker), with a short
+  comment per entry explaining the supply-chain rationale.
+- `.github/workflows/dependabot-auto-merge.yaml`: new workflow (ported from
+  firestoned/sceau). On every Dependabot PR it runs a build + test gate
+  (`make build`, `make test`); on green it enables squash auto-merge for
+  patch/minor updates, leaves major updates open with a comment for manual
+  review, and comments without merging on gate failure. Fail-safe: it can
+  only ever enable a merge on an explicit green run.
+
+### Why
+Newly published packages can be malicious or unstable; a 7-day cooldown lets
+fresh releases bake before Dependabot proposes them (Semgrep rule
+`dependabot-missing-cooldown`). Cooldown applies to version updates only —
+security updates are still proposed immediately. The auto-merge workflow
+removes the manual toil of merging routine grouped Dependabot PRs while
+keeping major bumps and failing gates under human review.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
 ## [2026-08-29 20:55] - Fix killSwitch hot reconcile loop (unconditional status PATCH)
 
 **Author:** Pooja Maiti
