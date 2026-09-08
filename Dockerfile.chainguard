@@ -42,7 +42,7 @@
 # An override deliberately bypasses the digest pin.
 ARG BASE_IMAGE=pinned-base
 
-FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:fa0d07a6a352921b778c4da11d889b41d9ef8e99c69bc2ec1f8c9ec46b2462e9 AS pinned-base
+FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:d49aa7837ef1ef8fae33917f94369294c6d49940d2f0b225beee65a3bb6747ed AS pinned-base
 
 FROM ${BASE_IMAGE}
 
