@@ -32,11 +32,25 @@ IMAGE_REF = $(REGISTRY)$(if $(strip $(ORG)),/$(ORG),)/$(IMAGE_NAME):$(IMAGE_TAG)
 PLATFORM ?= linux/amd64
 BUILD_PLATFORMS ?= linux/amd64
 
-# Base images for containers (glibc-based for GNU target compatibility)
-BASE_IMAGE ?= gcr.io/distroless/cc-debian12:nonroot
+# Base images for containers (glibc-based for GNU target compatibility).
+#
+# The base images are pinned BY DIGEST on the FROM lines of Dockerfile and
+# Dockerfile.chainguard — that is the single source of truth, and Dependabot
+# re-pins them there (ADR 0010). These variables are therefore EMPTY by
+# default so that `make docker-*` builds exactly what CI builds.
+#
+# Set one only to build against something else — an air-gapped Artifactory
+# mirror (README -> "Air-Gapped Builds") or the Chainguard FIPS variant:
+#   make docker-build-amd64 BASE_IMAGE=<mirror>/distroless/cc-debian13:nonroot
+#   make docker-build-chainguard CHAINGUARD_BASE_IMAGE=cgr.dev/chainguard/glibc-dynamic:latest-fips
+# An override deliberately bypasses the digest pin.
+BASE_IMAGE ?=
+CHAINGUARD_BASE_IMAGE ?=
 
-# Chainguard images (zero CVE, glibc-based for regulated environments)
-CHAINGUARD_BASE_IMAGE ?= cgr.dev/chainguard/glibc-dynamic:latest
+# Expand to a --build-arg only when an override is actually set; otherwise the
+# Dockerfile default (the digest-pinned `pinned-base` stage) is used.
+BASE_IMAGE_BUILD_ARG = $(if $(strip $(BASE_IMAGE)),--build-arg BASE_IMAGE="$(BASE_IMAGE)",)
+CHAINGUARD_BASE_IMAGE_BUILD_ARG = $(if $(strip $(CHAINGUARD_BASE_IMAGE)),--build-arg BASE_IMAGE="$(CHAINGUARD_BASE_IMAGE)",)
 
 # Version information
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -345,7 +359,7 @@ docker-build-chainguard: prepare-binaries ## Build Docker image (Chainguard - ze
 	$(CONTAINER_TOOL) build --platform $(PLATFORM) -f Dockerfile.chainguard -t $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)-chainguard \
 		--build-arg VERSION="$(VERSION)" \
 		--build-arg GIT_SHA="$(GIT_SHA)" \
-		--build-arg BASE_IMAGE="$(CHAINGUARD_BASE_IMAGE)" \
+		$(CHAINGUARD_BASE_IMAGE_BUILD_ARG) \
 		.
 
 docker-push: ## Push Docker image
@@ -361,7 +375,7 @@ docker-build-amd64: prepare-binaries-linux-amd64 ## Build Docker image for linux
 	$(CONTAINER_TOOL) buildx build --load --platform=linux/amd64 -t $(IMAGE_NAME):$(IMAGE_TAG)-amd64 \
 		--build-arg VERSION="$(VERSION)" \
 		--build-arg GIT_SHA="$(GIT_SHA)" \
-		--build-arg BASE_IMAGE="$(BASE_IMAGE)" \
+		$(BASE_IMAGE_BUILD_ARG) \
 		.
 
 docker-build-arm64: prepare-binaries-linux-arm64 ## Build Docker image for linux/arm64 (loads to local docker)
@@ -371,7 +385,7 @@ docker-build-arm64: prepare-binaries-linux-arm64 ## Build Docker image for linux
 	$(CONTAINER_TOOL) buildx build --load --platform=linux/arm64 -t $(IMAGE_NAME):$(IMAGE_TAG)-arm64 \
 		--build-arg VERSION="$(VERSION)" \
 		--build-arg GIT_SHA="$(GIT_SHA)" \
-		--build-arg BASE_IMAGE="$(BASE_IMAGE)" \
+		$(BASE_IMAGE_BUILD_ARG) \
 		.
 
 docker-buildx: prepare-binaries-linux-amd64 ## Build and push Docker image to registry (CI)
@@ -381,7 +395,7 @@ docker-buildx: prepare-binaries-linux-amd64 ## Build and push Docker image to re
 	$(CONTAINER_TOOL) buildx build --push --platform=linux/amd64 -t $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG) \
 		--build-arg VERSION="$(VERSION)" \
 		--build-arg GIT_SHA="$(GIT_SHA)" \
-		--build-arg BASE_IMAGE="$(BASE_IMAGE)" \
+		$(BASE_IMAGE_BUILD_ARG) \
 		.
 
 docker-buildx-chainguard: prepare-binaries-linux-amd64 ## Build and push Chainguard image to registry (CI)
@@ -391,7 +405,7 @@ docker-buildx-chainguard: prepare-binaries-linux-amd64 ## Build and push Chaingu
 	$(CONTAINER_TOOL) buildx build --push --platform=$(BUILD_PLATFORMS) -f Dockerfile.chainguard -t $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)-chainguard \
 		--build-arg VERSION="$(VERSION)" \
 		--build-arg GIT_SHA="$(GIT_SHA)" \
-		--build-arg BASE_IMAGE="$(CHAINGUARD_BASE_IMAGE)" \
+		$(CHAINGUARD_BASE_IMAGE_BUILD_ARG) \
 		.
 
 # Generic, single knob for both build and build+push, any arch, any registry.
@@ -418,7 +432,7 @@ docker-image: ## Generic $(ARCH) image build of $(IMAGE_REF); PUSH=true to push 
 		--build-arg TARGETARCH=$(ARCH) \
 		--build-arg VERSION="$(VERSION)" \
 		--build-arg GIT_SHA="$(GIT_SHA)" \
-		--build-arg BASE_IMAGE="$(BASE_IMAGE)" \
+		$(BASE_IMAGE_BUILD_ARG) \
 		.
 
 # ============================================================
@@ -821,7 +835,7 @@ kind-load: ## Build image for host arch (native cross-compile, bypassing cross) 
 			--build-arg TARGETARCH=$$DOCKER_ARCH \
 			--build-arg VERSION="$(VERSION)" \
 			--build-arg GIT_SHA="$(GIT_SHA)" \
-			--build-arg BASE_IMAGE="$(BASE_IMAGE)" \
+			$(BASE_IMAGE_BUILD_ARG) \
 			-t $(KIND_IMAGE) .; \
 		echo "Loading $(KIND_IMAGE) into kind cluster '$(KIND_CLUSTER_NAME)'..."; \
 		kind load docker-image $(KIND_IMAGE) --name $(KIND_CLUSTER_NAME); \

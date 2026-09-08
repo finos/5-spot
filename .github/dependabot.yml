@@ -87,10 +87,32 @@ updates:
           - "minor"
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Docker base images — Chainguard and Distroless both publish rolling tags,
-  # so what Dependabot actually catches here are digest bumps in the
-  # Dockerfile / Dockerfile.chainguard pinned `FROM image@sha256:…` lines.
-  # If no digest pins exist yet, these entries are a no-op until one is added.
+  # Docker base images — both runtime bases live at the repo root:
+  #   Dockerfile              gcr.io/distroless/cc-debian13:nonroot
+  #   Dockerfile.chainguard   cgr.dev/chainguard/glibc-dynamic:latest
+  # Both publish rolling tags, so what Dependabot catches here are digest
+  # bumps to the pinned `FROM image:tag@sha256:…` lines.
+  #
+  # The digest MUST sit on a real `FROM` instruction. Dependabot's docker
+  # parser reads `FROM` lines only — it cannot see through `ARG BASE_IMAGE=…`
+  # + `FROM ${BASE_IMAGE}`, which is how these files were written until
+  # ADR 0010, and which made this entry a silent no-op. Keep the pin on the
+  # `pinned-base` FROM line; the `FROM ${BASE_IMAGE}` override line below it
+  # is simply skipped by the parser.
+  #
+  # Deliberately NOT covered here:
+  #   - deploy/**/*.yaml — those pin our OWN ghcr.io/finos/5-spot* images to
+  #     the current release; `make set-image-version` owns those tags, and a
+  #     second updater would fight it.
+  #   - .github/workflows/sast.yaml `container.image` (returntocorp/semgrep)
+  #     and the `kindest/node` tags in the Makefile / examples — Dependabot
+  #     parses neither a workflow `container:` image nor a Makefile variable,
+  #     for any ecosystem. Those are re-pinned by hand.
+  #
+  # Base images stay UNGROUPED (unlike the actions above): each one is the
+  # root of a different trust chain, and a base-image bump is exactly the kind
+  # of change that deserves its own PR, its own Trivy/Grype scan and its own
+  # review.
   # ─────────────────────────────────────────────────────────────────────────
   - package-ecosystem: "docker"
     directory: "/"
@@ -99,7 +121,13 @@ updates:
       day: "monday"
       time: "09:00"
       timezone: "America/Toronto"
-    # Same 7-day bake-in for freshly pushed base-image digests.
+    # Same 7-day bake-in for freshly pushed base-image digests. NOTE the
+    # trade-off: Chainguard rebuilds glibc-dynamic daily *to ship CVE fixes*,
+    # so a 7-day cooldown means we deliberately run a digest that is up to a
+    # week behind the patched one. That is the conservative supply-chain
+    # choice (a poisoned base image is usually caught within days) and it is
+    # a posture decision, not an oversight — revisit it here if CVE latency
+    # ever matters more than bake-in time.
     cooldown:
       default-days: 7
     open-pull-requests-limit: 3

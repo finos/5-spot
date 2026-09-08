@@ -253,8 +253,14 @@ docker buildx use fivespot-builder
 Then build with your mirrored base image:
 
 ```bash
-make docker-build-amd64 BASE_IMAGE=oss-docker-gcr.artifactory.example.com/distroless/cc-debian12:nonroot
+make docker-build-amd64 BASE_IMAGE=oss-docker-gcr.artifactory.example.com/distroless/cc-debian13:nonroot
 ```
+
+> **`BASE_IMAGE` bypasses the digest pin.** By default it is empty and the
+> build uses the digest pinned on the `FROM` line of the `Dockerfile` (which
+> Dependabot keeps current — see [ADR 0010](./docs/adr/0010-base-image-pins-on-from-line.md)).
+> Setting `BASE_IMAGE` makes your mirror the trusted source instead; pin the
+> mirrored reference by digest too if your environment requires it.
 
 #### 4. Complete Air-Gapped Build Example
 
@@ -262,7 +268,7 @@ make docker-build-amd64 BASE_IMAGE=oss-docker-gcr.artifactory.example.com/distro
 # Set environment variables
 export AIRGAP_CARGO_HOME=~/.cargo-airgap
 export PYPI_INDEX_URL=https://artifactory.example.com/api/pypi/pypi/simple
-export BASE_IMAGE=oss-docker-gcr.artifactory.example.com/distroless/cc-debian12:nonroot
+export BASE_IMAGE=oss-docker-gcr.artifactory.example.com/distroless/cc-debian13:nonroot
 
 # Build Docker image for amd64
 make docker-build-amd64

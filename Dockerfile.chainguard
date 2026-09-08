@@ -27,9 +27,22 @@
 # - Non-root by default
 
 # Pinned by digest (Trivy DS-0001). Chainguard rebuilds this tag daily with
-# patches; Dependabot (docker ecosystem) opens a PR with the new digest on
-# each rebuild, which we review and merge. Do NOT revert to a floating tag.
-ARG BASE_IMAGE=cgr.dev/chainguard/glibc-dynamic:latest@sha256:fa0d07a6a352921b778c4da11d889b41d9ef8e99c69bc2ec1f8c9ec46b2462e9
+# patches; Dependabot (docker ecosystem) opens a PR with the new digest,
+# which we review and merge. Do NOT revert to a floating tag.
+#
+# The digest MUST live on a real `FROM` line: Dependabot only parses `FROM`
+# instructions, so a digest hidden in an `ARG` default (`FROM ${BASE_IMAGE}`)
+# is invisible to it and never gets re-pinned. See ADR 0010.
+#
+# BASE_IMAGE remains overridable for air-gapped / mirrored builds and for the
+# FIPS variant; it defaults to the `pinned-base` stage, so an ordinary build
+# always resolves to the digest pinned here:
+#   make docker-build-chainguard \
+#     CHAINGUARD_BASE_IMAGE=cgr.dev/chainguard/glibc-dynamic:latest-fips
+# An override deliberately bypasses the digest pin.
+ARG BASE_IMAGE=pinned-base
+
+FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:fa0d07a6a352921b778c4da11d889b41d9ef8e99c69bc2ec1f8c9ec46b2462e9 AS pinned-base
 
 FROM ${BASE_IMAGE}
 
@@ -37,12 +50,16 @@ ARG TARGETARCH
 ARG VERSION
 ARG GIT_SHA
 
+# base.name is a literal, kept in sync with the `pinned-base` FROM above. The
+# digest is intentionally omitted: it changes on every Dependabot re-pin, and
+# the exact digest is already recorded in the FROM line, the SBOM, and the
+# provenance attestation.
 LABEL org.opencontainers.image.source="https://github.com/finos/5-spot" \
       org.opencontainers.image.description="5-Spot Machine Scheduler - Kubernetes Controller for Time-Based Machine Scheduling (Chainguard - Zero CVEs)" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${GIT_SHA}" \
-      org.opencontainers.image.base.name="${BASE_IMAGE}"
+      org.opencontainers.image.base.name="cgr.dev/chainguard/glibc-dynamic:latest"
 
 # Copy the pre-built binary for the target architecture
 # TARGETARCH is automatically set by BuildKit (amd64 or arm64)
