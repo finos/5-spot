@@ -45,3 +45,4 @@ refactors) need neither. When unsure, **write the ADR.**
 | [0007](./0007-crd-multi-version-and-conversion.md) | CRD multi-version support with `None` conversion and additive-only evolution | Accepted |
 | [0008](./0008-autovex-presubmission-gate.md) | Auto-VEX generated and signed off before submission, enforced by a byte-exact CI gate | Accepted |
 | [0009](./0009-unify-schedule-as-provider-reference.md) | Unify activation under `spec.schedule` as a provider reference; ship `TimeBasedSpotSchedule` as the core provider | Accepted |
+| [0010](./0010-base-image-pins-on-from-line.md) | Base-image digests are pinned on the `FROM` line so Dependabot re-pins them | Accepted |

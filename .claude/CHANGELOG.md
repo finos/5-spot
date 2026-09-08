@@ -9,6 +9,78 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-09-07 15:40] - Base-image digests moved onto the FROM line so Dependabot actually re-pins them
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0010-base-image-pins-on-from-line.md`: **new ADR** (Accepted) —
+  base-image digests are pinned on a real `FROM` instruction in a named
+  `pinned-base` stage, with `ARG BASE_IMAGE` defaulting to that stage so the
+  air-gapped override survives. Records the three options weighed and the
+  BuildKit / `base.name` / cooldown trade-offs. No CALM impact (build-policy
+  decision).
+- `docs/adr/README.md`: index row for ADR 0010.
+- `Dockerfile`: `ARG BASE_IMAGE=gcr.io/distroless/cc-debian13:nonroot@sha256:8f96…`
+  + `FROM ${BASE_IMAGE}` → global `ARG BASE_IMAGE=pinned-base`, then
+  `FROM gcr.io/distroless/cc-debian13:nonroot@sha256:8f96… AS pinned-base`,
+  then `FROM ${BASE_IMAGE}`. `org.opencontainers.image.base.name` is now the
+  literal `gcr.io/distroless/cc-debian13:nonroot` (digest omitted on purpose —
+  it changes on every re-pin and is already in the FROM line, SBOM and
+  provenance) instead of `${BASE_IMAGE}`, which would have rendered as the
+  stage name. Dropped the now-unused in-stage `ARG BASE_IMAGE`.
+- `Dockerfile.chainguard`: same restructure for
+  `cgr.dev/chainguard/glibc-dynamic:latest@sha256:fa0d…`.
+- `Makefile`: `BASE_IMAGE` no longer defaults to `gcr.io/distroless/cc-debian12:nonroot`
+  (an *unpinned* tag, and a different Debian generation than the Dockerfile
+  used) and `CHAINGUARD_BASE_IMAGE` no longer defaults to
+  `cgr.dev/chainguard/glibc-dynamic:latest`. Both default to empty and are
+  wrapped in new `BASE_IMAGE_BUILD_ARG` / `CHAINGUARD_BASE_IMAGE_BUILD_ARG`
+  variables that expand to `--build-arg BASE_IMAGE=…` only when set (7
+  call sites across `docker-build-chainguard`, `docker-build-amd64`,
+  `docker-build-arm64`, `docker-buildx`, `docker-buildx-chainguard`,
+  `docker-image`, `kind-load`).
+- `.github/dependabot.yml`: rewrote the `docker` ecosystem comment block —
+  names both bases, states that the pin must sit on a `FROM` line, lists what
+  is deliberately *not* covered (`deploy/**` own-image tags owned by
+  `make set-image-version`; `sast.yaml` `container.image`; `kindest/node`),
+  and why base images stay ungrouped. Documented the cooldown trade-off at
+  the setting.
+- `README.md`: air-gapped example bumped `cc-debian12` → `cc-debian13` (2
+  places) and a note that `BASE_IMAGE` bypasses the digest pin.
+- `docs/src/development/building.md`: replaced the fictional
+  `rust:1.75-alpine` → `alpine:3.19` Dockerfile (no such file has ever existed
+  in this repo) with the real two-variant table, the `pinned-base` pattern,
+  and the three `make docker-*` invocations.
+
+### Why
+The `docker` entry in `.github/dependabot.yml` had never produced a PR. Both
+digests were written as `ARG BASE_IMAGE=…@sha256:…` + `FROM ${BASE_IMAGE}`,
+and Dependabot's docker parser reads `FROM` instructions only — it does not
+expand `ARG` (dependabot-core#2691). `FROM ${BASE_IMAGE}` does not match its
+image regex, so the updater found zero dependencies and silently no-opped,
+while three comments in the tree asserted the opposite. Chainguard rebuilds
+`glibc-dynamic` daily specifically to ship CVE fixes; none of those rebuilds
+were ever picked up. Moving the pin onto a real `FROM` line makes both bases
+first-class Dependabot dependencies without losing the documented air-gapped
+override.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+**Note:** `make docker-build-*` now builds against the *pinned* base (matching
+CI) instead of the unpinned `cc-debian12` default — local image digests will
+change. Air-gapped builders that relied on the old `BASE_IMAGE` default must
+now set it explicitly (it was already documented as an explicit flag in the
+README). Not verified by an actual `docker build` — image builds are the
+maintainer's to run per project policy; `make -n` was used to confirm the
+build-arg expands only when an override is set.
+
+---
+
 ## [2026-09-07 13:23] - Dependabot 7-day cooldown + auto-merge workflow
 
 **Author:** Erick Bourgeois

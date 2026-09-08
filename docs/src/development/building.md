@@ -51,22 +51,44 @@ docker buildx build \
   --push .
 ```
 
-### Dockerfile
+### Dockerfiles
+
+Two runtime images are built from pre-built binaries (the Rust build happens
+outside the image — `make prepare-binaries-linux-amd64` and friends stage them
+under `binaries/<arch>/`):
+
+| File | Base image | Published as |
+|------|-----------|--------------|
+| `Dockerfile` | `gcr.io/distroless/cc-debian13:nonroot` | `ghcr.io/finos/5-spot*-distroless` |
+| `Dockerfile.chainguard` | `cgr.dev/chainguard/glibc-dynamic:latest` | `ghcr.io/finos/5-spot` |
+
+Both bases are **pinned by digest on the `FROM` line**, and Dependabot's
+`docker` ecosystem opens a PR with the new digest when either tag is rebuilt:
 
 ```dockerfile
-FROM rust:1.75-alpine AS builder
+ARG BASE_IMAGE=pinned-base
 
-WORKDIR /app
-COPY . .
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:8f96… AS pinned-base
 
-RUN apk add --no-cache musl-dev
-RUN cargo build --release
+FROM ${BASE_IMAGE}
+```
 
-FROM alpine:3.19
+The pin has to sit on a real `FROM` instruction — Dependabot does not expand
+`ARG`, so a digest written as `ARG BASE_IMAGE=…@sha256:…` + `FROM ${BASE_IMAGE}`
+is never updated. `BASE_IMAGE` defaults to the `pinned-base` stage, and stays
+overridable for air-gapped or mirrored builds. See
+[ADR 0010](https://github.com/finos/5-spot/blob/main/docs/adr/0010-base-image-pins-on-from-line.md).
 
-COPY --from=builder /app/target/release/5spot /usr/local/bin/
+```bash
+# Ordinary build: uses the pinned digest
+make docker-build-amd64
 
-ENTRYPOINT ["5spot"]
+# Mirrored / air-gapped build: your registry becomes the trusted source
+make docker-build-amd64 BASE_IMAGE=<mirror>/distroless/cc-debian13:nonroot
+
+# Chainguard FIPS variant
+make docker-build-chainguard \
+  CHAINGUARD_BASE_IMAGE=cgr.dev/chainguard/glibc-dynamic:latest-fips
 ```
 
 ## Generated Artifacts

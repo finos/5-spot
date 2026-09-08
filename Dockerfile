@@ -15,24 +15,40 @@
 #   make prepare-binaries
 #
 # Base image: Google Distroless cc-debian13 (glibc, ~20MB), pinned by digest
-# for supply-chain reproducibility. Dependabot (docker ecosystem) will open a
-# PR with the new digest when upstream publishes a patched image.
+# for supply-chain reproducibility.
+#
+# The digest MUST live on a real `FROM` line: Dependabot's docker ecosystem
+# only parses `FROM` instructions, so a digest hidden in an `ARG` default
+# (`FROM ${BASE_IMAGE}`) is invisible to it and never gets re-pinned. With the
+# pin below, Dependabot opens a PR rewriting the digest whenever Google
+# publishes a patched cc-debian13:nonroot. See ADR 0010.
+#
+# BASE_IMAGE remains overridable for air-gapped / mirrored builds (README →
+# "Air-Gapped Builds"). It defaults to the `pinned-base` stage, so an ordinary
+# build always resolves to the digest pinned here:
+#   make docker-build-amd64 BASE_IMAGE=<mirror>/distroless/cc-debian13:nonroot
+# An override deliberately bypasses the digest pin — the mirror is then the
+# trusted source.
+ARG BASE_IMAGE=pinned-base
 
-ARG BASE_IMAGE=gcr.io/distroless/cc-debian13:nonroot@sha256:8f960b7fc6a5d6e28bb07f982655925d6206678bd9a6cde2ad00ddb5e2077d78
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:8f960b7fc6a5d6e28bb07f982655925d6206678bd9a6cde2ad00ddb5e2077d78 AS pinned-base
 
 FROM ${BASE_IMAGE}
 
 ARG VERSION
 ARG GIT_SHA
 ARG TARGETARCH
-ARG BASE_IMAGE
 
+# base.name is a literal, kept in sync with the `pinned-base` FROM above. The
+# digest is intentionally omitted: it changes on every Dependabot re-pin, and
+# the exact digest is already recorded in the FROM line, the SBOM, and the
+# provenance attestation.
 LABEL org.opencontainers.image.source="https://github.com/finos/5-spot" \
       org.opencontainers.image.description="5-Spot Machine Scheduler - Kubernetes Controller for Time-Based Machine Scheduling" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${GIT_SHA}" \
-      org.opencontainers.image.base.name="${BASE_IMAGE}"
+      org.opencontainers.image.base.name="gcr.io/distroless/cc-debian13:nonroot"
 
 # Copy the pre-built binary for the target architecture
 COPY --chmod=755 binaries/${TARGETARCH}/5spot /5spot
