@@ -31,8 +31,14 @@ jobs:
     permissions:
       contents: read
       security-events: write
+    # Pinned by digest, like every other third-party artefact here. The old
+    # `returntocorp/semgrep` reference was both a deprecated repository name
+    # and completely unpinned (no tag), so every run pulled whatever `latest`
+    # happened to be. Dependabot cannot update a workflow `container:` image
+    # (dependabot/dependabot-core#5819), so refresh this by hand alongside the
+    # SHA-pinned actions above.
     container:
-      image: returntocorp/semgrep
+      image: semgrep/semgrep:1.176.1@sha256:34ab619bf1391a24bfda3f05debd0d8a6ce3093c2d5f9d39cfc00f83c1397823
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

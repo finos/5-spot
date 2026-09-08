@@ -422,6 +422,25 @@ jobs:
             prefix=v
             suffix=${{ matrix.variant.suffix }}
 
+      # org.opencontainers.image.base.name is driven by the BASE_IMAGE_REF
+      # build-arg (ADR 0010). Only the Makefile supplied it, so CI — which
+      # builds every *published* image — would have shipped an empty label.
+      # Resolved from the variant's own Dockerfile: same first-FROM read the
+      # Makefile's BASE_IMAGE_REF does. CI never overrides BASE_IMAGE, so the
+      # pinned FROM is always what it actually pulled.
+      - name: Resolve base image reference
+        id: base-image
+        env:
+          DOCKERFILE: ${{ matrix.variant.dockerfile }}
+        run: |
+          ref="$(awk '$1 == "FROM" { print $2; exit }' "$DOCKERFILE")"
+          if [ -z "$ref" ]; then
+            echo "::error title=No FROM found::Could not read a base image reference from $DOCKERFILE"
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "$DOCKERFILE -> $ref"
+
       - name: Build and push Docker image (${{ matrix.variant.name }})
         id: docker_build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -440,6 +459,7 @@ jobs:
             ${{ steps.meta-release.outputs.labels }}
             org.opencontainers.image.description=${{ matrix.variant.description }}
           build-args: |
+            BASE_IMAGE_REF=${{ steps.base-image.outputs.ref }}
             ${{ github.event_name == 'release' && format('VERSION={0}', needs.extract-version.outputs.version) || '' }}
           cache-from: type=gha,scope=${{ matrix.variant.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.variant.name }}

@@ -80,10 +80,19 @@ FROM ${BASE_IMAGE}
   **empty** and expand to a `--build-arg` only when explicitly set, so an
   ordinary `make docker-build-*` builds the same pinned digest CI builds. Setting
   one is an explicit, documented decision to trust a mirror instead of the pin.
-- `org.opencontainers.image.base.name` is a literal image reference *without*
-  the digest, kept in sync with the `pinned-base` `FROM`. The digest is omitted
-  on purpose: it changes on every re-pin, and the exact digest is already
-  carried by the `FROM` line, the SBOM, and the provenance attestation.
+- `org.opencontainers.image.base.name` records what the build **actually**
+  pulled, via a `BASE_IMAGE_REF` build-arg. It is never a hardcoded literal: an
+  air-gapped build against an internal mirror would then ship a label naming an
+  upstream registry it never contacted. `BASE_IMAGE` itself cannot serve — it
+  holds the *stage name* by default — so every caller resolves the reference and
+  passes it:
+    - the `Makefile` (`BASE_IMAGE_REF` / `CHAINGUARD_BASE_IMAGE_REF`) → the
+      override when set, otherwise the first `FROM` read out of the matching
+      Dockerfile;
+    - `.github/workflows/build.yaml` → a `Resolve base image reference` step
+      doing the same first-`FROM` read on the variant's Dockerfile. CI builds
+      every *published* image and never overrides `BASE_IMAGE`, so this must be
+      passed there too or the shipped label is empty.
 - `.github/dependabot.yml` records what the `docker` entry does and does not
   cover, and why base images are reviewed one PR at a time rather than grouped.
 
@@ -102,12 +111,16 @@ unchanged.
   walks every stage and would still try to resolve the upstream pin — an
   air-gapped classic build must therefore use BuildKit, which the documented
   `docker buildx` flow already does.
-- `base.name` is now duplicated between the `FROM` line and the `LABEL`. A
-  digest bump does not touch it; a *tag* or registry change requires updating
-  both, in a PR a human reviews anyway.
+- `base.name` is derived, not written, so it never drifts from the `FROM` line —
+  but the derivation (`awk '$1 == "FROM" { print $2; exit }'`) now exists twice,
+  in the `Makefile` and in `build.yaml`. That duplication is deliberate: a Make
+  indirection just to feed a CI step costs more than the one-liner. Any *third*
+  way of building these images has to resolve `BASE_IMAGE_REF` as well, or it
+  publishes an image whose `base.name` is the empty string.
 - Not everything is reachable by Dependabot: workflow `container:` images
-  (`returntocorp/semgrep` in `sast.yaml`) and `kindest/node` tags in the
-  `Makefile` / `examples/` are parsed by no ecosystem and stay manual. The
+  (`semgrep/semgrep` in `sast.yaml`, digest-pinned by hand) and `kindest/node`
+  tags in the `Makefile` / `examples/` are parsed by no ecosystem and stay
+  manual — they are re-pinned alongside the SHA-pinned actions. The
   deploy manifests' own `ghcr.io/finos/5-spot*` tags are deliberately excluded —
   `make set-image-version` owns them.
 - The 7-day `cooldown` on the docker ecosystem means we intentionally run a
