@@ -50,16 +50,20 @@ ARG TARGETARCH
 ARG VERSION
 ARG GIT_SHA
 
-# base.name is a literal, kept in sync with the `pinned-base` FROM above. The
-# digest is intentionally omitted: it changes on every Dependabot re-pin, and
-# the exact digest is already recorded in the FROM line, the SBOM, and the
-# provenance attestation.
+# Reference recorded in org.opencontainers.image.base.name. Supplied by the
+# Makefile, which resolves it to whatever the build actually used: the
+# BASE_IMAGE override when set, otherwise the pinned `FROM` read out of this
+# file. Never hardcode the upstream registry here — an air-gapped build from an
+# internal mirror would then ship a label naming a registry it never contacted.
+# `BASE_IMAGE` itself is unusable for this: it holds the stage name by default.
+ARG BASE_IMAGE_REF
+
 LABEL org.opencontainers.image.source="https://github.com/finos/5-spot" \
       org.opencontainers.image.description="5-Spot Machine Scheduler - Kubernetes Controller for Time-Based Machine Scheduling (Chainguard - Zero CVEs)" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${GIT_SHA}" \
-      org.opencontainers.image.base.name="cgr.dev/chainguard/glibc-dynamic:latest"
+      org.opencontainers.image.base.name="${BASE_IMAGE_REF}"
 
 # Copy the pre-built binary for the target architecture
 # TARGETARCH is automatically set by BuildKit (amd64 or arm64)

@@ -9,6 +9,164 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-09-08 12:40] - CI must pass BASE_IMAGE_REF, or every published image ships an empty base.name
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/build.yaml`: new `Resolve base image reference` step in
+  the `docker` matrix job. It reads the first `FROM` out of
+  `${{ matrix.variant.dockerfile }}` (the same read the Makefile's
+  `BASE_IMAGE_REF` does — via `env:`, not string interpolation into the shell)
+  and fails loudly if no `FROM` is found. The result is passed to
+  `docker/build-push-action` as `BASE_IMAGE_REF=…`, alongside the existing
+  release-only `VERSION` build-arg.
+- `docs/adr/0010-base-image-pins-on-from-line.md`: Decision and Consequences
+  updated for the `BASE_IMAGE_REF` mechanism introduced in efdd8b6 — the ADR
+  still described `base.name` as a hardcoded literal kept in sync by hand.
+  Records that every build path must resolve `BASE_IMAGE_REF`, that the
+  first-`FROM` derivation now deliberately exists in two places, and refreshes
+  the Semgrep reference (`returntocorp/semgrep` → the digest-pinned
+  `semgrep/semgrep`).
+
+### Why
+efdd8b6 correctly stopped hardcoding the upstream registry in
+`org.opencontainers.image.base.name` — an air-gapped build via an internal
+mirror was labelling itself with a registry it never contacted — and routed the
+value through a `BASE_IMAGE_REF` build-arg. But only the `Makefile` supplied
+that arg. `build.yaml` builds **every published image** (the Makefile targets
+are local/dev) and passes only `VERSION`, so `ARG BASE_IMAGE_REF` would have
+expanded to the empty string and every image on ghcr.io would have shipped
+`org.opencontainers.image.base.name=""` — strictly worse than the literal it
+replaced, and invisible until someone inspected a published manifest.
+`docker/metadata-action` does not emit `base.name`, so nothing else would have
+filled it in.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+**Note:** not verified by an actual image build (image builds are the
+maintainer's to run per project policy). The `awk` read was verified against
+both Dockerfiles locally, and both workflow files parse as YAML.
+
+---
+
+## [2026-09-08] - base.name label must not hardcode the upstream registry
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `Dockerfile`, `Dockerfile.chainguard`:
+  `org.opencontainers.image.base.name` was a hardcoded literal
+  (`gcr.io/distroless/cc-debian13:nonroot`,
+  `cgr.dev/chainguard/glibc-dynamic:latest`). An air-gapped build that sets
+  `BASE_IMAGE`/`CHAINGUARD_BASE_IMAGE` to an internal mirror still shipped a
+  label naming an upstream registry it never contacted — wrong provenance
+  metadata on exactly the builds where provenance matters most. Now driven by a
+  `BASE_IMAGE_REF` build-arg.
+- `Makefile`: added `BASE_IMAGE_REF` / `CHAINGUARD_BASE_IMAGE_REF`, resolving to
+  the override when set and otherwise to the pinned `FROM` read out of the
+  matching Dockerfile, folded into the existing `*_BUILD_ARG` variables so the
+  build sites are untouched.
+
+### Why
+The literal label cannot distinguish a mirrored build from an upstream one. The
+digest pin still has to live on a literal `FROM` — that is the only form
+Dependabot updates — but the *label* has no such constraint and should record
+what was actually pulled.
+
+### Impact
+- [ ] Breaking change
+- [x] Config change only
+- [ ] Documentation only
+
+## [2026-09-08] - Dependabot auto-merge: approval now releases a held PR; pin the Semgrep container
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `.github/workflows/dependabot-auto-merge.yaml`: the workflow only triggered on
+  `pull_request`, so approving a held PR re-ran nothing and it sat open forever.
+  Added a `pull_request_review: [submitted]` trigger, gated on
+  `review.state == 'approved'` so a `changes_requested` or `commented` review is
+  not treated as a merge signal.
+- `.github/workflows/sast.yaml`: the Semgrep job container was
+  `returntocorp/semgrep` — a deprecated repository name with **no tag at all**,
+  so every run pulled whatever `latest` happened to be. Now
+  `semgrep/semgrep:1.176.1@sha256:34ab619b…`. Dependabot cannot update a
+  workflow `container:` image (dependabot/dependabot-core#5819), so this is
+  refreshed by hand alongside the SHA-pinned actions.
+
+### Changed
+- `.github/workflows/dependabot-auto-merge.yaml`: merge eligibility is decided
+  once in a new `Classify` step whose `auto-merge` output both the `auto-merge`
+  and `hold-major` jobs branch on, so their conditions cannot drift apart.
+  Eligible when patch/minor, **or** a human approved it, **or** the new version
+  contains no `.` (a commit SHA — an action pinned to a moving tag with no
+  release, which can never yield a semver delta).
+
+### Why
+`dependabot/fetch-metadata` reports a *group's* update-type as the highest across
+its members, and classifies an update with no comparable version as
+`semver-major`. Combined with the workflow only triggering on `pull_request`,
+that left grouped PRs held open with no way for a human to release them:
+approving one re-ran nothing. Ported from the sceau investigation.
+
+### Impact
+- [ ] Breaking change
+- [x] Config change only
+- [ ] Documentation only
+
+## [2026-09-08 11:05] - Dependabot auto-merge: preflight the repo setting, and report auto-merge failures
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/dependabot-auto-merge.yaml`:
+  - New `Check "Allow auto-merge" is enabled` step in the `auto-merge` job.
+    It reads `.allow_auto_merge` from the repository API and fails with an
+    `::error title=Auto-merge disabled::` annotation before `gh pr merge
+    --auto` is ever called.
+  - `report-failure` renamed (`Report gate failure` → `Report failure`) and
+    now `needs: [metadata, gate, auto-merge]` with
+    `if: always() && (<any of the three> == 'failure')`, replacing the bare
+    `if: failure()` over `[metadata, gate]`. The comment branches on which
+    stage failed: the build/test message when the gate failed, and a distinct
+    "gate passed but enabling auto-merge failed" message otherwise.
+  - Header prerequisites expanded: prerequisite 1 now quotes the exact
+    GraphQL error, and a new prerequisite 2 records that `main` requires 1
+    approving review and that auto-merge honours it (so a Dependabot PR still
+    waits for a human approval; relaxing that is a governance decision this
+    workflow does not make).
+
+### Why
+Run [34211738922](https://github.com/finos/5-spot/actions/runs/34211738922)
+on PR #155: the metadata and build+test jobs passed, then `Enable auto-merge
+(squash)` failed with `GraphQL: Auto merge is not allowed for this repository
+(enablePullRequestAutoMerge)`. The repository has `allow_auto_merge: false` —
+prerequisite 1 in this workflow's own header was never applied. Two problems
+compounded it: the error names a GraphQL mutation rather than the setting, and
+`report-failure` only depended on `[metadata, gate]`, so with the gate green
+it was skipped and the PR got a bare red X and no explanation. The preflight
+names the setting, and `report-failure` now covers the auto-merge job too.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+**Note:** this makes the failure *legible*; it does not fix it. Auto-merge
+stays broken until `allow_auto_merge` is enabled on the repository (Settings >
+General > Pull Requests), which is a repo setting, not code. Separately, with
+`required_approving_review_count: 1` on `main`, an enabled auto-merge queues
+the PR and merges it once a maintainer approves — it does not merge unattended.
+
+---
+
 ## [2026-09-07 15:40] - Base-image digests moved onto the FROM line so Dependabot actually re-pins them
 
 **Author:** Erick Bourgeois

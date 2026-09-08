@@ -49,8 +49,15 @@ CHAINGUARD_BASE_IMAGE ?=
 
 # Expand to a --build-arg only when an override is actually set; otherwise the
 # Dockerfile default (the digest-pinned `pinned-base` stage) is used.
-BASE_IMAGE_BUILD_ARG = $(if $(strip $(BASE_IMAGE)),--build-arg BASE_IMAGE="$(BASE_IMAGE)",)
-CHAINGUARD_BASE_IMAGE_BUILD_ARG = $(if $(strip $(CHAINGUARD_BASE_IMAGE)),--build-arg BASE_IMAGE="$(CHAINGUARD_BASE_IMAGE)",)
+BASE_IMAGE_BUILD_ARG = $(if $(strip $(BASE_IMAGE)),--build-arg BASE_IMAGE="$(BASE_IMAGE)",) --build-arg BASE_IMAGE_REF="$(BASE_IMAGE_REF)"
+CHAINGUARD_BASE_IMAGE_BUILD_ARG = $(if $(strip $(CHAINGUARD_BASE_IMAGE)),--build-arg BASE_IMAGE="$(CHAINGUARD_BASE_IMAGE)",) --build-arg BASE_IMAGE_REF="$(CHAINGUARD_BASE_IMAGE_REF)"
+
+# What each build actually used, for org.opencontainers.image.base.name: the
+# override when set, otherwise the pinned `FROM` read out of the matching
+# Dockerfile. So an air-gapped build labels itself with the mirror it really
+# pulled from, not with an upstream registry it never contacted.
+BASE_IMAGE_REF = $(if $(strip $(BASE_IMAGE)),$(BASE_IMAGE),$(shell awk '$$1 == "FROM" { print $$2; exit }' Dockerfile))
+CHAINGUARD_BASE_IMAGE_REF = $(if $(strip $(CHAINGUARD_BASE_IMAGE)),$(CHAINGUARD_BASE_IMAGE),$(shell awk '$$1 == "FROM" { print $$2; exit }' Dockerfile.chainguard))
 
 # Version information
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")

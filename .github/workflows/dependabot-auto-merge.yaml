@@ -15,13 +15,29 @@
 #
 # ── Prerequisites (repo settings — one-time, not code) ───────────────────────
 #   1. Settings > General > "Allow auto-merge"  ......................  ENABLED
+#      Without it `gh pr merge --auto` fails outright with
+#      "GraphQL: Auto merge is not allowed for this repository
+#      (enablePullRequestAutoMerge)". The auto-merge job preflights this
+#      setting and fails with an actionable message rather than that error.
+#   2. Branch protection on `main` requires 1 approving review. Auto-merge
+#      HONOURS that: it queues the PR and merges only once every required
+#      check passes AND the review requirement is satisfied. So with the
+#      requirement in place, a Dependabot PR still waits for a human approval
+#      — this workflow gets it to "will merge itself the moment you approve",
+#      not to "merges unattended". Removing that requirement (or granting a
+#      Dependabot bypass) is a governance decision, deliberately not made here.
 # ─────────────────────────────────────────────────────────────────────────────
 
 name: Dependabot Auto-merge
 
+# `pull_request_review` is a trigger, not just `pull_request`: a held major sat
+# open forever because approving it re-ran nothing. Approval is the sign-off
+# the hold was waiting for, so it has to be able to wake this workflow up.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  pull_request_review:
+    types: [submitted]
 
 # Top-level read-only (OpenSSF Scorecard Token-Permissions). Jobs that need to
 # enable auto-merge or comment declare elevated scopes at the job level.
@@ -49,13 +65,20 @@ jobs:
     # auto-merge keeps working after a maintainer merges main in. For any other
     # author this (and every downstream job) is skipped, so the workflow no-ops
     # on human PRs.
-    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    #
+    # On a review event, ignore everything except an approval — a
+    # `changes_requested` or `commented` review is not a merge signal.
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]'
+      && (github.event_name != 'pull_request_review'
+          || github.event.review.state == 'approved')
     runs-on: ubuntu-24.04
     permissions:
       pull-requests: read
     outputs:
       update-type: ${{ steps.meta.outputs.update-type }}
       dependency-names: ${{ steps.meta.outputs.dependency-names }}
+      auto-merge: ${{ steps.classify.outputs.auto-merge }}
     steps:
       - name: Fetch metadata
         id: meta
@@ -64,6 +87,46 @@ jobs:
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The single place that decides "may this merge itself?". Both the
+      # auto-merge and hold-major jobs branch on this one output so they cannot
+      # drift into overlapping or contradictory conditions.
+      #
+      #   patch / minor  -> yes, unchanged behaviour.
+      #
+      #   human approval -> yes. A maintainer approving a held PR *is* the
+      #                     manual review the hold was waiting for. Before the
+      #                     pull_request_review trigger above, approving did
+      #                     nothing at all.
+      #
+      #   SHA-only bump  -> yes. An action pinned to a moving tag with no
+      #                     release can never produce a semver delta, and
+      #                     fetch-metadata reports that unknown delta as
+      #                     `semver-major`. That is a missing version number,
+      #                     not a breaking change, so holding it for "manual
+      #                     review of the major" reviews nothing. The gate is
+      #                     what actually vets these. Detection is deliberately
+      #                     dumb and dependency-free: every semver contains a
+      #                     dot, no commit SHA does.
+      #
+      #   otherwise      -> no; held for manual review.
+      - name: Classify
+        id: classify
+        env:
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          NEW_VERSION: ${{ steps.meta.outputs.new-version }}
+          REVIEW_STATE: ${{ github.event.review.state }}
+        run: |
+          auto=false
+          if [ "$UPDATE_TYPE" != "version-update:semver-major" ]; then
+            auto=true
+          elif [ "$REVIEW_STATE" = "approved" ]; then
+            auto=true
+          elif [ -n "$NEW_VERSION" ] && [ "${NEW_VERSION#*.}" = "$NEW_VERSION" ]; then
+            auto=true
+          fi
+          echo "auto-merge=$auto" >> "$GITHUB_OUTPUT"
+          echo "update-type=$UPDATE_TYPE new-version=$NEW_VERSION review=${REVIEW_STATE:-none} -> auto-merge=$auto"
 
   gate:
     name: Build + test gate
@@ -92,12 +155,24 @@ jobs:
     needs: [metadata, gate]
     # success() ensures BOTH metadata and the gate passed before we ever
     # enable a merge. Major bumps are excluded — held for manual review.
-    if: ${{ success() && needs.metadata.outputs.update-type != 'version-update:semver-major' }}
+    if: ${{ success() && needs.metadata.outputs.auto-merge == 'true' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
       pull-requests: write
     steps:
+      # Preflight the repo-level setting. `gh pr merge --auto` reports a bare
+      # GraphQL error when it is off, which reads as a broken workflow rather
+      # than as the one-time repo setting it actually is.
+      - name: Check "Allow auto-merge" is enabled
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.allow_auto_merge')" != "true" ]; then
+            echo "::error title=Auto-merge disabled::Repository setting 'Allow auto-merge' is OFF (Settings > General > Pull Requests). Enable it, or disable this workflow. No merge was attempted."
+            exit 1
+          fi
+
       - name: Enable auto-merge (squash)
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
@@ -108,7 +183,7 @@ jobs:
     name: Hold major update for review
     needs: [metadata, gate]
     # Gate passed but it is a major bump — leave open, tell the reviewer.
-    if: ${{ success() && needs.metadata.outputs.update-type == 'version-update:semver-major' }}
+    if: ${{ success() && needs.metadata.outputs.auto-merge != 'true' }}
     runs-on: ubuntu-24.04
     permissions:
       pull-requests: write
@@ -122,18 +197,32 @@ jobs:
             "✅ build + test passed, but this is a **major** version update — left open for manual review before merge."
 
   report-failure:
-    name: Report gate failure
-    needs: [metadata, gate]
-    # Any failure in metadata or the gate. Leaves the PR open and flags it.
-    if: ${{ failure() }}
+    name: Report failure
+    needs: [metadata, gate, auto-merge]
+    # Any failure in metadata, the gate, or the auto-merge step itself. The
+    # earlier `if: failure()` form only covered [metadata, gate], so a failure
+    # in auto-merge (e.g. the repo-level "Allow auto-merge" setting being off)
+    # left a bare red X on the PR and no explanation. always() + explicit
+    # result checks also survive auto-merge being *skipped* on a major bump.
+    if: >-
+      ${{ always() && (needs.metadata.result == 'failure'
+          || needs.gate.result == 'failure'
+          || needs.auto-merge.result == 'failure') }}
     runs-on: ubuntu-24.04
     permissions:
       pull-requests: write
     steps:
-      - name: Comment (gate failed)
+      - name: Comment (what failed)
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GATE_RESULT: ${{ needs.gate.result }}
+          META_RESULT: ${{ needs.metadata.result }}
         run: |
+          if [ "$GATE_RESULT" = "failure" ] || [ "$META_RESULT" = "failure" ]; then
+            gh pr comment "$PR_URL" --body \
+              "❌ build + test failed — auto-merge withheld. Left open for investigation. See the **Build + test gate** job for logs."
+            exit 0
+          fi
           gh pr comment "$PR_URL" --body \
-            "❌ build + test failed — auto-merge withheld. Left open for investigation. See the **Build + test gate** job for logs."
+            "⚠️ build + test passed, but **enabling auto-merge failed** — the PR is left open and can be merged manually. Most common cause: the repository setting *Settings > General > Allow auto-merge* is disabled. See the **Enable auto-merge (patch/minor)** job for the exact error."
