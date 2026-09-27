@@ -82,17 +82,40 @@ ADRs and CALM diagrams are **first-class deliverables, equal to code and tests.*
 
 ## 🚨 Critical TODOs
 
-### CRITICAL: Plans and Roadmaps Location
+### 🚨 CRITICAL: Roadmaps live in `.github/community/`, indexed by `ROADMAPS.md`
 
 **Status:** ✅ MANDATORY REQUIREMENT
 
-**ALWAYS add plans or roadmaps to `docs/roadmaps/`, NO WHERE ELSE.**
+Reversal of two earlier policies — roadmaps used to be told to live in
+`docs/roadmaps/`, and later in a private directory outside the repo.
+**Roadmaps are now checked in.**
 
-**Naming Convention:**
-- **ALWAYS** use **lowercase** filenames (MANDATORY)
-- **ALWAYS** use **hyphens** (`-`) to separate words, NEVER underscores (`_`)
+- [`ROADMAPS.md`](../ROADMAPS.md) at the repo root is the high-level index:
+  one row per roadmap, a status (✅ done / 🔶 in progress / ⛔ not started /
+  📄 reference doc), and a link to the detail doc.
+- The detail docs live in `.github/community/`, named `NN-title.md` —
+  **lowercase with hyphens**, matching `docs/adr/NNNN-title.md`. Numbers are
+  **zero-padded, two digits, contiguous from `00`, no gaps**: a prefix is a
+  position in the reading order, not a category. (`README.md` in that
+  directory keeps its conventional uppercase name.)
+- Update the `ROADMAPS.md` status row **in the same commit** that changes a
+  roadmap item's state — it is a status board, not a statement of intent.
+  Task-level detail stays inside the roadmap doc.
 
-> **How:** Run the `create-roadmap` skill.
+Full rule, including everything a renumber has to touch:
+`rules/documentation.md` → *Roadmap Document Naming*.
+
+**What still does NOT belong in the repo.** This is a public repository, so a
+document stays in the maintainer's private directory (`~/dev/roadmaps/5-spot/`)
+if it contains either:
+
+1. **Unremediated security findings** — those go through private vulnerability
+   reporting per `SECURITY.md`. The *posture* is public in
+   `docs/src/security/threat-model.md`; the open findings are not.
+2. **Real infrastructure identifiers** — hostnames, addresses, cluster
+   snapshots, internal registry paths (see the internal-references rule above).
+
+ADRs are different and always belong in the repo, at `docs/adr/NNNN-title.md`.
 
 ### Code Quality: Use Global Constants for Repeated Strings
 
@@ -136,17 +159,38 @@ This codebase operates in a **regulated banking environment**. All changes must 
 - Traceable to a business or technical requirement
 - Compliant with zero-trust security principles
 
-**Never commit**:
-- Secrets, tokens, or credentials (even examples)
-- Internal hostnames or IP addresses
-- Customer or transaction data in any form
-- **RBC/internal URLs, addresses, or references in ANY docs or code**
+**🚨 CRITICAL: Never commit real infrastructure or internal references.**
 
-**🚨 CRITICAL: Internal References Rule**
+This repository is **public**. Never commit secrets, tokens, credentials or
+kubeconfigs (even as examples); real hostnames, IP addresses or cluster names;
+internal organisational references (employer-specific org names, corporate
+domains, internal forge orgs, Artifactory or other private registry paths,
+internal wiki/ticket URLs); or customer or transaction data in any form.
 
-**NEVER add RBC-specific or internal references (URLs, hostnames, artifactory paths, etc.) to any code, documentation, or configuration files.**
+Use the `example.com` placeholders the tree already uses. If you believe an
+internal reference is genuinely necessary, **ASK THE USER FIRST** — that is the
+only escape hatch, and it is not yours to resolve by committing the value.
 
-If you believe an internal reference is necessary, **ASK THE USER FIRST** before adding it.
+> **Full rule** — placeholder table, the empty-default pattern for air-gapped
+> mirrors, the package-metadata grey area, and the pre-commit sweep command:
+> [`rules/no-real-infrastructure.md`](rules/no-real-infrastructure.md).
+
+**🚨 CRITICAL: Never commit user home directories or PII.**
+
+No `/Users/<name>` or `/home/<name>` paths, real usernames or logins, personal
+names, email addresses, phone numbers, or any other value that identifies a
+real person or machine — the list is open-ended, and it applies to every
+tracked file including tool config. `.claude/settings.json` is tracked: hook
+commands in it use `$CLAUDE_PROJECT_DIR`, never absolute paths; anything that
+truly needs a machine-local path belongs in the gitignored
+`.claude/settings.local.json`. Deliberate maintainer identity (git authorship,
+`Cargo.toml`, `SECURITY.md` contact) is the sole carve-out. When unsure whether
+a value is identifying, assume it is; if one seems genuinely necessary, **ASK
+THE USER FIRST**.
+
+> **Full rule** — scope list, placeholder table, the settings-file split, the
+> maintainer-identity carve-out, and the pre-commit sweep commands:
+> [`rules/no-pii.md`](rules/no-pii.md).
 
 ---
 
@@ -448,10 +492,12 @@ src/
     └── crddoc.rs                # CRD documentation generator
 
 docs/
-├── roadmaps/                    # CRITICAL: All roadmaps and implementation planning docs MUST go here
-│   └── *.md                     # Future feature plans, optimization strategies, design proposals
+├── adr/                         # Architecture Decision Records (NNNN-title.md) — canonical
 ├── reference/                   # API documentation
 └── ...
+
+.github/community/               # Roadmap detail docs (NN-title.md), indexed by ROADMAPS.md
+ROADMAPS.md                      # Repo-root status board: one row per roadmap
 ```
 
 **Test File Pattern:**
@@ -484,7 +530,7 @@ RUST_LOG=debug cargo run
 kubectl apply --dry-run=server -f config/
 ```
 
-Skills for common operations: `regen-crds`, `regen-api-docs`, `validate-examples`, `cargo-quality`, `update-docs`, `create-roadmap`.
+Skills for common operations: `regen-crds`, `regen-api-docs`, `validate-examples`, `cargo-quality`, `update-docs`. (A new roadmap is a file in `.github/community/` plus a `ROADMAPS.md` row — see the roadmaps rule above.)
 
 ---
 

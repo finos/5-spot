@@ -1,9 +1,14 @@
 # Threat Model: 5-Spot ScheduledMachine Controller
 
-**Version:** 1.0  
-**Date:** 2026-04-08  
-**Status:** Active  
-**Classification:** Internal — Security Sensitive
+**Version:** 1.1  
+**Date:** 2026-09-23  
+**Status:** Active — living document  
+**Covers:** ADR-0001 … ADR-0010  
+**Classification:** Public. This page ships in the published documentation site
+(`docs/mkdocs.yml` → Security → Threat Model) of a public repository. It states
+the *posture* — what is defended, from whom, with which control in which file.
+Specific unremediated findings do not belong here; report those privately per
+[`SECURITY.md`](https://github.com/finos/5-spot/blob/main/SECURITY.md).
 
 ---
 
@@ -73,6 +78,9 @@ flowchart TB
 | F4 | Controller → API Server: cordon Node, evict Pods | HTTPS | Service account JWT |
 | F5 | Prometheus → Controller: scrape metrics | HTTP (no TLS) | None (cluster-internal) |
 | F6 | Kubernetes probes → Controller: health checks | HTTP (no TLS) | None (cluster-internal) |
+| F7 | Controller → Node: stamp the `kata-config-ref` annotation naming the workload-cluster source object | HTTPS | Service account JWT |
+| F8 | Kata-config agent → workload API: `get` the named ConfigMap/Secret, then write `/etc/k0s/containerd.d/kata.toml` on the host and restart a systemd unit through `nsenter` | HTTPS, then host namespaces | Per-pod service account JWT, then host PID 1 |
+| F9 | Reclaim agent → Node: write the three reclaim annotations | HTTPS | Per-pod service account JWT |
 
 ---
 
@@ -129,13 +137,32 @@ flowchart LR
         Agent --- Caps
     end
 
+    subgraph TB6["TB6 · Node-Side Kata-Config Agent"]
+        direction TB
+        KAgent["5spot-kata-config-agent\n(opt-in DaemonSet pod)"]
+        KSA["Per-pod ServiceAccount\n(nodes:get,patch · cm/secret:get)"]
+        KCaps["privileged + hostPID\n+ hostPath /etc/k0s"]
+        KHost["F8 · Host: kata.toml drop-in\n+ systemd unit restart via nsenter"]
+        KAgent --- KSA
+        KAgent --- KCaps
+        KAgent --> KHost
+    end
+
     User -->|"F1 · HTTPS + RBAC"| TB1
     TB1 -->|"F2 · watch"| TB2
     TB2 -->|"F3 · create/delete"| TB3
     TB2 -->|"F4 · cordon/evict"| TB4
     TB2 -->|"F5 · per-node CM project"| TB5
     TB5 -->|"F6 · annotate own Node"| TB4
+    TB2 -->|"F7 · stamp kata-config-ref"| TB6
 ```
+
+**TB6 is the highest-privilege boundary in the system.** The kata-config agent
+is the only component that runs `privileged: true`, and its work — writing a
+containerd drop-in to the host filesystem and restarting a host systemd unit
+through `nsenter -t 1` — is node-root by construction (ADR 0002, ADR 0003). It
+crosses from the Kubernetes API into the host's mount, UTS, IPC, network and PID
+namespaces. Everything in §6.5 follows from that.
 
 ---
 
@@ -293,11 +320,37 @@ in `5spot-system`.
 | E4 | `hostPID: true` lets the agent see all host PIDs — could be abused to extract data from another container's `/proc/<pid>/environ` if the agent is compromised | Low | Medium | **Accepted** — `hostPID` is architecturally required (the agent's job is to read host process state). Mitigated by: opt-in `nodeSelector` (only on nodes with `killIfCommands`), single-purpose binary with no shell, `readOnlyRootFilesystem: true`, drop ALL caps + add only `NET_ADMIN`, `seccompProfile: RuntimeDefault`. Trivy / Semgrep suppressions in `.trivyignore` document the architectural-necessity reasoning. |
 | E5 | **Abuse of the namespace-wide pod-security exemption** — the privileged agents require `5spot-system` to be exempted from the cluster's PSA/Gatekeeper/Kyverno baseline; any principal with `create pods` in the namespace (compromised CI, typo'd Deployment) could then run privileged / mount the host root with no admission check | Medium | Critical | **Mitigated (2026-06-10, ADR 0004)** — `5spot-agent-pod-security` deny-by-default `ValidatingAdmissionPolicy` re-imposes the baseline inside `5spot-system`: risky attributes pinned to the two agent ServiceAccounts at their exact documented posture (hostPath clamped per agent, caps clamped to `NET_ADMIN`, `privileged` to the kata agent only), compensating controls mandatory, `hostNetwork`/`hostIPC` and risky ephemeral containers denied outright, `failurePolicy: Fail`. Residual: a principal who can both create pods *and* use an agent SA wears the exception — clamped to the agents' documented posture; SA RBAC is the control. |
 
+### 6.5 Kata-Config Agent (Trust Boundary: TB6)
+
+The node-side `5spot-kata-config-agent` DaemonSet delivers a Kata containerd
+drop-in to opted-in workload-cluster nodes (ADR 0002) and restarts the host k0s
+service so containerd reloads it (ADR 0003). It is the **only** component that
+runs `privileged: true`. Its input is the `5spot.finos.org/kata-config-ref`
+annotation the controller stamps on the Node (F7): a compact JSON object naming
+the workload-cluster namespace, kind, object name, `data` key, and the systemd
+unit to restart. The agent `get`s that one object, writes
+`/etc/k0s/containerd.d/kata.toml`, and runs
+`nsenter -t 1 -m -u -i -n -p -- systemctl restart <unit>`.
+
+Its per-pod `ServiceAccount` grants `nodes: get,patch` cluster-wide and
+`configmaps,secrets: get` (no `list`, no `watch`) in the target namespace.
+
+| ID | Threat | STRIDE | Likelihood | Impact | Status |
+|---|---|---|---|---|---|
+| K1 | Drop-in written outside `/etc/k0s/` — a host path supplied through the CR or annotation, or a symlink planted on the host, redirects the write anywhere on the node | T, E | Low | **Critical** | **Mitigated** — no CRD field or annotation carries a host path at all (ADR 0005 removed `destPath`); the destination is the fixed `KATA_CONFIG_DEST_PATH` constant, and `confine_dest_path` canonicalizes and re-checks it against the `/etc/k0s/` base before every write and unlink, fail closed (`src/kata_config_agent.rs`) |
+| K2 | Command injection through the restart path | T, E | Low | **Critical** | **Mitigated** — `nsenter_restart_argv` builds an argv vector; there is no shell anywhere in the path, so metacharacters in any field are inert (`src/kata_config_agent.rs`) |
+| K3 | Drop-in content is attacker-chosen: containerd configuration is executed-adjacent, and the agent restarts the runtime that reads it | T, E | Low | **Critical** | **Accepted — architecturally required.** This is the agent's entire purpose. The control is upstream: whoever may set `spec.kata` on a `ScheduledMachine`, or write the Node annotation, is choosing containerd configuration on that node. **Treat `create`/`update` on `scheduledmachines` carrying `spec.kata`, and `patch nodes` in the workload cluster, as node-root-equivalent grants** (§7 deployment controls, §8) |
+| K4 | Restart of an unintended host unit | T, D | Low | High | **Partially mitigated** — the CRD constrains `restartService` to a bounded `*.service` unit name (`src/crd.rs`); it defaults to `k0sworker.service`. The agent's own input is the Node annotation, which the CRD schema does not gate — see K5 |
+| K5 | The agent trusts its Node annotation, which RBAC cannot scope to the agent's own Node | S, T, E | Low | High | **Residual — see §8.** `nodes: patch` cannot be expressed as "own Node only" in RBAC. The annotation is an *instruction* consumed by a privileged component, so it warrants an admission-side control, not only an RBAC one |
+| K6 | Stolen agent token enumerates or reads the workload cluster | I | Low | Medium | **Mitigated** — `get` only on `configmaps`/`secrets`, no `list`/`watch`: a stolen token reaches objects the attacker can already name, not the namespace (`deploy/kata-config-agent/rbac.yaml`) |
+| K7 | The agent's `privileged` posture is inherited by an unrelated pod in `5spot-system` | E | Medium | **Critical** | **Mitigated (ADR 0004)** — `5spot-agent-pod-security` VAP pins `privileged` to the kata agent's ServiceAccount alone, clamps hostPath per agent, denies `hostNetwork`/`hostIPC`, `failurePolicy: Fail` (`deploy/admission/agent-pod-security-policy.yaml`) |
+| K8 | Restart loop — every reconcile bounces the host service | D | Low | High | **Mitigated** — the applied-content hash is recorded in the `kata-config-applied` Node annotation and `needs_restart` fires only on an actual content transition (`src/kata_config_agent.rs`) |
+
 ---
 
 ## 7. Mitigations Summary
 
-### Implemented (as of 2026-04-08)
+### Implemented (as of 2026-09-23)
 
 | Control | Where | Addresses |
 |---|---|---|
@@ -319,6 +372,22 @@ in `5spot-system`.
 | Loop-protection (`RapidReReclaim` warning + counter) | `src/loop_protection.rs` + `src/reconcilers/helpers.rs::handle_emergency_remove` | D8 — re-enable loop |
 | Agent pod-security exception boundary (`5spot-agent-pod-security` VAP, deny-by-default in `5spot-system`) | `deploy/admission/agent-pod-security-policy.yaml` + binding (ADR 0004) | E5 — abuse of the namespace-wide PSA/OPA/Kyverno exemption the privileged agents require |
 
+### Supply Chain (TB0 — contributor / CI to published artifact)
+
+§5 lists a supply-chain attacker; these are the controls that answer it. All of
+them run in `.github/workflows/`.
+
+| Control | Where | Addresses |
+|---|---|---|
+| SLSA build provenance on every release | `.github/workflows/build.yaml` (`provenance: true`) | Forged or substituted release artifact |
+| Cosign keyless signing, by digest not tag | `.github/workflows/build.yaml` | S3 — image tampering after publication |
+| SBOM generated per image and per release | `.github/workflows/build.yaml` (`sbom: true`, `anchore/sbom-action`) | Unknown component inventory |
+| Auto-VEX presence + reachability gate, byte-exact, fails closed (ADR 0008) | `src/bin/auto_vex_*.rs`, `.vex/`, release workflow | An advisory shipping untriaged |
+| Base images digest-pinned on the `FROM` line, Dependabot-tracked (ADR 0010) | `Dockerfile`, `Dockerfile.chainguard`, `.github/dependabot.yml` | A stale or substituted base image |
+| Actions SHA-pinned; Dependabot groups and a 7-day cooldown per ecosystem | `.github/workflows/*`, `.github/dependabot.yml` | A compromised action release |
+| Scanning: CodeQL, Trivy (image + IaC), grype, `cargo audit`, `cargo deny`, gitleaks, Semgrep | `.github/workflows/` | Known-vulnerable dependency, leaked credential |
+| No `pull_request_target`, no `issue_comment`; untrusted event fields reach `run:` only through `env:` | `.github/workflows/` | Workflow script injection from a fork |
+
 ### Deployment-Layer Controls (operator responsibility)
 
 | Control | Recommendation |
@@ -328,6 +397,8 @@ in `5spot-system`.
 | NetworkPolicy | Restrict controller pod egress to the management API server (6443), child/k0smotron-hosted control planes (NodePort apiPort 30443), and DNS — all other egress denied |
 | Audit logging | Enable API server audit log at `RequestResponse` level for `scheduledmachines` resources |
 | RBAC for SM creation | Only grant `create` on `scheduledmachines` to trusted identities; do not grant to end users directly |
+| RBAC for `spec.kata` | A `ScheduledMachine` carrying `spec.kata` chooses containerd configuration on a node and triggers a host service restart (§6.5). Grant it only to identities you would trust with node root |
+| RBAC for `patch nodes` (workload cluster) | Node-root-equivalent wherever the kata-config agent runs — the agent's input is a Node annotation. See §8 |
 | Secrets for bootstrap data | Move sensitive bootstrap config out of CR spec into Secrets; reference from spec |
 
 ---
@@ -371,6 +442,37 @@ x-kubernetes-validations:
 **Threat:** Activating `spec.killSwitch: true` immediately removes a machine. The only record is the Kubernetes API audit log (if enabled). No Kubernetes Event is emitted by the controller.
 
 **Recommendation:** Emit a Kubernetes Event with `reason: KillSwitchActivated` and `type: Warning` when the kill switch fires, so it appears in `kubectl describe scheduledmachine` and feeds into alerting pipelines.
+
+---
+
+### MEDIUM — Node-side agents hold cluster-wide `nodes: patch`
+
+**Threat:** Both DaemonSet agents act only on their own Node — the reclaim agent
+writes its three reclaim annotations, the kata-config agent records the applied
+hash and clears the opt-in label on tear-down — but Kubernetes RBAC cannot
+express "the Node this pod runs on". Both ServiceAccounts therefore hold
+`nodes: patch` across the cluster. `list`/`watch` are deliberately withheld
+(T12, K6), so an agent cannot enumerate the cluster; it can still write to a
+Node it can name.
+
+This matters more for the kata-config agent than for the reclaim agent, because
+the `5spot.finos.org/kata-config-ref` annotation is not merely data: it is an
+*instruction* consumed by a privileged component on the node that reads it
+(§6.5, K5). The Node annotation — not the CRD — is that agent's real input, and
+the `ScheduledMachine` schema does not gate it.
+
+**Recommendation:** Add an admission-side control in the workload cluster in the
+shape ADR 0004 already established for pod security: a
+`ValidatingAdmissionPolicy` on `nodes` UPDATE that permits a change to the
+`5spot.finos.org/kata-config-*` annotation keys only when
+`request.userInfo.username` is the controller's ServiceAccount, denying it to
+every other principal including the agents themselves. This bounds the
+annotation to its one legitimate writer without needing per-node ServiceAccounts.
+
+**Workaround (now):** Treat `patch nodes` in a workload cluster running the
+kata-config agent as a node-root-equivalent grant, and review every binding that
+carries it. Audit changes to `5spot.finos.org/kata-config-ref` — the controller's
+field manager is the only expected writer.
 
 ---
 

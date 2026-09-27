@@ -27,8 +27,10 @@ using `docs/adr/template.md`, with the standard sections:
 - **Decision** — what we will do, stated plainly
 - **Consequences** — trade-offs, follow-ups, what this rules out
 
-ADRs are kept **in the repo** (unlike roadmaps, which live outside it at
-`~/dev/roadmaps/`). One decision per ADR. If a change reverses an earlier ADR,
+ADRs are kept **in the repo** — and so are roadmaps now, in
+`.github/community/` indexed by `ROADMAPS.md` (see step 4 and
+`rules/documentation.md`); only unremediated security findings and real
+infrastructure identifiers stay outside it. One decision per ADR. If a change reverses an earlier ADR,
 mark the old one *Superseded* and link forward. Keep the index in
 `docs/adr/README.md` current.
 
@@ -62,10 +64,20 @@ CRD shape changes start in `src/crd.rs` (the source of truth), then regenerate:
 `regen-crds` skill (`make crds`) → update `examples/` → `regen-api-docs`
 (`make crddoc`, LAST). Never hand-edit `deploy/crds/*.yaml`.
 
-### 4. Docs
+### 4. Docs — including the roadmap artefacts
 
 Update `.claude/CHANGELOG.md` (with `**Author:**`) and any affected `docs/src/`
 pages / examples. Run the `sync-docs` skill to verify docs match the code.
+
+**If the work advanced a roadmap item, update both places in this commit:**
+
+1. the **detail doc** in `.github/community/` — and while you are in it, audit
+   the rest of it against the tree rather than only the line you came for; and
+2. **`ROADMAPS.md`** at the repo root — the status board row.
+
+`ROADMAPS.md` is the one-screen answer to "what state is this project in", so a
+row that describes intent rather than reality is worse than no row. Full naming
+and renumbering rule: `rules/documentation.md` → *Roadmap Document Naming*.
 
 ## When does ADD apply?
 
@@ -98,3 +110,5 @@ pages / examples. Run the `sync-docs` skill to verify docs match the code.
 - [ ] Tests written **first**, then implementation (TDD); CRD changes regenerated via `regen-crds` → `regen-api-docs`
 - [ ] `cargo-quality` passes (fmt + clippy + test)
 - [ ] CHANGELOG (`**Author:**`) + docs updated; `sync-docs` clean
+- [ ] Roadmap detail doc **and** `ROADMAPS.md` both updated for anything that
+      advanced a roadmap item

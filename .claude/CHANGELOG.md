@@ -9,6 +9,206 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-09-26 22:55] - Add rules/no-pii.md; move machine-local hook paths out of tracked settings
+
+**Author:** Erick Bourgeois
+
+### Added
+- `.claude/rules/no-pii.md`: companion rule to `no-real-infrastructure.md` —
+  never commit user home directories or PII, in any tracked file. Covers home
+  directories and personal absolute paths (`/Users/<name>`, `/home/<name>`,
+  `C:\Users\<name>`, including inside pasted terminal output, backtraces, and
+  snapshots), usernames/logins/handles, real names, personal email addresses,
+  phone numbers, person-linked identifiers, and machine identity (IPs,
+  hostnames, MACs, serials — cross-referencing the infrastructure rule). The
+  scope list is explicitly open-ended: anything identifying a real person,
+  account, or machine is in scope, and "unsure" means "assume it is". Includes
+  a placeholder table, the `$CLAUDE_PROJECT_DIR` / `settings.local.json` split
+  for tool config, the deliberate-maintainer-identity carve-out (git
+  authorship, `Cargo.toml`, `SECURITY.md` contact — never quietly changed,
+  never extended), a "how PII sneaks in" section, and pre-commit sweep
+  commands. Same ask-first escape hatch as the infrastructure rule.
+
+### Changed
+- `.claude/CLAUDE.md`: Compliance & Security section gains the summary
+  prohibition and a pointer to `rules/no-pii.md`, mirroring how the
+  infrastructure rule is referenced.
+- `.claude/settings.json`: restored to its clean tracked form (sync-docs Stop
+  hook only). The OpenWolf hook definitions that had been added locally with
+  absolute `/Users/<name>/...` paths moved to the gitignored
+  `.claude/settings.local.json`, rewritten to `$CLAUDE_PROJECT_DIR` so no home
+  directory appears even there. This is the first application of the new rule.
+
+### Why
+The maintainer asked for a standing rule against committing home directories
+or any PII (real IPs, hostnames, usernames, and explicitly not limited to
+those), and flagged that `.claude/settings.json` carried home-directory paths.
+The paths were avoidable — `$CLAUDE_PROJECT_DIR` plus the settings.local.json
+split removes them without untracking the file.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
+## [2026-09-23 14:40] - Split the internal-references rule into rules/no-real-infrastructure.md
+
+**Author:** Erick Bourgeois
+
+### Added
+- `.claude/rules/no-real-infrastructure.md`: the internal-references rule as a
+  standalone rule file, which the global instructions already referenced by
+  that path. Beyond the prohibition it adds the parts that were missing: a
+  **placeholder table** built from what the tree already uses (the RFC 2606
+  `example.com` family — `artifactory.example.com`, `workshop.example.com`,
+  `evil.example.com` — plus RFC 5737/3849 documentation address ranges, and
+  the note that RFC 1918 addresses are correct when the example is
+  *semantically* a private network, as in a `Machine`'s `spec.address`); the
+  **empty-default pattern** for getting a real value in without committing it,
+  citing `BASE_IMAGE` / `CHAINGUARD_BASE_IMAGE` / `PYPI_INDEX_URL` / `PUSH`,
+  all of which already default to empty; a note that `localhost`,
+  `127.0.0.1`, `0.0.0.0` and `host.docker.internal` are tooling conventions,
+  not identifiers; the **package-metadata grey area** (`Cargo.toml`'s
+  `authors` / `repository` are published and in scope for the rule's spirit,
+  but are an explicit decision, not something to change quietly); and a
+  **pre-commit sweep command** over the staged diff.
+
+### Changed
+- `.claude/CLAUDE.md`: the Compliance & Security section's inline "Never
+  commit" list and "Internal References Rule" block replaced with a tightened
+  summary plus a pointer to the new rule file. The prohibition and the
+  ask-first escape hatch stay in `CLAUDE.md` (it loads every session); the
+  table, patterns and sweep command live in the rule.
+
+### Why
+The global instructions (`~/.claude/CLAUDE.md`) point at "each repo's
+`rules/no-real-infrastructure.md`" — banlieue has one, 5-Spot did not, so the
+reference did not resolve. The content existed but only as two prohibition
+lines, with no placeholder vocabulary and no way to check a diff before
+committing, which is the half that actually prevents a mistake.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-09-23 14:05] - Roadmaps move into the repo: .github/community/ + ROADMAPS.md
+
+**Author:** Erick Bourgeois
+
+### Added
+- `ROADMAPS.md` (repo root): status board — legend (✅ / 🔶 / ⛔ / 📄), one row
+  per roadmap, plus a "recorded elsewhere, deliberately" table pointing at
+  `docs/adr/`, the threat model, the CHANGELOG, and private vulnerability
+  reporting for anything unremediated.
+- `.github/community/README.md`: reading-order table, the naming conventions,
+  and an explicit "what does not live here" section.
+- `.github/community/00-release-diff-v0-2-2-to-main.md`: imported from
+  `~/dev/roadmaps/5-spot/v0.2.2-to-main-diff-report.md`. 📄 reference doc —
+  the kata-config-agent and spot-schedule-provider arcs, generated 2026-07-22.
+- `.github/community/01-dependency-internalization-matrix.md`: imported from
+  `~/dev/roadmaps/5-spot-dependency-internalization-matrix.md`, **re-audited
+  against the tree on import**: four of the six "remove first" crates are gone
+  (`regex`, `lazy_static`, `async-trait`, `hyper-util`), direct runtime deps
+  are 31 → 25, and `hyper` (still `features = ["full"]`) and `tower` remain
+  with zero non-comment references under `src/`. Status 🔶, not 📄, because
+  that last part is still actionable.
+- `.claude/rules/documentation.md`: new rule file. *Roadmap Document Naming*
+  (lowercase-hyphen, contiguous two-digit prefix, what a renumber must touch),
+  *What may not be published*, and *Status board discipline*.
+
+### Changed
+- `.claude/CLAUDE.md`: the "Plans and Roadmaps Location" requirement said
+  `docs/roadmaps/`, **NO WHERE ELSE**; the maintainer's global instructions said
+  the opposite (never in the repo, keep them under `~/dev/roadmaps/`). Replaced
+  with the current policy — checked in under `.github/community/`, indexed by
+  `ROADMAPS.md` — plus the two categories that stay out of a public repo:
+  unremediated security findings and real infrastructure identifiers. The
+  file-organization tree and the skills one-liner updated to match.
+- `.claude/rules/architecture-driven-development.md`: step 4 is now "Docs —
+  including the roadmap artefacts" and requires the detail doc **and**
+  `ROADMAPS.md` to move in the same commit, with an audit of the rest of the
+  doc against the tree; checklist gains the matching line. The aside claiming
+  roadmaps "live outside the repo at `~/dev/roadmaps/`" was corrected.
+- `.claude/SKILL.md`: `create-roadmap` rewritten for the new location, the
+  contiguous-numbering rule, the two extra index rows a new roadmap needs, and
+  the publish exclusions.
+
+### Why
+Roadmaps were governed by two contradictory rules — this repo's `CLAUDE.md`
+said `docs/roadmaps/`, the global instructions said never in the repo — and in
+practice neither happened: 5-Spot's roadmap docs sat in a private directory
+with no index, no status, and no link from the repo. banlieue reversed the same
+policy and the model works there, so this adopts it verbatim: a one-screen
+status board at the root, numbered detail docs in `.github/community/`, and an
+explicit line about what a public repository must not carry.
+
+The threat-model remediation doc in `~/dev/roadmaps/5-spot/` was deliberately
+**not** imported — it is a list of live unremediated findings, which belongs in
+private vulnerability reporting, not a public repo. Same split banlieue uses.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-09-23 10:30] - Threat model v1.1: the privileged kata-config agent, the supply chain, and a wrong classification
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/src/security/threat-model.md` (403 -> 506 lines):
+  - **Header** — Version 1.0 -> 1.1, date 2026-04-08 -> 2026-09-23, new
+    `Covers: ADR-0001 … ADR-0010` stamp. **Classification corrected**: the page
+    said *"Internal - Security Sensitive"* while being listed in
+    `docs/mkdocs.yml` under Security -> Threat Model and published to GitHub
+    Pages from a public repository. It now says Public, and states that
+    unremediated findings belong in private reporting per `SECURITY.md`.
+  - **New §6.5 - Kata-Config Agent (TB6)**, eight STRIDE rows (K1-K8). The
+    agent shipped 2026-06-09 (ADR 0002/0003) and the document was edited twice
+    after that without ever modelling it, despite it being the only component
+    running `privileged: true`. Controls cited are real and named: ADR 0005 path
+    confinement via `confine_dest_path`, the shell-free `nsenter_restart_argv`,
+    the CRD's bounded `restartService` schema, `get`-only source RBAC, the
+    ADR 0004 VAP clamp, and the applied-hash restart guard.
+  - **§4** - new `TB6` subgraph in the trust-boundary diagram plus the prose
+    naming it the highest-privilege boundary in the system. **§2** - three new
+    data flows (F7 controller stamps the Node annotation, F8 agent writes the
+    host drop-in and restarts a unit, F9 reclaim agent annotations).
+  - **§7** - new **Supply Chain** control table (SLSA provenance, cosign by
+    digest, SBOM, the ADR 0008 auto-VEX gate, ADR 0010 base-image pinning,
+    SHA-pinned actions, the scanner set, and the absence of
+    `pull_request_target`). §5 had listed a supply-chain attacker since v1.0
+    with no answering control table; `SLSA`, `SBOM` and `provenance` did not
+    appear in the document at all. "Implemented (as of 2026-04-08)" redated.
+  - **§7 deployment controls** - two rows: `spec.kata` and workload-cluster
+    `patch nodes` are node-root-equivalent grants.
+  - **§8** - new MEDIUM residual risk: both node-side agents hold cluster-wide
+    `nodes: patch` because RBAC cannot express "own Node", which matters more
+    for the kata agent because its Node annotation is an *instruction* consumed
+    by a privileged component. Recommends a `ValidatingAdmissionPolicy` on
+    `nodes` UPDATE keyed on `request.userInfo.username`, in the shape ADR 0004
+    already established.
+
+### Why
+The threat model claimed a posture last checked on 2026-04-08. Four ADRs landed
+after that date, and the most security-relevant component in the repository -
+a DaemonSet that writes the host filesystem and restarts a host systemd unit
+through `nsenter -t 1` - appeared in it exactly once, incidentally, inside
+another threat's mitigation text. A threat model that omits the only privileged
+component is not stale at the edges; it is silent on its own worst case.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-09-08 12:40] - CI must pass BASE_IMAGE_REF, or every published image ships an empty base.name
 
 **Author:** Erick Bourgeois
@@ -3783,7 +3983,7 @@ Phase 1 of the user-defined Node taints roadmap (`~/dev/roadmaps/5spot-user-defi
 **Author:** Erick Bourgeois
 
 ### Changed
-- `/Users/erick/dev/roadmaps/5spot-emergency-reclaim-by-process-match.md`: Updated the Phase-2 rung-2 (netlink proc connector) status row from "⏳ Not started" to "⏳ Deferred — tracked as [finos/5-spot#40](https://github.com/finos/5-spot/issues/40)". Row body rewritten to name the concrete tradeoff (detection latency ~1s → <10ms; lower idle CPU; deterministic worst case) and note the counter-tradeoff (rung 1 is cheaper under heavy-exec workloads) so future readers don't re-re-evaluate from scratch.
+- `~/dev/roadmaps/5spot-emergency-reclaim-by-process-match.md`: Updated the Phase-2 rung-2 (netlink proc connector) status row from "⏳ Not started" to "⏳ Deferred — tracked as [finos/5-spot#40](https://github.com/finos/5-spot/issues/40)". Row body rewritten to name the concrete tradeoff (detection latency ~1s → <10ms; lower idle CPU; deterministic worst case) and note the counter-tradeoff (rung 1 is cheaper under heavy-exec workloads) so future readers don't re-re-evaluate from scratch.
 - Opened [finos/5-spot#40](https://github.com/finos/5-spot/issues/40) (label: `enhancement`) carrying the full scope, dependency-choice tradeoff (`nix` vs `neli` vs `netlink-proto`), deployment delta (`CAP_NET_ADMIN` add + suppression-rationale updates), out-of-scope markers (eBPF, cross-node), and acceptance criteria.
 
 ### Why
@@ -3805,7 +4005,7 @@ No code or manifest changes. `cargo-quality` not re-run (no Rust touched).
 
 ### Changed
 - `src/reconcilers/helpers_tests.rs`: 4 new async-orchestrator tests for `reconcile_reclaim_agent_provision` using the existing `tower_test::mock` harness. Non-empty commands → Node label merge-patch then ConfigMap server-side apply (asserting `fieldManager=5spot-controller-reclaim-agent` + `force=true` query params, the `enabled` label string in the patch body, and the `data.reclaim.toml` key present in the apply body). Empty commands → Node label patch (JSON-null value) then ConfigMap DELETE. 404-on-delete → benign `Ok(())` so a re-run after partial tear-down completes. Label-PATCH 500 → `ReconcilerError::KubeError` propagation with no second request issued. Also fixed one stale test comment in `test_build_reclaim_agent_configmap_data_key_is_reclaim_toml` that still referenced the old `/etc/5spot/reclaim.toml` mount path — rewrote to describe the watch-based contract.
-- `/Users/erick/dev/roadmaps/5spot-emergency-reclaim-by-process-match.md`: Flipped Phase-2.5 status row from 🟡 Partial to ✅ Shipped (agent-side watch consumption + new mock-API tests close the loop; the DaemonSet ConfigMap mount is gone entirely, so the "residual" that was the blocker no longer exists). Flipped Phase-4 status row from 🟡 Partial to ✅ Shipped for unit scope. Updated test count to **275 green** (was 271). Promoted the three runtime-dependent Phase-4 items (kind integration, manual stopwatch, re-enable loop protection) to explicit `TODO-*` follow-ups with their own names so they stop reading as "open Phase 4 unit gaps". Header status line and cumulative-commits reference updated to include the 2026-04-21 increments.
+- `~/dev/roadmaps/5spot-emergency-reclaim-by-process-match.md`: Flipped Phase-2.5 status row from 🟡 Partial to ✅ Shipped (agent-side watch consumption + new mock-API tests close the loop; the DaemonSet ConfigMap mount is gone entirely, so the "residual" that was the blocker no longer exists). Flipped Phase-4 status row from 🟡 Partial to ✅ Shipped for unit scope. Updated test count to **275 green** (was 271). Promoted the three runtime-dependent Phase-4 items (kind integration, manual stopwatch, re-enable loop protection) to explicit `TODO-*` follow-ups with their own names so they stop reading as "open Phase 4 unit gaps". Header status line and cumulative-commits reference updated to include the 2026-04-21 increments.
 
 ### Why
 Two intents bundled: (1) close the last tractable Phase-4 unit-test gap that was pure-Rust and macOS-viable — the async orchestrator paths of `reconcile_reclaim_agent_provision` had pure-helper tests but no request-sequence pinning, which meant a refactor could reverse the label-PATCH → ConfigMap-apply order (or drop force=true, or rename the field manager) without any red test. (2) Align the roadmap narrative with what's actually shipped: with the agent now watching the per-node ConfigMap via kube API and the DaemonSet mount removed, the Phase-2.5 "residual blocker" narrative is genuinely resolved — leaving it as 🟡 Partial would mislead the next reader.

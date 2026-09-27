@@ -360,18 +360,29 @@ See `.claude/rules/architecture-driven-development.md`. Applies to new CRDs / CR
 - When documenting future work or optimization strategies
 
 **Steps:**
-1. Create file in `docs/roadmaps/` with **lowercase, hyphenated** filename
-2. Include header with date, status, and impact
-3. Structure with phases, milestones, or steps
-4. Add success criteria and verification steps
+1. Create the detail doc in `.github/community/`, named `NN-title.md` — the
+   next **contiguous** two-digit number (no gaps), lowercase with hyphens
+2. Include an SPDX header, a `# NN — Title` H1, and a status line (date +
+   what state the work is actually in)
+3. Structure with phases, milestones, or steps; add success criteria
+4. Add a row to **`ROADMAPS.md`** at the repo root — status symbol
+   (✅ / 🔶 / ⛔ / 📄) plus a note saying what is really true today
+5. Add the same row to `.github/community/README.md`'s reading-order table
 
 **File naming rules:**
-- ✅ CORRECT: `docs/roadmaps/integration-test-plan.md`
-- ✅ CORRECT: `docs/roadmaps/phase-1-implementation.md`
-- ❌ WRONG: `ROADMAP.md` (root directory)
-- ❌ WRONG: `docs/roadmaps/PHASE_1.md` (uppercase, underscores)
+- ✅ CORRECT: `.github/community/02-integration-test-plan.md`
+- ✅ CORRECT: `.github/community/03-phase-1-implementation.md`
+- ❌ WRONG: `ROADMAP.md` (root directory — the index there is `ROADMAPS.md`)
+- ❌ WRONG: `docs/roadmaps/*.md` (retired location)
+- ❌ WRONG: `.github/community/04_PHASE_1.md` (uppercase, underscores)
+- ❌ WRONG: a number that skips one, or a `1x`-style category grouping
 
-**Verification:** File exists in `docs/roadmaps/`, filename is lowercase with hyphens only.
+**Do not put in the repo:** unremediated security findings, or real
+infrastructure identifiers. Those stay in `~/dev/roadmaps/5-spot/`. Full rule:
+`.claude/rules/documentation.md`.
+
+**Verification:** `ls .github/community/ | rg -v '^README\.md$'` is `00..NN`,
+all lowercase; the new doc has a `ROADMAPS.md` row and a README row.
 
 ---
 
