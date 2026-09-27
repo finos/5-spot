@@ -283,6 +283,106 @@ mod tests {
         assert!(parse_kata_ref("not json").is_err());
     }
 
+    // ---- parse_kata_ref: the annotation is UNTRUSTED input (ADR 0012 D2) ----
+    //
+    // The CRD schema runs at the management cluster. This annotation is written
+    // in the workload cluster, where anything holding `patch nodes` can set it,
+    // so every field is re-validated here against the same constraint its CRD
+    // counterpart enforces. A rejected annotation means no host write and no
+    // restart.
+
+    fn ref_json(field: &str, value: &str) -> String {
+        let mut f = std::collections::BTreeMap::from([
+            ("namespace", "5spot-system"),
+            ("kind", "ConfigMap"),
+            ("name", "kata-drop-in"),
+            ("key", "kata-containers.toml"),
+            ("restartService", "k0sworker.service"),
+        ]);
+        f.insert(field, value);
+        let body = f
+            .iter()
+            .map(|(k, v)| format!("\"{k}\":\"{v}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("{{{body}}}")
+    }
+
+    #[test]
+    fn test_parse_kata_ref_rejects_option_like_restart_service() {
+        // The defect this closes: `-Hbar.example.com.service` satisfied the
+        // pre-ADR-0012 CRD pattern, and `systemctl restart -H<host>` connects
+        // to a remote host over SSH.
+        let json = ref_json("restartService", "-Hbar.example.com.service");
+        assert!(
+            parse_kata_ref(&json).is_err(),
+            "a unit name starting with a hyphen must be rejected: {json}"
+        );
+    }
+
+    #[test]
+    fn test_parse_kata_ref_rejects_restart_service_without_unit_suffix() {
+        assert!(parse_kata_ref(&ref_json("restartService", "k0sworker")).is_err());
+    }
+
+    #[test]
+    fn test_parse_kata_ref_accepts_hyphen_inside_unit_name() {
+        // A hyphen is legal to systemd inside a unit name; only first position
+        // is an option. The fix must not over-reject.
+        let r = parse_kata_ref(&ref_json("restartService", "k0s-worker.service"))
+            .expect("a hyphen inside the unit name is legal");
+        assert_eq!(r.restart_service, "k0s-worker.service");
+    }
+
+    #[test]
+    fn test_parse_kata_ref_rejects_overlong_restart_service() {
+        let long = format!("{}.service", "a".repeat(250));
+        assert!(parse_kata_ref(&ref_json("restartService", &long)).is_err());
+    }
+
+    #[test]
+    fn test_parse_kata_ref_rejects_invalid_namespace() {
+        for bad in ["5spot_system", "5SPOT", "-ns", "ns-", ""] {
+            assert!(
+                parse_kata_ref(&ref_json("namespace", bad)).is_err(),
+                "namespace {bad:?} is not an RFC-1123 label and must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_kata_ref_rejects_invalid_name() {
+        for bad in ["Kata-Drop-In", "kata..drop", "-kata", ""] {
+            assert!(
+                parse_kata_ref(&ref_json("name", bad)).is_err(),
+                "name {bad:?} is not an RFC-1123 subdomain and must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_kata_ref_rejects_invalid_key() {
+        for bad in ["kata containers.toml", "kata/containers.toml", ""] {
+            assert!(
+                parse_kata_ref(&ref_json("key", bad)).is_err(),
+                "key {bad:?} is not a valid data key and must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_kata_ref_rejects_unknown_kind() {
+        // The agent branches on kind; anything but the two source kinds the CRD
+        // admits is a rejected annotation, not a fallthrough.
+        for bad in ["configmap", "Pod", "Secrets", ""] {
+            assert!(
+                parse_kata_ref(&ref_json("kind", bad)).is_err(),
+                "kind {bad:?} must be rejected"
+            );
+        }
+        assert!(parse_kata_ref(&ref_json("kind", "Secret")).is_ok());
+    }
+
     // ---- sync_content: the API-read sync path ----
 
     #[test]
@@ -323,8 +423,11 @@ mod tests {
 
     #[test]
     fn test_nsenter_restart_argv_exact_command_line() {
-        // Pin the exact argv kata-deploy uses: enter host PID 1's mount/uts/ipc/
-        // net/pid namespaces, then `systemctl restart <service>`.
+        // Pin the exact argv: enter host PID 1's mount/uts/ipc/net/pid
+        // namespaces, then `systemctl restart -- <service>`. The FIRST `--`
+        // terminates nsenter's options; the SECOND terminates systemctl's
+        // (ADR 0012 decision 1). Without the second one, a unit name beginning
+        // with `-` is parsed by systemctl as an option.
         assert_eq!(
             nsenter_restart_argv("k0sworker.service"),
             vec![
@@ -339,9 +442,34 @@ mod tests {
                 "--",
                 "systemctl",
                 "restart",
+                "--",
                 "k0sworker.service",
             ]
         );
+    }
+
+    #[test]
+    fn test_nsenter_restart_argv_terminates_systemctl_options() {
+        // ADR 0012 decision 1, stated as the property rather than the literal:
+        // whatever the unit name is, it is the LAST argument and it is preceded
+        // immediately by `--`, so systemctl cannot read it as a flag.
+        for unit in [
+            "k0sworker.service",
+            "k0s-worker.service",
+            "-Hbar.example.com.service",
+        ] {
+            let argv = nsenter_restart_argv(unit);
+            assert_eq!(
+                argv.last().unwrap(),
+                unit,
+                "the unit must be the last argument"
+            );
+            assert_eq!(
+                argv[argv.len() - 2],
+                "--",
+                "the unit must be preceded by an option terminator: {argv:?}"
+            );
+        }
     }
 
     #[test]

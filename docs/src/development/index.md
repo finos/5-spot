@@ -75,6 +75,7 @@ the table below is a convenience copy.
 | [0009](https://github.com/finos/5-spot/blob/main/docs/adr/0009-unify-schedule-as-provider-reference.md) | Unify activation under `spec.schedule` as a provider reference | Accepted |
 | [0010](https://github.com/finos/5-spot/blob/main/docs/adr/0010-base-image-pins-on-from-line.md) | Base-image digests pinned on the `FROM` line | Accepted |
 | [0011](https://github.com/finos/5-spot/blob/main/docs/adr/0011-schedule-gated-capacity-separate-controller.md) | Schedule-gated capacity in its own controller, scaling rather than creating | Proposed |
+| [0012](https://github.com/finos/5-spot/blob/main/docs/adr/0012-kata-agent-validates-its-own-input.md) | The kata-config agent validates its own Node annotation; the restart argv terminates options | Proposed |
 
 Start with **0001** for the methodology, **0006** and **0009** for how
 activation works, **0007** before touching a CRD, and **0004** before deploying

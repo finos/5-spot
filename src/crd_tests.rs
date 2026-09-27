@@ -1511,6 +1511,37 @@ mod tests {
     }
 
     #[test]
+    fn test_kata_restart_service_pattern_excludes_leading_hyphen() {
+        // ADR 0012: a hyphen is legal to systemd *inside* a unit name, and must
+        // not be legal in first position, where `systemctl` reads it as an
+        // option (-H connects to a remote host, -M targets a container). The
+        // pre-ADR pattern put `-` in a single class applied to every position,
+        // so `-Hbar.example.com.service` was admissible.
+        //
+        // `regex` is deliberately not a dependency (roadmap 04), so this pins
+        // the pattern's shape; the behavioural check is in
+        // kata_config_agent_tests, where parse_kata_ref rejects the same value.
+        let schema =
+            serde_json::to_value(schemars::schema_for!(KataConfig)).expect("schema serializes");
+        let svc = schema
+            .pointer("/properties/restartService")
+            .or_else(|| schema.pointer("/definitions/KataConfig/properties/restartService"))
+            .expect("KataConfig.restartService property must exist in schema");
+        let pattern = svc
+            .get("pattern")
+            .and_then(serde_json::Value::as_str)
+            .expect("restartService must carry a pattern");
+        assert!(
+            pattern.starts_with("^[A-Za-z0-9@._]["),
+            "the first character class must exclude `-`: {pattern}"
+        );
+        assert!(
+            pattern.ends_with("\\.service$"),
+            "the pattern must still anchor on the .service suffix: {pattern}"
+        );
+    }
+
+    #[test]
     fn test_spec_kata_is_optional_in_schema() {
         // Backward compat: the new field must NOT be in the `required` list.
         let schema =

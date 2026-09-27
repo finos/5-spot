@@ -653,12 +653,20 @@ fn kata_config_key_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema
 /// Schema for `KataConfig.restartService` — the systemd unit the agent
 /// restarts via `nsenter`. Constrained to a `*.service` unit name with the
 /// systemd unit charset and bounded to systemd's 255-char unit-name cap.
+///
+/// The first character class deliberately **excludes `-`** (ADR 0012): a
+/// hyphen is legal to systemd inside a unit name, but in first position it is
+/// only ever an option, and the value reaches `systemctl restart`. The agent
+/// re-validates this same rule on its own input, and the restart argv
+/// terminates option parsing — three independent controls, because this one
+/// runs at the management cluster and the agent's input does not come from
+/// there.
 fn kata_config_restart_service_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({
         "type": "string",
         "minLength": 1,
         "maxLength": 255,
-        "pattern": "^[A-Za-z0-9@._-]+\\.service$"
+        "pattern": "^[A-Za-z0-9@._][A-Za-z0-9@._-]*\\.service$"
     })
 }
 

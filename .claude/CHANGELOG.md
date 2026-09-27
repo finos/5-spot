@@ -9,6 +9,75 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-09-27] - 5S-01: the kata-config agent validates its own input; the restart argv terminates options
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0012-kata-agent-validates-its-own-input.md` (Proposed): ADR-0005
+  closed the *file* half of this threat by removing `destPath`; this closes the
+  *command* half. Indexed in `docs/adr/README.md` and the Developer Guide table.
+- `src/kata_config_agent.rs`: `KataRefError` (`thiserror`), and four
+  dependency-free validators — `is_dns_label`, `is_dns_subdomain`,
+  `is_data_key`, `is_systemd_unit`. Hand-rolled rather than regex-based because
+  `regex` was removed as unused (roadmap 04) and this must not reintroduce it.
+- 9 tests in `src/kata_config_agent_tests.rs` and 1 in `src/crd_tests.rs`,
+  written first — all 9 failed for the right reasons before the fix.
+
+### Changed
+- `src/kata_config_agent.rs` — **the load-bearing fix.** `nsenter_restart_argv`
+  now emits `systemctl restart -- <unit>`. The pre-existing `--` belonged to
+  `nsenter` and ended *its* options, never systemctl's, so a unit name starting
+  with `-` was parsed as an option: `-H` connects to a remote host over SSH,
+  `-M` targets a container, `--root=` retargets the filesystem.
+- `src/kata_config_agent.rs`: `parse_kata_ref` was a bare
+  `serde_json::from_str`. It now validates `kind`, `namespace`, `name`, `key`
+  and `restartService` against the same constraints their CRD counterparts
+  enforce, and refuses the annotation on a mismatch — no host write, no
+  restart. The CRD schema runs at the *management* cluster; this annotation is
+  written on a Node in the *workload* cluster, where anything holding
+  `patch nodes` can set it, including the agent's own ServiceAccount.
+- `src/crd.rs`: `restartService` pattern anchored
+  `^[A-Za-z0-9@._-]+\.service$` → `^[A-Za-z0-9@._][A-Za-z0-9@._-]*\.service$`.
+  The old class applied `-` to every position, so `-Hbar.example.com.service`
+  was **admissible through the CRD**, not only through the annotation.
+  `deploy/crds/scheduledmachine.yaml` regenerated (`make crds`, one line).
+- `docs/architecture/calm/architecture.json`: new
+  `untrusted-annotation-validation` control on `rel-kata-agent-writes-host`
+  (NIST SP 800-53 SI-10 / SI-15 / AC-6), and the documented command line
+  corrected in two descriptions. No node, relationship or flow changed.
+- `docs/src/security/threat-model.md` → **v1.2**, covering ADR-0001 … ADR-0012.
+  K2 now records two independent controls. K4 moves from *partially mitigated*
+  to mitigated **for the injection case**, with the policy case named as out of
+  scope (`sshd.service` matches the pattern and always will). K5 is **narrowed,
+  not closed**: the agent no longer trusts the annotation's *shape*, but still
+  trusts its *authority*, which needs the §8 admission policy.
+
+### Why
+5S-01 from the private remediation queue, rated Medium-High. Two independent
+defects on one privileged path: the argv could be misread, and the agent
+validated nothing on the input that actually reaches it. Neither is exploitable
+without a privileged position already, but this project's posture is
+defence-in-depth exactly here — ADR-0005 added `confine_dest_path` for the file
+half and the command half never got the equivalent.
+
+### Verification
+RED→GREEN: 9 new tests failed first, then passed. `cargo fmt` clean,
+`cargo clippy --all-targets --all-features` clean, **704 tests pass**.
+`make calm-validate` reports 0 errors / 0 warnings. `make crds` then
+`make crddoc` (in that order) — `api.md` unchanged. `mkdocs build --strict`
+builds clean.
+
+### Impact
+- [x] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+**Breaking, narrowly:** a `ScheduledMachine` whose `restartService` begins with
+`-` is now rejected at admission, and a hand-edited Node annotation outside the
+validated shape is refused by the agent instead of acted on. Both were bugs.
+
 ## [2026-09-27 01:35] - Close out roadmap 04: remove hyper + tower, http-body-util to dev-deps
 
 **Author:** Erick Bourgeois
