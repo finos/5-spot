@@ -1,4 +1,16 @@
 {
   "version": 1,
+<<<<<<< HEAD
   "bugs": []
+=======
+  "bugs": [
+    {
+      "date": "2026-09-27",
+      "error_message": "PR #164 CI failed: cargo-deny 'error[vulnerability]: TLS 1.3 handshake messages incorrectly accepted across encryption level boundaries' (RUSTSEC-2026-0285) and Security Vulnerability Scan (cargo audit) exit 1 on the same advisory",
+      "root_cause": "Cargo.lock pinned rustls v0.23.44 (transitive: kube client -> hyper-rustls -> rustls), which is below the RUSTSEC-2026-0285 / GHSA-2mjx-qc3c-rqvc fix version 0.23.45",
+      "fix": "cargo update -p rustls (0.23.44 -> 0.23.45, lockfile-only); verified with `cargo deny check advisories` -> ok; changelog entry added",
+      "tags": ["ci", "cargo-deny", "cargo-audit", "rustsec", "dependencies", "rustls", "pr-164"]
+    }
+  ]
+>>>>>>> 3b3348d (chore(deps): bundle six open Dependabot updates)
 }

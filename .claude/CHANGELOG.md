@@ -58,6 +58,30 @@ decisions, and the conventions before reaching the work docs.
 
 ---
 
+## [2026-09-27 00:13] - Bump rustls 0.23.44 → 0.23.45 for RUSTSEC-2026-0285 (PR #164 CI failure)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.lock`: `cargo update -p rustls` — 0.23.44 → 0.23.45, transitive via
+  `hyper-rustls` in the kube client stack. No `Cargo.toml` change.
+
+### Why
+PR #164's `cargo-deny` and Security Vulnerability Scan gates failed on
+RUSTSEC-2026-0285 (GHSA-2mjx-qc3c-rqvc): rustls ≤ 0.23.44 accepted TLS 1.3
+handshake messages sent at the wrong encryption level when packed into the
+same record as a key-changing message (RFC 8446 §5.1 violation; transcript
+authentication limits practical impact). 0.23.45 is the advisory's fix
+version. `cargo deny check advisories` passes locally after the bump.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+---
+
 ## [2026-09-26 22:55] - Add rules/no-pii.md; move machine-local hook paths out of tracked settings
 
 **Author:** Erick Bourgeois
