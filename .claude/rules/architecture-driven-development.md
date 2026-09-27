@@ -8,7 +8,7 @@ ADD layers *on top of* the existing TDD discipline; it does not replace it. The
 order is fixed:
 
 ```
-ADR  →  CALM  →  TDD  →  implement  →  docs
+ADR  →  CALM  →  TDD  →  implement  →  docs  →  threat model
 ```
 
 ## The ADD cycle
@@ -57,7 +57,8 @@ implementation begins. A change that isn't reflected in CALM isn't designed yet.
 
 Only now write code, **tests first**, per the `tdd-workflow` skill: failing test
 → minimum implementation → refactor. Tests go in separate `_tests.rs` files
-(`src/foo.rs` → `#[cfg(test)] mod foo_tests;` → `src/foo_tests.rs`). After any
+(`src/foo.rs` carries `#[cfg(test)] #[path = "foo_tests.rs"] mod tests;` →
+`src/foo_tests.rs`; full rule: `rules/testing.md`). After any
 `.rs` change, run the `cargo-quality` skill (fmt + clippy + test — all must pass).
 
 CRD shape changes start in `src/crd.rs` (the source of truth), then regenerate:
@@ -78,6 +79,15 @@ pages / examples. Run the `sync-docs` skill to verify docs match the code.
 `ROADMAPS.md` is the one-screen answer to "what state is this project in", so a
 row that describes intent rather than reality is worse than no row. Full naming
 and renumbering rule: `rules/documentation.md` → *Roadmap Document Naming*.
+
+### 5. Threat model — the full pass (LAST)
+
+When an ADR's implementation is complete, make a **full pass** over
+`docs/src/security/threat-model.md` — every section, not just the obviously
+affected table — and bump its header stamp (Version, Date, **Covers**
+ADR range). "No change" is a valid conclusion, but the stamp still moves.
+An ADR is not "done" until this has happened. Full rule, trigger questions
+and checklist: `rules/threat-modeling.md`.
 
 ## When does ADD apply?
 
@@ -114,3 +124,5 @@ and renumbering rule: `rules/documentation.md` → *Roadmap Document Naming*.
 - [ ] CHANGELOG (`**Author:**`) + docs updated; `sync-docs` clean
 - [ ] Roadmap detail doc **and** `ROADMAPS.md` both updated for anything that
       advanced a roadmap item
+- [ ] Threat-model full pass done (`rules/threat-modeling.md`); header stamp
+      bumped to this ADR — or the change was TDD-only and never had an ADR

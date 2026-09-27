@@ -4,14 +4,21 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 04 — Dependency internalization matrix
 
-> 🔶 In progress. Audited against the tree on **2026-09-23**: of the six
-> "remove these first" crates in §1, **four are gone** (`regex`, `lazy_static`,
-> `async-trait`, `hyper-util`) and direct runtime deps are down from 31 to 25.
-> **`hyper` (still declared with `features = ["full"]`) and `tower` remain** —
-> both still have zero non-comment references under `src/`, so §1's reasoning
-> stands for them unchanged. `tower-test` is a legitimate dev-dependency and was
-> never in scope. The rest of the document is as generated on 2026-06-24 and has
-> not been re-verified.
+> ✅ Closed **2026-09-27**. All six §1 "remove these first" crates are gone:
+> `regex`, `lazy_static`, `async-trait`, `hyper-util` (removed by 2026-09-23),
+> then `hyper` and `tower` (removed 2026-09-27 — grep re-confirmed zero
+> non-comment references, then verified with `cargo check --all-targets`,
+> clippy, and the full test suite: 708 passed, 0 failed). In the same change
+> `http-body-util`, declared as a runtime dep but used only in
+> `src/reconcilers/helpers_tests.rs`, moved to `[dev-dependencies]`. Direct
+> runtime deps: **31 at generation → 22** (plus 7 dev and the Linux-only
+> `nix`). `hyper` and `tower` remain in the graph only as `kube-client`
+> transitives — the "Core" tier §3 already calls non-negotiable.
+>
+> §§2–3 stay as a point-in-time reference (generated 2026-06-24) for any
+> future internalization decision; that open thread is
+> [O-003 in `01-decisions.md`](01-decisions.md), and reopening actual work
+> here means a new roadmap, not reopening this one.
 
 > Analysis of every **direct** dependency in `Cargo.toml`, the actual API surface
 > 5-Spot uses from each, and an opinion on whether it could realistically be

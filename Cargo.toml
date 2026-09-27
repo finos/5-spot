@@ -70,12 +70,9 @@ clap = { version = "4", features = ["derive", "env"] }
 # so it's disabled here. That also drops the `protobuf`/`protobuf-support`
 # crates and the duplicate `thiserror` 1.x tree they pull in.
 prometheus = { version = "0.14", default-features = false, features = ["process"] }
-hyper = { version = "1", features = ["full"] }
-http-body-util = "0.1"
 # Canonical HTTP status codes (used in src/constants.rs to name the Kubernetes
 # API error statuses we branch on, instead of hardcoding 404/409/429).
 http = "1"
-tower = "0.5"
 # warp 0.4 made every previously-default feature opt-in. We use
 # `warp::serve` for the metrics + health/readiness HTTP servers
 # (src/main.rs and src/health.rs), so the `server` feature must be
@@ -108,6 +105,10 @@ mockall = "0.15"
 test-log = "0.2"
 tempfile = "3"
 tower-test = "0.4"
+# Body-collection helpers for tower-test mock responses in
+# src/reconcilers/helpers_tests.rs — test-only, so a dev-dependency
+# (roadmap 04 flagged it as an unused *runtime* dep; the uses are in tests).
+http-body-util = "0.1"
 # Used by src/reconcilers/child_client_tests.rs to build base64-encoded
 # Secret payloads for the tower-test mock server. base64 0.22 is already
 # in the dependency graph transitively (kube / k8s-openapi pull it).

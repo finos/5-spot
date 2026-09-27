@@ -163,6 +163,6 @@ SPDX-License-Identifier: Apache-2.0
 
 | ID | Topic | Where it stands |
 |---|---|---|
-| O-001 | Remove `hyper` and `tower` from `Cargo.toml` | Roadmap [04](04-dependency-internalization-matrix.md) §1 — grep-confirmed unused as of 2026-09-23, verify with a build before deleting |
+| ~~O-001~~ | ~~Remove `hyper` and `tower` from `Cargo.toml`~~ | **Closed 2026-09-27** — both removed (and `http-body-util` moved to dev-dependencies), full suite green; roadmap [04](04-dependency-internalization-matrix.md) closed with it |
 | O-002 | Conversion webhook shape | Deferred by [ADR 0007](../../docs/adr/0007-crd-multi-version-and-conversion.md) until the first true breaking CRD change |
 | O-003 | Internalizing the "thin" dependency tier | Roadmap [04](04-dependency-internalization-matrix.md) §3 — feasible but mostly bad trades; decide per crate, with an ADR if one is taken |

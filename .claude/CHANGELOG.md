@@ -9,6 +9,93 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-09-27 01:35] - Close out roadmap 04: remove hyper + tower, http-body-util to dev-deps
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: removed `hyper` (`features = ["full"]`) and `tower` from
+  `[dependencies]` — roadmap 04's two outstanding §1 crates, re-confirmed at
+  zero non-comment references under `src/` (only env-filter strings and one
+  doc comment mention them; `tower-test` is a separate crate and stays).
+  Moved `http-body-util` from `[dependencies]` to `[dev-dependencies]`: its
+  only uses are in `src/reconcilers/helpers_tests.rs`. Direct runtime deps
+  25 → 22 (31 at the matrix's generation). Both crates remain in the graph
+  solely as `kube-client` transitives.
+- `Cargo.lock`: regenerated for the removals.
+- `.github/community/04-dependency-internalization-matrix.md`: header flipped
+  🔶 → ✅ Closed 2026-09-27, recording what closed it and that §§2–3 remain
+  the point-in-time internalization reference (continuing as O-003).
+- `ROADMAPS.md`, `.github/community/README.md`: roadmap 04 status rows → ✅
+  in the same commit, per `rules/documentation.md`.
+- `.github/community/01-decisions.md`: O-001 struck through and closed.
+
+### Why
+Maintainer asked to close out roadmap 04. Its only outstanding work was the
+`hyper`/`tower` removal the 2026-09-23 audit had left pending "verify with a
+build before deleting" — verified here: `cargo check --all-targets`, `cargo
+fmt --check`, clippy clean, full test suite 708 passed / 0 failed.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+---
+
+## [2026-09-27 01:05] - Import banlieue's four missing rules; threat model becomes the last ADD step
+
+**Author:** Erick Bourgeois
+
+### Added
+- `.claude/rules/testing.md`: binding testing rule adapted from the sibling
+  banlieue project — TDD, the post-change verification list, the hard
+  `_tests.rs` file rule stated with this repo's actual
+  `#[cfg(test)] #[path = "foo_tests.rs"] mod tests;` idiom, the
+  all-functions/happy-negative-error coverage bar, a tier table matched to
+  what exists here (unit / `tests/integration_*.rs` / kind e2e), and the
+  three hard-won tier principles (permissive fakes hide bugs; a skipping
+  test must not report success; a wait stale state can satisfy is not a wait).
+- `.claude/rules/threat-modeling.md`: full threat-model pass after every
+  implemented ADR — trigger-question table remapped to this repo's
+  threat-model sections (§2 overview, §4 trust boundaries, §8 residual
+  risks…), stamp format matched to the actual header (Version / Date /
+  Covers), controls cite `deploy/` or `src/`, and the motivating incident is
+  5-Spot's own pre-v1.1 staleness rather than banlieue's.
+- `.claude/rules/rust-style.md`: early-return/guard-clause pattern, magic
+  numbers, repeated-string constants, dependency-addition checklist (wired to
+  roadmap 04), rustdoc requirements, never-do list — examples rewritten from
+  DNS/bindy to `ScheduledMachine`, the named requeue constants, and the fixed
+  kata path.
+- `.claude/rules/github-workflows.md`: `firestoned/github-actions` composite
+  actions never inlined (family list trimmed to the six actually used here),
+  Makefile-driven workflows (with the `Resolve base image reference` step
+  recorded as the sanctioned exception), reusable `workflow_call` shape, and
+  a Dependabot-discipline section (ADR 0010 FROM-line pins, auto-merge flow,
+  lockfile fixes for advisory failures).
+
+### Changed
+- `.claude/rules/architecture-driven-development.md`: the ADD cycle gains its
+  final step — `ADR → CALM → TDD → implement → docs → threat model` — with a
+  new §5 pointing at `rules/threat-modeling.md`, a matching checklist item,
+  and the TDD section's test-declaration example corrected to the `#[path]`
+  idiom the tree actually uses.
+
+### Why
+The maintainer asked to copy over what makes sense from banlieue. Skills and
+commands were already identical between the repos; the gap was these four
+rules, plus banlieue's ADD cycle ending in a threat-model pass — a step
+5-Spot's own history (the pre-v1.1 stale threat model) argues for adopting.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
 ## [2026-09-27] - Docs: strict build enforced, orphan page navved, ADR index obligation recorded
 
 **Author:** Erick Bourgeois

@@ -1,13 +1,13 @@
 {
   "version": 1,
   "meta": {
-    "lastScanned": "2026-09-27T03:48:27.348Z",
-    "fileCount": 299,
+    "lastScanned": "2026-09-27T18:31:34.046Z",
+    "fileCount": 304,
     "hits": 0,
     "misses": 0,
-    "renderedHash": "45cae81810282cdf9c4d218f454f1e36d42f9e5676ee92f23c908ce8e1b40ddb",
-    "storeUpdatedAt": "2026-09-27T03:48:27.355Z",
-    "rootHash": "4caed3ebbf6b4639"
+    "renderedHash": "e476dcfd545c8037d2bb2fd148054ff1bb2e9c5b568a84174fdafbe3b75caff6",
+    "storeUpdatedAt": "2026-09-27T18:31:34.052Z",
+    "rootHash": "8ae768fae4134d99"
   },
   "files": {
     ".github/actions/extract-version/action.yml": {
@@ -72,11 +72,11 @@
     },
     ".github/community/README.md": {
       "description": "Project documentation",
-      "tokens": 745,
-      "hash": "ffb467a7ad0c87e3",
-      "size": 3007,
-      "mtimeMs": 1790480873876.732,
-      "updatedAt": "2026-09-27T03:47:53.927Z",
+      "tokens": 758,
+      "hash": "c4a7cc5c5ed66b37",
+      "size": 3066,
+      "mtimeMs": 1790533869460.7039,
+      "updatedAt": "2026-09-27T18:31:09.500Z",
       "source": "hook"
     },
     ".github/dco.yml": {
@@ -471,13 +471,12 @@
     },
     "Cargo.toml": {
       "description": "Rust package manifest",
-      "tokens": 1239,
-      "hash": "bf45fecb79ecbd16",
-      "size": 4342,
-      "mtimeMs": 1788801604535.3345,
-      "updatedAt": "2026-09-27T02:53:45.781Z",
-      "source": "scan",
-      "importance": 0.1054
+      "tokens": 1194,
+      "hash": "88388b963fc63863",
+      "size": 4487,
+      "mtimeMs": 1790533691069.887,
+      "updatedAt": "2026-09-27T18:28:11.108Z",
+      "source": "hook"
     },
     "CHANGELOG.md": {
       "description": "Change log",
@@ -2331,11 +2330,11 @@
     },
     "ROADMAPS.md": {
       "description": "Roadmaps",
-      "tokens": 920,
-      "hash": "a88464f2157311e6",
-      "size": 3733,
-      "mtimeMs": 1790480874329.1152,
-      "updatedAt": "2026-09-27T03:47:54.367Z",
+      "tokens": 902,
+      "hash": "bee24e27a5b275ed",
+      "size": 3664,
+      "mtimeMs": 1790533869020.586,
+      "updatedAt": "2026-09-27T18:31:09.061Z",
       "source": "hook"
     },
     "SECURITY.md": {
@@ -6404,11 +6403,11 @@
     },
     ".claude/CHANGELOG.md": {
       "description": "Changelog",
-      "tokens": 86344,
-      "hash": "54f6f1b285b3bf9f",
-      "size": 346980,
-      "mtimeMs": 1790480907288.1167,
-      "updatedAt": "2026-09-27T03:48:27.348Z",
+      "tokens": 89492,
+      "hash": "2c81b977773b1032",
+      "size": 359663,
+      "mtimeMs": 1790533893993.0364,
+      "updatedAt": "2026-09-27T18:31:34.046Z",
       "source": "hook"
     },
     ".github/community/03-release-diff-v0-2-2-to-main.md": {
@@ -6422,11 +6421,11 @@
     },
     ".github/community/04-dependency-internalization-matrix.md": {
       "description": "04 — Dependency internalization matrix",
-      "tokens": 2677,
-      "hash": "68a35cc871a8b80e",
-      "size": 10898,
-      "mtimeMs": 1790480731110.8547,
-      "updatedAt": "2026-09-27T03:45:31.150Z",
+      "tokens": 2779,
+      "hash": "482cdf71ede59071",
+      "size": 11315,
+      "mtimeMs": 1790533868567.5525,
+      "updatedAt": "2026-09-27T18:31:08.619Z",
       "source": "hook"
     },
     ".github/community/00-overview.md": {
@@ -6440,11 +6439,11 @@
     },
     ".github/community/01-decisions.md": {
       "description": "01 — Locked design decisions",
-      "tokens": 1995,
-      "hash": "714d0ee1c563e2e4",
-      "size": 8049,
-      "mtimeMs": 1790480808055.884,
-      "updatedAt": "2026-09-27T03:46:48.104Z",
+      "tokens": 2007,
+      "hash": "6ee8b4f203ab3f54",
+      "size": 8095,
+      "mtimeMs": 1790533869901.967,
+      "updatedAt": "2026-09-27T18:31:09.940Z",
       "source": "hook"
     },
     ".github/community/02-conventions.md": {
@@ -6463,6 +6462,51 @@
       "size": 3660,
       "mtimeMs": 1790480874770.4153,
       "updatedAt": "2026-09-27T03:47:54.809Z",
+      "source": "hook"
+    },
+    ".claude/rules/testing.md": {
+      "description": "Testing Standards",
+      "tokens": 1353,
+      "hash": "d4a7392dfb1994a6",
+      "size": 5471,
+      "mtimeMs": 1790533287067.3792,
+      "updatedAt": "2026-09-27T18:21:27.121Z",
+      "source": "hook"
+    },
+    ".claude/rules/threat-modeling.md": {
+      "description": "Threat Modeling",
+      "tokens": 1397,
+      "hash": "1d022d9450b2194c",
+      "size": 5637,
+      "mtimeMs": 1790533078790.5105,
+      "updatedAt": "2026-09-27T18:17:58.837Z",
+      "source": "hook"
+    },
+    ".claude/rules/rust-style.md": {
+      "description": "Rust Style Guide",
+      "tokens": 1468,
+      "hash": "91056e4d618f9d8a",
+      "size": 5913,
+      "mtimeMs": 1790533111466.2615,
+      "updatedAt": "2026-09-27T18:18:31.516Z",
+      "source": "hook"
+    },
+    ".claude/rules/github-workflows.md": {
+      "description": "GitHub Workflows & CI/CD Standards",
+      "tokens": 971,
+      "hash": "256152e23efae55a",
+      "size": 3911,
+      "mtimeMs": 1790533137314.6987,
+      "updatedAt": "2026-09-27T18:18:57.365Z",
+      "source": "hook"
+    },
+    ".claude/rules/architecture-driven-development.md": {
+      "description": "Architecture Driven Development (ADD)",
+      "tokens": 1509,
+      "hash": "7ea53d50d0100ea8",
+      "size": 6100,
+      "mtimeMs": 1790533241886.2585,
+      "updatedAt": "2026-09-27T18:20:41.935Z",
       "source": "hook"
     }
   },

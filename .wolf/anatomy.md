@@ -1,7 +1,7 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-09-27T03:48:27.348Z
-> Files: 299 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-09-27T18:31:34.046Z
+> Files: 304 tracked | Anatomy hits: 0 | Misses: 0
 
 > Project structure index. Auto-maintained by OpenWolf hooks and daemon.
 > Run `openwolf scan` to generate, or wait for the first Claude Code session.
@@ -12,7 +12,7 @@
 - `.gitignore` — Git ignore rules (~73 tok)
 - `.trivyignore` — Trivy ignore list — 5-Spot Machine Scheduler (~4384 tok)
 - `AGENTS.md` — AGENTS.md - AI Coding Agent Instructions (~1886 tok)
-- `Cargo.toml` — Rust package manifest (~1239 tok)
+- `Cargo.toml` — Rust package manifest (~1194 tok)
 - `CHANGELOG.md` — Change log (~3980 tok)
 - `CLAUDE.md` — OpenWolf (~99 tok)
 - `CONTRIBUTING.md` — 5 Spot Machine Scheduler Contribution and Governance Policies (~1641 tok)
@@ -27,20 +27,25 @@
 - `NOTICE` (~65 tok)
 - `osv-scanner.toml` — osv-scanner.toml — OSV-Scanner ignore list. (~518 tok)
 - `README.md` — Project documentation (~4284 tok)
-- `ROADMAPS.md` — Roadmaps (~920 tok)
+- `ROADMAPS.md` — Roadmaps (~902 tok)
 - `SECURITY.md` — Security Policy (~825 tok)
 
 ## .claude/
 
-- `CHANGELOG.md` — Changelog (~86344 tok)
+- `CHANGELOG.md` — Changelog (~89492 tok)
 - `CLAUDE.md` — Project Instructions for Claude Code (~5648 tok)
 - `settings.json` (~88 tok)
 - `settings.local.json` (~2279 tok)
 
 ## .claude/rules/
 
+- `architecture-driven-development.md` — Architecture Driven Development (ADD) (~1509 tok)
 - `documentation.md` — Documentation Rules (~909 tok)
+- `github-workflows.md` — GitHub Workflows & CI/CD Standards (~971 tok)
 - `no-pii.md` — Never Commit Home Directories or PII (~1588 tok)
+- `rust-style.md` — Rust Style Guide (~1468 tok)
+- `testing.md` — Testing Standards (~1353 tok)
+- `threat-modeling.md` — Threat Modeling (~1397 tok)
 
 ## .github/
 
@@ -72,12 +77,12 @@
 
 - `00-overview.md` — 00 — Roadmap overview (~1887 tok)
 - `00-release-diff-v0-2-2-to-main.md` — 00 — Release diff: `v0.2.2` → `main` (~4629 tok)
-- `01-decisions.md` — 01 — Locked design decisions (~1995 tok)
+- `01-decisions.md` — 01 — Locked design decisions (~2007 tok)
 - `01-dependency-internalization-matrix.md` — 01 — Dependency internalization matrix (~2677 tok)
 - `02-conventions.md` — 02 — Coding conventions (~1386 tok)
 - `03-release-diff-v0-2-2-to-main.md` — 03 — Release diff: `v0.2.2` → `main` (~4629 tok)
-- `04-dependency-internalization-matrix.md` — 04 — Dependency internalization matrix (~2677 tok)
-- `README.md` — Project documentation (~745 tok)
+- `04-dependency-internalization-matrix.md` — 04 — Dependency internalization matrix (~2779 tok)
+- `README.md` — Project documentation (~758 tok)
 
 ## .github/scripts/
 

@@ -33,3 +33,23 @@ description: chronological action log per session, consolidated weekly
 | 00:13 | Edited .claude/CHANGELOG.md | modified 0285() | ~256 |
 | 00:15 | Diagnosed PR #164 CI failure (RUSTSEC-2026-0285, rustls 0.23.44 via hyper-rustls); cargo update -p rustls → 0.23.45; cargo deny advisories ok; changelog + buglog entries | Cargo.lock, .claude/CHANGELOG.md, .wolf/buglog.json | fix ready to commit on chore/bundle-dependabot-2026-09-26 | ~3000 |
 >>>>>>> 3b3348d (chore(deps): bundle six open Dependabot updates)
+| 14:17 | Created .claude/rules/testing.md | — | ~1440 |
+| 14:17 | Created .claude/rules/threat-modeling.md | — | ~1490 |
+| 14:18 | Created .claude/rules/rust-style.md | — | ~1566 |
+| 14:18 | Created .claude/rules/github-workflows.md | — | ~1035 |
+| 14:20 | Edited .claude/rules/architecture-driven-development.md | 3→3 lines | ~19 |
+| 14:20 | Edited .claude/rules/architecture-driven-development.md | expanded (+9 lines) | ~190 |
+| 14:20 | Edited .claude/rules/architecture-driven-development.md | 2→4 lines | ~70 |
+| 14:20 | Edited .claude/rules/architecture-driven-development.md | 3→4 lines | ~79 |
+| 14:21 | Edited .claude/CHANGELOG.md | expanded (+52 lines) | ~730 |
+| 14:21 | Edited .claude/rules/testing.md | 2→2 lines | ~35 |
+| 14:21 | Edited .claude/CHANGELOG.md | 2→2 lines | ~39 |
+| 01:10 | Imported banlieue's four missing rules adapted to 5-spot (testing w/ #[path] idiom + tier principles, threat-modeling w/ §-remap + v1.1 motivation, rust-style w/ ScheduledMachine examples, github-workflows w/ 6 in-use firestoned actions); ADD cycle extended to end in threat-model pass; changelog entry | .claude/rules/{testing,threat-modeling,rust-style,github-workflows}.md, .claude/rules/architecture-driven-development.md, .claude/CHANGELOG.md | skills/commands were already identical across repos; sweep clean | ~12000 |
+| 14:28 | Edited Cargo.toml | 7→4 lines | ~66 |
+| 14:28 | Edited Cargo.toml | 6→10 lines | ~89 |
+| 14:31 | Edited .github/community/04-dependency-internalization-matrix.md | expanded (+7 lines) | ~263 |
+| 14:31 | Edited ROADMAPS.md | "regex" → "hyper" | ~114 |
+| 14:31 | Edited .github/community/README.md | inline fix | ~83 |
+| 14:31 | Edited .github/community/01-decisions.md | inline fix | ~64 |
+| 14:31 | Edited .claude/CHANGELOG.md | expanded (+35 lines) | ~454 |
+| 01:35 | Closed roadmap 04: removed hyper+tower from Cargo.toml, moved http-body-util to dev-deps (runtime deps 25→22); verified check/fmt/clippy/test (708 passed); flipped 04 header + ROADMAPS.md + community README rows to ✅; struck O-001 in 01-decisions | Cargo.toml, Cargo.lock, .github/community/{04-dependency-internalization-matrix,01-decisions,README}.md, ROADMAPS.md, .claude/CHANGELOG.md | hyper/tower now kube-client transitives only | ~6000 |

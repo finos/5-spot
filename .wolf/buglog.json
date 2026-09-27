@@ -1,8 +1,5 @@
 {
   "version": 1,
-<<<<<<< HEAD
-  "bugs": []
-=======
   "bugs": [
     {
       "date": "2026-09-27",
@@ -12,5 +9,4 @@
       "tags": ["ci", "cargo-deny", "cargo-audit", "rustsec", "dependencies", "rustls", "pr-164"]
     }
   ]
->>>>>>> 3b3348d (chore(deps): bundle six open Dependabot updates)
 }

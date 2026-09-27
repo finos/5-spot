@@ -16,7 +16,7 @@ holds the detail each row links to.
 | [01](01-decisions.md) | Locked design decisions | 📄 | Quick-reference digest of the locked decisions, each citing its ADR — `docs/adr/` stays canonical. Ends with the open-decisions table |
 | [02](02-conventions.md) | Coding conventions | 📄 | How code in this tree is written: style, errors, logging, the reconciliation pattern, CRD authoring, testing, docs discipline, commit rules |
 | [03](03-release-diff-v0-2-2-to-main.md) | Release diff `v0.2.2` → `main` | 📄 | What shipped across the kata-config-agent and spot-schedule-provider arcs, with the ADRs behind each. A point-in-time record, generated 2026-07-22 |
-| [04](04-dependency-internalization-matrix.md) | Dependency internalization matrix | 🔶 | Every direct dependency, the API surface actually used, and whether it could be maintained internally. Four of six unused crates removed; `hyper` and `tower` remain |
+| [04](04-dependency-internalization-matrix.md) | Dependency internalization matrix | ✅ | Every direct dependency, the API surface actually used, and whether it could be maintained internally. Closed 2026-09-27: all six unused crates removed, runtime deps 31 → 22; §§2–3 stay as the internalization reference |
 
 ## Conventions
 
