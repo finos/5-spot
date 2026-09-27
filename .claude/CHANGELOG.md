@@ -9,6 +9,60 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-09-27] - ADR-0011: schedule-gated capacity in its own controller
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0011-schedule-gated-capacity-separate-controller.md` (Proposed): a
+  `ScheduledCapacity` CRD reconciled by its own binary, ServiceAccount and
+  Deployment, which **writes one capacity field on an object it does not own**
+  when the schedule flips, and never creates or deletes it.
+  - Records the four options with their costs. The chosen one (new CRD +
+    controller + identity) is not the cheapest: having the consumer read the
+    schedule itself needs nothing here at all, and the ADR says so explicitly
+    so the trade is revisitable rather than defended.
+  - Two findings made the separate controller affordable: `resolve_spot_schedule`
+    in `src/reconcilers/spot_schedule.rs` is already consumer-agnostic
+    (`DynamicObject` + discovery, `ScheduledMachine` only in doc comments), so
+    the `Unresolved`-is-not-`Inactive` rule and the `Ready` gate cannot drift
+    between two controllers; and four runtime binaries with their own
+    identities already exist, two of them *producers* of this same contract.
+  - The load-bearing design point: actuation is a **scale, not a create and
+    delete**, even though `EmbeddedResource` + `validate_api_group()` + the
+    pre-flight `SelfSubjectAccessReview` already do create-and-delete. A CAPI
+    `Machine` is safe to delete because 5-Spot owns the drain; a pool with live
+    claims is not, and its drain semantics belong to the consumer.
+  - States the invariant that a host is governed by `ScheduledMachine`
+    **or** `ScheduledCapacity`, never both — they are opposite answers to what
+    happens to the metal, and the overlap half-works, which is worse than
+    failing.
+  - Records why the existing controller's `ClusterRole` is deliberately *not*
+    extended: it would give the identity that can delete CAPI `Machine`s
+    cluster-wide a write on a foreign API group, on top of the
+    `bootstrap`/`infrastructure` wildcards already carried as a HIGH residual.
+- `docs/adr/README.md`: index row for 0011.
+
+### Why
+The integration between 5-Spot's calendar and an external microVM consumer had
+no artifact — it existed only in conversation, which is the worst place for the
+one piece of the design carrying an unvalidated assumption. The immediate
+question ("shouldn't the controller create the pool or the sandbox?") turned out
+to have a sharper answer than either yes or no: 5-Spot should drive it, but by
+scaling rather than creating, and from a separate identity.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+**Next steps, in ADD order:** CALM must be updated before implementation — a new
+controller node, a new CRD, a flow to a foreign object, and a new trust boundary
+for "5-Spot writes an API group it does not own". The `handbackTimeout` policy
+(hold and miss the handover, or force and break in-flight work) is an open
+business decision the ADR names rather than assumes.
+
 ## [2026-09-27 23:20] - Bootstrapping roadmaps 00-02 (overview / decisions / conventions); renumber 00→03, 01→04
 
 **Author:** Erick Bourgeois
