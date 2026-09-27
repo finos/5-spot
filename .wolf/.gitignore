@@ -1,0 +1,15 @@
+# OpenWolf: machine-local state (committed state: cerebrum.md, STATUS.md,
+# memory.md, buglog.json, anatomy.md, anatomy-index.json, config.json, OPENWOLF.md)
+hooks/
+backups/
+cache/
+daemon.log
+daemon.pid
+dashboard-token
+token-ledger.json
+suggestions.json
+cron-state.json
+_scan-state.json
+_*.json
+*.lock
+*.tmp

@@ -264,3 +264,9 @@ Before completing any task:
 3. `cargo test --all` - All tests pass
 4. If CRD changed: `make crds && make crddoc`
 5. Update `.claude/CHANGELOG.md` with author attribution
+
+<!-- openwolf:begin -->
+# OpenWolf
+
+This project uses OpenWolf for context management. Read and follow .wolf/OPENWOLF.md at session start. Check .wolf/cerebrum.md before generating code. Grep .wolf/anatomy.md for a file's path before reading it (never read the whole index).
+<!-- openwolf:end -->

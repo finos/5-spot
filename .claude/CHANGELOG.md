@@ -9,6 +9,55 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-09-27 23:20] - Bootstrapping roadmaps 00-02 (overview / decisions / conventions); renumber 00→03, 01→04
+
+**Author:** Erick Bourgeois
+
+### Added
+- `.github/community/00-overview.md`: read-this-first roadmap overview,
+  modeled on the banlieue repo's bootstrapping trio — what 5-Spot is, the
+  `v0.3.0` baseline (provider-reference activation, Kata delivery arc,
+  supply-chain gates, ADRs 0001–0010), reading order, how to use the docs
+  with Claude Code, eight non-negotiables, actual repository layout,
+  pre-flight checks, and the ADR 0007 versioning policy.
+- `.github/community/01-decisions.md`: locked-decisions digest D-001–D-014
+  plus an open-decisions table (O-001 `hyper`/`tower` removal, O-002
+  conversion-webhook shape, O-003 thin-dep internalization). Unlike its
+  banlieue counterpart it postdates the ADR sequence, so it is explicitly a
+  digest: every entry cites its ADR or binding rule, and the ADR wins on any
+  disagreement.
+- `.github/community/02-conventions.md`: coding-conventions digest — style
+  (early returns, no magic numbers, global constants), errors, logging, the
+  event-driven reconciliation pattern, CRD authoring order
+  (`regen-crds` → examples → `crddoc` last, Mermaid label escaping), the
+  `_tests.rs` testing rules with the `#[path]` declaration idiom, docs
+  discipline, `git commit -s -S`, and the two publish-safety sweeps.
+
+### Changed
+- **Roadmap renumbering** (old → new): `00-release-diff-v0-2-2-to-main.md` →
+  `03-release-diff-v0-2-2-to-main.md`; `01-dependency-internalization-matrix.md`
+  → `04-dependency-internalization-matrix.md`. H1s inside both docs updated
+  to match. Earlier changelog entries below keep the old numbers — they are a
+  historical record; this entry is the mapping.
+- `ROADMAPS.md`, `.github/community/README.md`: index / reading-order tables
+  rebuilt for the 00–04 run (new rows 00–02 as 📄 reference docs; 04 keeps 🔶).
+- `.claude/rules/documentation.md`: the two filename examples in the naming
+  rule updated to the docs' new numbers.
+
+### Why
+The maintainer asked that the initial roadmaps mirror banlieue's
+"bootstrapping" set (`00-overview` / `01-decisions` / `02-conventions`), so a
+new contributor or coding session starts from an overview, the locked
+decisions, and the conventions before reaching the work docs.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
 ## [2026-09-26 22:55] - Add rules/no-pii.md; move machine-local hook paths out of tracked settings
 
 **Author:** Erick Bourgeois

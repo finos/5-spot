@@ -2,7 +2,7 @@
 Copyright (c) 2026 Erick Bourgeois, 5-Spot
 SPDX-License-Identifier: Apache-2.0
 -->
-# 00 — Release diff: `v0.2.2` → `main`
+# 03 — Release diff: `v0.2.2` → `main`
 
 > 📄 Reference doc — a point-in-time record of what shipped in this range, not a
 > phase with a completion state. Generated 2026-07-22; not re-audited against the

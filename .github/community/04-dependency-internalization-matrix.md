@@ -2,7 +2,7 @@
 Copyright (c) 2026 Erick Bourgeois, 5-Spot
 SPDX-License-Identifier: Apache-2.0
 -->
-# 01 — Dependency internalization matrix
+# 04 — Dependency internalization matrix
 
 > 🔶 In progress. Audited against the tree on **2026-09-23**: of the six
 > "remove these first" crates in §1, **four are gone** (`regex`, `lazy_static`,

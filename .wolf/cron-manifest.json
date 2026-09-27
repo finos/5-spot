@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "anatomy-rescan",
+      "name": "Full anatomy rescan",
+      "schedule": "0 */6 * * *",
+      "description": "Re-scans project filesystem and reconciles anatomy.md",
+      "action": {
+        "type": "scan_project"
+      },
+      "retry": {
+        "max_attempts": 3,
+        "backoff": "exponential",
+        "base_delay_seconds": 30
+      },
+      "failsafe": {
+        "on_failure": "log_and_continue",
+        "alert_after_consecutive_failures": 2,
+        "dead_letter": true
+      },
+      "enabled": true
+    },
+    {
+      "id": "memory-consolidation",
+      "name": "Consolidate old memory",
+      "schedule": "0 2 * * *",
+      "description": "Compress memory.md entries older than 7 days",
+      "action": {
+        "type": "consolidate_memory",
+        "params": {
+          "older_than_days": 7
+        }
+      },
+      "retry": {
+        "max_attempts": 2,
+        "backoff": "exponential",
+        "base_delay_seconds": 60
+      },
+      "failsafe": {
+        "on_failure": "skip_and_retry_next_cycle",
+        "dead_letter": false
+      },
+      "enabled": true
+    },
+    {
+      "id": "token-audit",
+      "name": "Token audit report",
+      "schedule": "0 0 * * 1",
+      "description": "Weekly waste pattern detection",
+      "action": {
+        "type": "generate_token_report"
+      },
+      "retry": {
+        "max_attempts": 2,
+        "backoff": "linear",
+        "base_delay_seconds": 60
+      },
+      "failsafe": {
+        "on_failure": "log_and_continue",
+        "dead_letter": true
+      },
+      "enabled": true
+    }
+  ]
+}

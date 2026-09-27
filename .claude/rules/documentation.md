@@ -5,11 +5,11 @@
 Roadmap docs live in `.github/community/`, indexed by `ROADMAPS.md` at the repo
 root. Their filenames obey three rules, with no exceptions:
 
-1. **Lowercase, hyphens only.** `01-dependency-internalization-matrix.md` —
-   never `01-DEPENDENCY-MATRIX.md`, never `01_dependency_matrix.md`. Same rule
+1. **Lowercase, hyphens only.** `04-dependency-internalization-matrix.md` —
+   never `04-DEPENDENCY-MATRIX.md`, never `04_dependency_matrix.md`. Same rule
    as `docs/adr/NNNN-title.md`. `README.md` in that directory is the sole
    uppercase name. A version in a filename loses its dots:
-   `00-release-diff-v0-2-2-to-main.md`, not `v0.2.2`.
+   `03-release-diff-v0-2-2-to-main.md`, not `v0.2.2`.
 2. **Zero-padded two-digit prefix, contiguous from `00`.** No gaps, no decade
    grouping — `00` through `NN` in one run. A number is a position in the
    reading order, not a category.
