@@ -501,5 +501,7 @@ The following conditions are assumed to be true for this threat model to hold:
 
 - [Architecture](../concepts/architecture.md)
 - [Machine Lifecycle](../concepts/machine-lifecycle.md)
-- [RBAC Configuration](../../deploy/deployment/rbac/clusterrole.yaml)
+- [RBAC Configuration](https://github.com/finos/5-spot/blob/main/deploy/deployment/rbac/clusterrole.yaml)
+  — a repository file, not a site page
 - [API Reference](../reference/api.md)
+- [Developer Guide](../development/index.md) — the ADD cycle and the decision log

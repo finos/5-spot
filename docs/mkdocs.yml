@@ -211,6 +211,7 @@ nav:
       - Architecture Flows: architecture/flows.md
       - ScheduledMachine: concepts/scheduled-machine.md
       - Machine Lifecycle: concepts/machine-lifecycle.md
+      - Child-Cluster Kubeconfig: concepts/child-cluster-kubeconfig.md
       - Schedule Configuration: concepts/schedules.md
       - Spot Schedules (Providers): concepts/spot-schedule.md
       - Emergency Reclaim (Kill Switch): concepts/emergency-reclaim.md
@@ -242,6 +243,7 @@ nav:
       - CRD Attack Surface: security/crd-attack-surface.md
 
   - Developer Guide:
+      - Overview: development/index.md
       - Development Setup: development/setup.md
       - Building: development/building.md
       - Testing: development/testing.md

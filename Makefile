@@ -287,7 +287,11 @@ docs: calm-diagrams ## Build all documentation (MkDocs + rustdoc + CRD API refer
 	@echo "Building rustdoc API documentation..."
 	@cargo doc --no-deps --all-features
 	@echo "Building MkDocs documentation..."
-	@cd docs && poetry run mkdocs build
+	@# --strict turns MkDocs warnings into failures: a link that escapes
+	@# docs_dir, a nav entry pointing at a missing file, or a broken internal
+	@# reference. Without it those ship silently -- the threat model carried a
+	@# link out of docs/src from 2026-04-08 to 2026-09-27 because nothing failed.
+	@cd docs && poetry run mkdocs build --strict
 	@echo "Copying rustdoc into documentation..."
 	@mkdir -p docs/site/rustdoc
 	@cp -r target/doc/* docs/site/rustdoc/

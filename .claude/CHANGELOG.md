@@ -9,6 +9,148 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-09-27] - Docs: strict build enforced, orphan page navved, ADR index obligation recorded
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Makefile`: `make docs` now runs `mkdocs build --strict`, so a MkDocs warning
+  fails the build instead of scrolling past. Comment records why: the threat
+  model carried a link out of `docs_dir` from 2026-04-08 to 2026-09-27 and
+  nothing ever failed, because the non-strict build only warns. `make docs` is
+  what `.github/workflows/docs.yaml` runs, so this is now a CI gate.
+- `docs/mkdocs.yml`: `concepts/child-cluster-kubeconfig.md` added to the
+  Concepts nav, after Machine Lifecycle. The page has existed and been
+  unreachable from the site — it explains that the `ScheduledMachine`, CAPI
+  `Machine`, bootstrap and infrastructure objects live on the management
+  cluster while the node lives in the child cluster, which is exactly the thing
+  a reader needs before reasoning about the lifecycle page above it.
+- `.claude/rules/architecture-driven-development.md`: the checklist's ADR line
+  now requires the index row in **both** `docs/adr/README.md` (canonical) and
+  the table in `docs/src/development/index.md`. The published table is a
+  convenience copy; without this the two drift on the next ADR.
+
+### Why
+Follow-up to the Developer Guide overview. Three loose ends from that change:
+the strict build was verified by hand but not enforced anywhere, one page was
+still unreachable from the site, and the new ADR table created a second place
+to update with nothing recording the obligation.
+
+### Verification
+`cd docs && poetry run mkdocs build --strict` — the exact command CI runs —
+completes clean in 1.7s, no warnings. A nav-versus-files audit reports **no
+orphans and no missing targets**, and no `docs/src/` link escapes `docs_dir`
+any more.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+## [2026-09-27] - Developer Guide overview: the ADD cycle and the decision log
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/src/development/index.md`: new Developer Guide landing page, navved as
+  **Overview**. Opens with the `ADR → CALM → TDD → implement → docs` cycle as a
+  Mermaid flow, then a table giving each step its artifact, its location and its
+  **gate** (`make calm-validate` / `make calm-diagrams`, the failing-test-first
+  rule, fmt+clippy+tests, docs and roadmap status). Records when ADD applies in
+  full, when it is ADR-only with no CALM impact, and when neither is needed —
+  plus the "when unsure, write the ADR" rule.
+- Same page: the **decision log** as an 11-row index of ADR-0001 … ADR-0011 with
+  status, prefaced by the thing a first-time reader most needs to know — ADRs
+  are never rewritten, only superseded, so the Status line must be checked
+  before relying on one. Ends with a reading order (0001 for methodology, 0006
+  and 0009 for activation, 0007 before touching a CRD, 0004 before deploying
+  under a pod-security baseline).
+- `docs/mkdocs.yml`: `Overview: development/index.md` as the first Developer
+  Guide entry, matching the existing `Security → Overview` convention.
+
+### Changed
+- `docs/src/security/threat-model.md`: §10 "Related Documents" linked
+  `../../deploy/deployment/rbac/clusterrole.yaml`, which escapes `docs_dir: src`
+  and **failed `mkdocs build --strict`**. Now a GitHub URL, the convention the
+  rest of `docs/src/` already uses for repository files. Pre-existing since
+  d28fb60 (2026-04-08); the strict build has been failing on it since. Also
+  added a link to the new Developer Guide overview.
+
+### Why
+ADRs are deliberately **not** rendered into the site — `docs_dir: src` leaves
+`docs/adr/` outside it, they are contributor-facing rather than operator-facing,
+and a nav section would be the largest in the site while surfacing superseded
+decisions as if current. What was missing was a signpost: nothing on the site
+told a reader the decision log existed, how the ADD cycle produced it, or which
+ADRs matter before deploying. One page fixes that without a rename, a plugin, or
+a second index to keep in sync.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+**Verified:** `mkdocs build --strict` now completes clean (it aborted before
+this change). **Maintenance note:** the ADR table on the new page is a
+convenience copy — `docs/adr/README.md` stays canonical, and a new ADR needs a
+row in both.
+
+## [2026-09-27] - ADR-0011: schedule-gated capacity in its own controller
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0011-schedule-gated-capacity-separate-controller.md` (Proposed): a
+  `ScheduledCapacity` CRD reconciled by its own binary, ServiceAccount and
+  Deployment, which **writes one capacity field on an object it does not own**
+  when the schedule flips, and never creates or deletes it.
+  - Records the four options with their costs. The chosen one (new CRD +
+    controller + identity) is not the cheapest: having the consumer read the
+    schedule itself needs nothing here at all, and the ADR says so explicitly
+    so the trade is revisitable rather than defended.
+  - Two findings made the separate controller affordable: `resolve_spot_schedule`
+    in `src/reconcilers/spot_schedule.rs` is already consumer-agnostic
+    (`DynamicObject` + discovery, `ScheduledMachine` only in doc comments), so
+    the `Unresolved`-is-not-`Inactive` rule and the `Ready` gate cannot drift
+    between two controllers; and four runtime binaries with their own
+    identities already exist, two of them *producers* of this same contract.
+  - The load-bearing design point: actuation is a **scale, not a create and
+    delete**, even though `EmbeddedResource` + `validate_api_group()` + the
+    pre-flight `SelfSubjectAccessReview` already do create-and-delete. A CAPI
+    `Machine` is safe to delete because 5-Spot owns the drain; a pool with live
+    claims is not, and its drain semantics belong to the consumer.
+  - States the invariant that a host is governed by `ScheduledMachine`
+    **or** `ScheduledCapacity`, never both — they are opposite answers to what
+    happens to the metal, and the overlap half-works, which is worse than
+    failing.
+  - Records why the existing controller's `ClusterRole` is deliberately *not*
+    extended: it would give the identity that can delete CAPI `Machine`s
+    cluster-wide a write on a foreign API group, on top of the
+    `bootstrap`/`infrastructure` wildcards already carried as a HIGH residual.
+- `docs/adr/README.md`: index row for 0011.
+
+### Why
+The integration between 5-Spot's calendar and an external microVM consumer had
+no artifact — it existed only in conversation, which is the worst place for the
+one piece of the design carrying an unvalidated assumption. The immediate
+question ("shouldn't the controller create the pool or the sandbox?") turned out
+to have a sharper answer than either yes or no: 5-Spot should drive it, but by
+scaling rather than creating, and from a separate identity.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+**Next steps, in ADD order:** CALM must be updated before implementation — a new
+controller node, a new CRD, a flow to a foreign object, and a new trust boundary
+for "5-Spot writes an API group it does not own". The `handbackTimeout` policy
+(hold and miss the handover, or force and break in-flight work) is an open
+business decision the ADR names rather than assumes.
+
 ## [2026-09-27 23:20] - Bootstrapping roadmaps 00-02 (overview / decisions / conventions); renumber 00→03, 01→04
 
 **Author:** Erick Bourgeois

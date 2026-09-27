@@ -105,7 +105,9 @@ and renumbering rule: `rules/documentation.md` → *Roadmap Document Naming*.
 
 ## Checklist (paste into the work)
 
-- [ ] ADR written/updated in `docs/adr/NNNN-*.md` (Status/Context/Decision/Consequences); index in `docs/adr/README.md` updated
+- [ ] ADR written/updated in `docs/adr/NNNN-*.md` (Status/Context/Decision/Consequences);
+      indexed in **both** `docs/adr/README.md` (canonical) and the table in
+      `docs/src/development/index.md` (the published Developer Guide overview)
 - [ ] CALM model updated; `make calm-validate` passes; `make calm-diagrams` renders — **or** ADR states "no CALM impact (process-only)"
 - [ ] Tests written **first**, then implementation (TDD); CRD changes regenerated via `regen-crds` → `regen-api-docs`
 - [ ] `cargo-quality` passes (fmt + clippy + test)
