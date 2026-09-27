@@ -1,0 +1,118 @@
+# ValidatingAdmissionPolicy — write authority for the kata-config-ref Node
+# annotation (ADR 0013).
+#
+# APPLIED TO: the WORKLOAD cluster (where the Nodes and the agent DaemonSets
+# are), NOT the management cluster. Applied to the wrong cluster this is a
+# silent no-op — the same failure mode as the agent pod-security policy.
+#
+# Purpose
+# -------
+# `5spot.finos.org/kata-config-ref` is not data. It is an INSTRUCTION: the
+# controller writes it, and the privileged kata-config agent acts on it by
+# writing /etc/k0s/containerd.d/kata.toml on the host and restarting a host
+# systemd unit through nsenter.
+#
+# Both node agents hold `nodes: patch` CLUSTER-WIDE, because RBAC has no way to
+# say "the Node this pod runs on". Without this policy, a compromised agent on
+# one node can write a well-formed kata-config-ref onto ANOTHER node and have
+# that node's agent fetch an attacker-named object, write it to the host, and
+# restart a unit — lateral movement from node to node, through the control
+# plane, using a grant that reads as harmless in review.
+#
+# ADR 0012 made the agent distrust the annotation's SHAPE (every field is
+# re-validated, a malformed value is refused). This addresses its AUTHORITY.
+#
+# Scope, stated honestly
+# ----------------------
+# This denies the AGENTS. Anything else holding cluster-wide `nodes: patch` — a
+# human admin, a CI identity, other tooling — can still write the key. That is
+# the operator's concern and the threat model says so; §7's recommendation to
+# audit changes to this annotation still stands.
+#
+# Why deny the agents rather than allowlist the controller: the controller
+# authenticates to the workload cluster with the kubeconfig-<clusterName>
+# Secret (ADR 0002), so its username HERE is whatever that kubeconfig carries —
+# commonly a cluster-admin user, and always deployment-specific. An allowlist
+# would need a parameter ConfigMap per install and would fail closed on a
+# legitimate write if it were wrong. The agents' identities are ours: stable
+# ServiceAccount names from our own manifests.
+#
+# Why only a CHANGE is rejected: the agents patch
+# `5spot.finos.org/kata-config-applied` on the same object as part of their
+# normal work — that is the applied-hash restart guard. A policy that rejected
+# any Node update from an agent would break the guard, and with it the
+# restart-loop protection. So the expression compares object against oldObject
+# and fires only when this one key actually moves.
+#
+# Rollout: switch the binding's validationActions to [Audit] to observe matches
+# in the audit log before enforcing, then back to [Deny].
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: 5spot-kata-config-annotation
+  labels:
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: admission
+    app.kubernetes.io/part-of: child-cluster
+    app.kubernetes.io/managed-by: 5spot-controller
+spec:
+  # An unavailable policy must not open the boundary it exists to close.
+  failurePolicy: Fail
+
+  matchConstraints:
+    resourceRules:
+      # UPDATE only: a CREATE has no oldObject to compare against, and a Node
+      # is created by the kubelet, which does not write this key.
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["nodes"]
+        operations: ["UPDATE"]
+
+  variables:
+    # Identity of the REQUESTER. ADR 0004's policy validates Pods and can read
+    # object.spec.serviceAccountName; a Node carries no such field, so the only
+    # identity available at admission time is who is asking.
+    - name: requester
+      expression: "request.userInfo.username"
+    - name: isNodeAgent
+      expression: >-
+        variables.requester in [
+          'system:serviceaccount:5spot-system:5spot-kata-config-agent',
+          'system:serviceaccount:5spot-system:5spot-reclaim-agent'
+        ]
+    # The annotation as it is now, and as it is being asked to become. Absent
+    # is modelled as the empty string so an add and a delete both register as a
+    # change.
+    - name: oldRef
+      expression: >-
+        has(oldObject.metadata.annotations)
+          && '5spot.finos.org/kata-config-ref' in oldObject.metadata.annotations
+          ? oldObject.metadata.annotations['5spot.finos.org/kata-config-ref'] : ''
+    - name: newRef
+      expression: >-
+        has(object.metadata.annotations)
+          && '5spot.finos.org/kata-config-ref' in object.metadata.annotations
+          ? object.metadata.annotations['5spot.finos.org/kata-config-ref'] : ''
+
+  validations:
+    - expression: "!(variables.isNodeAgent && variables.oldRef != variables.newRef)"
+      reason: Forbidden
+      messageExpression: >-
+        'the 5spot.finos.org/kata-config-ref annotation is written by the 5-Spot controller only: ' +
+        variables.requester + ' may not change it. It instructs a privileged agent to write the host ' +
+        'filesystem and restart a host unit, so an agent that could retarget another node could move ' +
+        'laterally. See ADR 0013. Patching 5spot.finos.org/kata-config-applied is unaffected.'
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: 5spot-kata-config-annotation-binding
+  labels:
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: admission
+    app.kubernetes.io/part-of: child-cluster
+    app.kubernetes.io/managed-by: 5spot-controller
+spec:
+  policyName: 5spot-kata-config-annotation
+  # Deny rejects with HTTP 422. Use [Audit] first if you want to observe.
+  validationActions: [Deny]

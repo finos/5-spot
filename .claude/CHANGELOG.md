@@ -9,6 +9,151 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-09-27] - 5S-02 and 5S-03: the kata-config-ref annotation gets an admission gate; the threat-model pass becomes mandatory
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0013-kata-config-ref-annotation-admission-policy.md` (Proposed) and
+  `deploy/admission/kata-config-annotation-policy.yaml` — a workload-cluster
+  `ValidatingAdmissionPolicy` (plus binding, one file) rejecting any Node
+  `UPDATE` that changes `5spot.finos.org/kata-config-ref` when the requester is
+  a node-agent ServiceAccount. `failurePolicy: Fail`, `validationActions:
+  [Deny]`, with `[Audit]` documented for rollout.
+  - **Denies the agents rather than allowlisting the controller**, because the
+    controller's identity *in the workload cluster* comes from the
+    `kubeconfig-<clusterName>` Secret and is deployment-specific — commonly a
+    cluster-admin user. An allowlist would need a parameter ConfigMap per
+    install and would fail closed on a legitimate write if it were wrong. The
+    agents' ServiceAccount names are ours and stable.
+  - **Only a change to that one key is rejected**, by comparing `object`
+    against `oldObject`. The agents patch `kata-config-applied` on the same
+    object as part of the restart-loop guard; a policy that rejected any Node
+    update from an agent would break it.
+  - Identity comes from `request.userInfo.username`, not
+    `object.spec.serviceAccountName` — ADR 0004's policy validates Pods, this
+    one validates Nodes, which carry no such field.
+- `src/kata_config_agent_tests.rs`: a structural test over the shipped manifest
+  (written first, failed first). It parses both documents with `serde_yaml` and
+  asserts `failurePolicy: Fail`, `nodes`/`UPDATE` matching, that the binding
+  names the policy and denies, that the file references
+  `constants::KATA_CONFIG_REF_ANNOTATION` **verbatim**, both agent usernames,
+  `request.userInfo.username`, and `oldObject`. The drift guard is the point: a
+  rename in `constants.rs` would otherwise leave the policy matching a key that
+  no longer exists — a silently open boundary, the same class as ADR 0041's
+  comment that claimed a namespace scope the YAML did not grant.
+
+### Changed
+- `docs/architecture/calm/architecture.json`: new `annotation-write-authority`
+  control on `rel-controller-kata-config-projection` (NIST AC-3 / AC-6 /
+  SI-10). No node, relationship or flow changed. `make calm-validate` clean.
+- `docs/src/security/threat-model.md`: **K5 moves from residual to mitigated
+  for the agent case** — ADR 0012 closed the annotation's *shape*, ADR 0013 its
+  *authority*. §8's MEDIUM entry rewritten: the node-to-node lateral path it
+  was written about is closed, and what remains is the generic grant (a human
+  admin, a CI identity). Stamp → **Covers ADR-0001 … ADR-0013**.
+- `docs/src/security/admission-validation.md`: "ships four policies" → five,
+  with the new policy described and added to the child-cluster apply snippet.
+- **5S-03**, finishing what was already partly in place: `.claude/CLAUDE.md`
+  still advertised the five-step cycle (`ADR → CALM → TDD → implement → docs`)
+  in two places while `rules/architecture-driven-development.md` had already
+  moved to six with a threat-model step. Both strings and the numbered list now
+  match the rule, and step 4 gained the roadmap-artefact obligation.
+  `docs/src/development/index.md` had the same five-step drift in its Mermaid
+  diagram and step table — both now show step 6 and its gate.
+
+### Why
+5S-02 and 5S-03 from the private remediation queue, which is now empty. 5S-02
+was the only thing keeping threat-model K5 open after 5S-01. 5S-03 matters
+because the drift it prevents is the drift that made the v1.1 pass necessary in
+the first place — and the stale copy of the cycle was in `CLAUDE.md`, the file
+read first every session.
+
+### Verification
+`cargo fmt` clean, `cargo clippy --all-targets --all-features` clean,
+**705 tests pass**, `make calm-validate` 0 errors / 0 warnings,
+`mkdocs build --strict` clean.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+**Rollout:** the new policy must be applied to the **workload** cluster, not the
+management cluster — applied to the wrong one it is a silent no-op. Consider
+`validationActions: [Audit]` first if other tooling in your estate patches Node
+annotations as one of the agent identities.
+
+## [2026-09-27] - 5S-01: the kata-config agent validates its own input; the restart argv terminates options
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0012-kata-agent-validates-its-own-input.md` (Proposed): ADR-0005
+  closed the *file* half of this threat by removing `destPath`; this closes the
+  *command* half. Indexed in `docs/adr/README.md` and the Developer Guide table.
+- `src/kata_config_agent.rs`: `KataRefError` (`thiserror`), and four
+  dependency-free validators — `is_dns_label`, `is_dns_subdomain`,
+  `is_data_key`, `is_systemd_unit`. Hand-rolled rather than regex-based because
+  `regex` was removed as unused (roadmap 04) and this must not reintroduce it.
+- 9 tests in `src/kata_config_agent_tests.rs` and 1 in `src/crd_tests.rs`,
+  written first — all 9 failed for the right reasons before the fix.
+
+### Changed
+- `src/kata_config_agent.rs` — **the load-bearing fix.** `nsenter_restart_argv`
+  now emits `systemctl restart -- <unit>`. The pre-existing `--` belonged to
+  `nsenter` and ended *its* options, never systemctl's, so a unit name starting
+  with `-` was parsed as an option: `-H` connects to a remote host over SSH,
+  `-M` targets a container, `--root=` retargets the filesystem.
+- `src/kata_config_agent.rs`: `parse_kata_ref` was a bare
+  `serde_json::from_str`. It now validates `kind`, `namespace`, `name`, `key`
+  and `restartService` against the same constraints their CRD counterparts
+  enforce, and refuses the annotation on a mismatch — no host write, no
+  restart. The CRD schema runs at the *management* cluster; this annotation is
+  written on a Node in the *workload* cluster, where anything holding
+  `patch nodes` can set it, including the agent's own ServiceAccount.
+- `src/crd.rs`: `restartService` pattern anchored
+  `^[A-Za-z0-9@._-]+\.service$` → `^[A-Za-z0-9@._][A-Za-z0-9@._-]*\.service$`.
+  The old class applied `-` to every position, so `-Hbar.example.com.service`
+  was **admissible through the CRD**, not only through the annotation.
+  `deploy/crds/scheduledmachine.yaml` regenerated (`make crds`, one line).
+- `docs/architecture/calm/architecture.json`: new
+  `untrusted-annotation-validation` control on `rel-kata-agent-writes-host`
+  (NIST SP 800-53 SI-10 / SI-15 / AC-6), and the documented command line
+  corrected in two descriptions. No node, relationship or flow changed.
+- `docs/src/security/threat-model.md` → **v1.2**, covering ADR-0001 … ADR-0012.
+  K2 now records two independent controls. K4 moves from *partially mitigated*
+  to mitigated **for the injection case**, with the policy case named as out of
+  scope (`sshd.service` matches the pattern and always will). K5 is **narrowed,
+  not closed**: the agent no longer trusts the annotation's *shape*, but still
+  trusts its *authority*, which needs the §8 admission policy.
+
+### Why
+5S-01 from the private remediation queue, rated Medium-High. Two independent
+defects on one privileged path: the argv could be misread, and the agent
+validated nothing on the input that actually reaches it. Neither is exploitable
+without a privileged position already, but this project's posture is
+defence-in-depth exactly here — ADR-0005 added `confine_dest_path` for the file
+half and the command half never got the equivalent.
+
+### Verification
+RED→GREEN: 9 new tests failed first, then passed. `cargo fmt` clean,
+`cargo clippy --all-targets --all-features` clean, **704 tests pass**.
+`make calm-validate` reports 0 errors / 0 warnings. `make crds` then
+`make crddoc` (in that order) — `api.md` unchanged. `mkdocs build --strict`
+builds clean.
+
+### Impact
+- [x] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+**Breaking, narrowly:** a `ScheduledMachine` whose `restartService` begins with
+`-` is now rejected at admission, and a hand-edited Node annotation outside the
+validated shape is refused by the agent instead of acted on. Both were bugs.
+
 ## [2026-09-27 01:35] - Close out roadmap 04: remove hyper + tower, http-body-util to dev-deps
 
 **Author:** Erick Bourgeois

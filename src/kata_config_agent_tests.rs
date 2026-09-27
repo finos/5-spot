@@ -283,6 +283,106 @@ mod tests {
         assert!(parse_kata_ref("not json").is_err());
     }
 
+    // ---- parse_kata_ref: the annotation is UNTRUSTED input (ADR 0012 D2) ----
+    //
+    // The CRD schema runs at the management cluster. This annotation is written
+    // in the workload cluster, where anything holding `patch nodes` can set it,
+    // so every field is re-validated here against the same constraint its CRD
+    // counterpart enforces. A rejected annotation means no host write and no
+    // restart.
+
+    fn ref_json(field: &str, value: &str) -> String {
+        let mut f = std::collections::BTreeMap::from([
+            ("namespace", "5spot-system"),
+            ("kind", "ConfigMap"),
+            ("name", "kata-drop-in"),
+            ("key", "kata-containers.toml"),
+            ("restartService", "k0sworker.service"),
+        ]);
+        f.insert(field, value);
+        let body = f
+            .iter()
+            .map(|(k, v)| format!("\"{k}\":\"{v}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("{{{body}}}")
+    }
+
+    #[test]
+    fn test_parse_kata_ref_rejects_option_like_restart_service() {
+        // The defect this closes: `-Hbar.example.com.service` satisfied the
+        // pre-ADR-0012 CRD pattern, and `systemctl restart -H<host>` connects
+        // to a remote host over SSH.
+        let json = ref_json("restartService", "-Hbar.example.com.service");
+        assert!(
+            parse_kata_ref(&json).is_err(),
+            "a unit name starting with a hyphen must be rejected: {json}"
+        );
+    }
+
+    #[test]
+    fn test_parse_kata_ref_rejects_restart_service_without_unit_suffix() {
+        assert!(parse_kata_ref(&ref_json("restartService", "k0sworker")).is_err());
+    }
+
+    #[test]
+    fn test_parse_kata_ref_accepts_hyphen_inside_unit_name() {
+        // A hyphen is legal to systemd inside a unit name; only first position
+        // is an option. The fix must not over-reject.
+        let r = parse_kata_ref(&ref_json("restartService", "k0s-worker.service"))
+            .expect("a hyphen inside the unit name is legal");
+        assert_eq!(r.restart_service, "k0s-worker.service");
+    }
+
+    #[test]
+    fn test_parse_kata_ref_rejects_overlong_restart_service() {
+        let long = format!("{}.service", "a".repeat(250));
+        assert!(parse_kata_ref(&ref_json("restartService", &long)).is_err());
+    }
+
+    #[test]
+    fn test_parse_kata_ref_rejects_invalid_namespace() {
+        for bad in ["5spot_system", "5SPOT", "-ns", "ns-", ""] {
+            assert!(
+                parse_kata_ref(&ref_json("namespace", bad)).is_err(),
+                "namespace {bad:?} is not an RFC-1123 label and must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_kata_ref_rejects_invalid_name() {
+        for bad in ["Kata-Drop-In", "kata..drop", "-kata", ""] {
+            assert!(
+                parse_kata_ref(&ref_json("name", bad)).is_err(),
+                "name {bad:?} is not an RFC-1123 subdomain and must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_kata_ref_rejects_invalid_key() {
+        for bad in ["kata containers.toml", "kata/containers.toml", ""] {
+            assert!(
+                parse_kata_ref(&ref_json("key", bad)).is_err(),
+                "key {bad:?} is not a valid data key and must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_kata_ref_rejects_unknown_kind() {
+        // The agent branches on kind; anything but the two source kinds the CRD
+        // admits is a rejected annotation, not a fallthrough.
+        for bad in ["configmap", "Pod", "Secrets", ""] {
+            assert!(
+                parse_kata_ref(&ref_json("kind", bad)).is_err(),
+                "kind {bad:?} must be rejected"
+            );
+        }
+        assert!(parse_kata_ref(&ref_json("kind", "Secret")).is_ok());
+    }
+
     // ---- sync_content: the API-read sync path ----
 
     #[test]
@@ -323,8 +423,11 @@ mod tests {
 
     #[test]
     fn test_nsenter_restart_argv_exact_command_line() {
-        // Pin the exact argv kata-deploy uses: enter host PID 1's mount/uts/ipc/
-        // net/pid namespaces, then `systemctl restart <service>`.
+        // Pin the exact argv: enter host PID 1's mount/uts/ipc/net/pid
+        // namespaces, then `systemctl restart -- <service>`. The FIRST `--`
+        // terminates nsenter's options; the SECOND terminates systemctl's
+        // (ADR 0012 decision 1). Without the second one, a unit name beginning
+        // with `-` is parsed by systemctl as an option.
         assert_eq!(
             nsenter_restart_argv("k0sworker.service"),
             vec![
@@ -339,15 +442,135 @@ mod tests {
                 "--",
                 "systemctl",
                 "restart",
+                "--",
                 "k0sworker.service",
             ]
         );
     }
 
     #[test]
+    fn test_nsenter_restart_argv_terminates_systemctl_options() {
+        // ADR 0012 decision 1, stated as the property rather than the literal:
+        // whatever the unit name is, it is the LAST argument and it is preceded
+        // immediately by `--`, so systemctl cannot read it as a flag.
+        for unit in [
+            "k0sworker.service",
+            "k0s-worker.service",
+            "-Hbar.example.com.service",
+        ] {
+            let argv = nsenter_restart_argv(unit);
+            assert_eq!(
+                argv.last().unwrap(),
+                unit,
+                "the unit must be the last argument"
+            );
+            assert_eq!(
+                argv[argv.len() - 2],
+                "--",
+                "the unit must be preceded by an option terminator: {argv:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_nsenter_restart_argv_threads_service_name() {
         let argv = nsenter_restart_argv("k0scontroller.service");
         assert_eq!(argv.last().unwrap(), "k0scontroller.service");
+    }
+
+    // ---- the shipped VAP that protects this agent's input (ADR 0013) ----
+    //
+    // The policy hardcodes the annotation key and the agent ServiceAccount
+    // names. Nothing but this test stops a rename in constants.rs from leaving
+    // the policy matching a key that no longer exists — a silently open
+    // boundary. Same class of drift as ADR 0041's comment that claimed a
+    // namespace scope the YAML did not grant.
+
+    #[test]
+    fn test_kata_annotation_policy_manifest_matches_the_constants() {
+        use serde::Deserialize as _;
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/deploy/admission/kata-config-annotation-policy.yaml"
+        );
+        let raw = std::fs::read_to_string(path)
+            .expect("the policy protecting kata-config-ref must ship in deploy/admission/");
+
+        let docs: Vec<serde_yaml::Value> = serde_yaml::Deserializer::from_str(&raw)
+            .map(|d| serde_yaml::Value::deserialize(d).expect("each YAML document parses"))
+            .collect();
+        assert_eq!(docs.len(), 2, "expected a policy and its binding");
+
+        let kind = |d: &serde_yaml::Value| d["kind"].as_str().unwrap_or_default().to_string();
+        let policy = docs
+            .iter()
+            .find(|d| kind(d) == "ValidatingAdmissionPolicy")
+            .expect("a ValidatingAdmissionPolicy document");
+        let binding = docs
+            .iter()
+            .find(|d| kind(d) == "ValidatingAdmissionPolicyBinding")
+            .expect("a ValidatingAdmissionPolicyBinding document");
+
+        // The boundary must not open when the policy cannot be evaluated.
+        assert_eq!(
+            policy["spec"]["failurePolicy"].as_str(),
+            Some("Fail"),
+            "failurePolicy must be Fail, like every other policy in deploy/admission/"
+        );
+
+        // It guards Node updates, and only updates: a CREATE carries no
+        // oldObject to compare against.
+        let rule = &policy["spec"]["matchConstraints"]["resourceRules"][0];
+        let has = |v: &serde_yaml::Value, needle: &str| {
+            v.as_sequence()
+                .is_some_and(|xs| xs.iter().any(|x| x.as_str() == Some(needle)))
+        };
+        assert!(
+            has(&rule["resources"], "nodes"),
+            "must match nodes: {rule:?}"
+        );
+        assert!(
+            has(&rule["operations"], "UPDATE"),
+            "must match UPDATE: {rule:?}"
+        );
+
+        // The binding enforces, and points at this policy.
+        assert_eq!(
+            binding["spec"]["policyName"].as_str(),
+            policy["metadata"]["name"].as_str(),
+            "the binding must name this policy"
+        );
+        assert!(
+            has(&binding["spec"]["validationActions"], "Deny"),
+            "the binding must Deny, not only Audit"
+        );
+
+        // The drift guard: the strings the policy hardcodes must be the ones
+        // the code uses.
+        assert!(
+            raw.contains(crate::constants::KATA_CONFIG_REF_ANNOTATION),
+            "the policy must name the annotation constant verbatim: {}",
+            crate::constants::KATA_CONFIG_REF_ANNOTATION
+        );
+        assert!(
+            raw.contains("request.userInfo.username"),
+            "identity for a Node update comes from the requester, not a pod spec"
+        );
+        for sa in [
+            "system:serviceaccount:5spot-system:5spot-kata-config-agent",
+            "system:serviceaccount:5spot-system:5spot-reclaim-agent",
+        ] {
+            assert!(raw.contains(sa), "the policy must deny {sa}");
+        }
+
+        // The agents' own applied-hash writes must keep working, so the
+        // expression has to compare against oldObject rather than reject any
+        // Node update from an agent.
+        assert!(
+            raw.contains("oldObject"),
+            "the policy must compare object against oldObject so kata-config-applied still passes"
+        );
     }
 
     // ---- intended_hash_for: outcome → the hash we record/guard on ----

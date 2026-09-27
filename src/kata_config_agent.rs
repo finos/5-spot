@@ -70,14 +70,143 @@ pub struct KataRef {
     pub restart_service: String,
 }
 
+/// Why an annotation was refused.
+#[derive(Debug, thiserror::Error)]
+pub enum KataRefError {
+    /// The value is not the expected JSON object.
+    #[error("kata-config-ref is not the expected JSON object: {0}")]
+    Json(#[from] serde_json::Error),
+    /// A field parsed as JSON but is not a legal value for what it names.
+    #[error("kata-config-ref field `{field}` is invalid ({reason}): {value:?}")]
+    Field {
+        /// The offending field, as spelled in the annotation.
+        field: &'static str,
+        /// What rule it broke.
+        reason: &'static str,
+        /// The value, echoed so an operator can see what to fix. Safe: this
+        /// annotation carries object *names*, never object content.
+        value: String,
+    },
+}
+
+/// `true` if `s` is an RFC-1123 label: 1–63 chars of `[a-z0-9-]`, starting and
+/// ending alphanumeric. The rule Kubernetes enforces on a namespace.
+fn is_dns_label(s: &str) -> bool {
+    if s.is_empty() || s.len() > MAX_DNS_LABEL_LEN {
+        return false;
+    }
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return false;
+    }
+    let first_last_ok = |c: Option<char>| c.is_some_and(|c| c.is_ascii_alphanumeric());
+    first_last_ok(s.chars().next()) && first_last_ok(s.chars().last())
+}
+
+/// `true` if `s` is an RFC-1123 subdomain: dot-separated [`is_dns_label`]s,
+/// 253 chars overall. The rule Kubernetes enforces on a ConfigMap or Secret
+/// name, so one check covers both source kinds.
+fn is_dns_subdomain(s: &str) -> bool {
+    if s.is_empty() || s.len() > MAX_DNS_SUBDOMAIN_LEN {
+        return false;
+    }
+    s.split('.').all(is_dns_label)
+}
+
+/// `true` if `s` is a legal `data` key: 1–253 chars of `[A-Za-z0-9._-]`, the
+/// charset the API server enforces.
+fn is_data_key(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= MAX_DATA_KEY_LEN
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+}
+
+/// `true` if `s` is a systemd `*.service` unit name the agent will restart.
+///
+/// A hyphen is legal *inside* the name and rejected in first position, where it
+/// is only ever an option to `systemctl` (ADR 0012). This mirrors the CRD's
+/// `restartService` pattern; the duplication is deliberate, because the schema
+/// runs at the management cluster and this runs where the value is consumed.
+fn is_systemd_unit(s: &str) -> bool {
+    if s.len() > MAX_UNIT_NAME_LEN || !s.ends_with(UNIT_SUFFIX) || s == UNIT_SUFFIX {
+        return false;
+    }
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '@' | '.' | '_' | '-'))
+    {
+        return false;
+    }
+    s.chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric() || matches!(c, '@' | '.' | '_'))
+}
+
 /// Parse the `5spot.finos.org/kata-config-ref` annotation value (a JSON string)
-/// into a [`KataRef`].
+/// into a [`KataRef`], **validating every field**.
+///
+/// The annotation is untrusted input (ADR 0012). Its values originate in a
+/// `ScheduledMachine` the CRD schema checked, but they arrive here through a
+/// Node in the workload cluster, where anything holding `patch` on nodes can
+/// write them — including this agent's own ServiceAccount, since RBAC cannot
+/// say "the Node this pod runs on". So each field is re-checked against the
+/// same constraint its CRD counterpart enforces, and a bad annotation is
+/// refused rather than sanitized: no host write, no restart.
 ///
 /// # Errors
-/// Returns the [`serde_json::Error`] if the value is not the expected JSON
-/// object (missing/extra fields, wrong types).
-pub fn parse_kata_ref(annotation: &str) -> Result<KataRef, serde_json::Error> {
-    serde_json::from_str(annotation)
+/// [`KataRefError::Json`] if the value is not the expected JSON object
+/// (missing or mistyped fields). [`KataRefError::Field`] if a field parsed but
+/// is not a legal value — an unknown `kind`, a namespace that is not an
+/// RFC-1123 label, a name that is not an RFC-1123 subdomain, a `key` outside
+/// the `data`-key charset, or a `restartService` that is not a `*.service`
+/// unit name.
+pub fn parse_kata_ref(annotation: &str) -> Result<KataRef, KataRefError> {
+    let parsed: KataRef = serde_json::from_str(annotation)?;
+
+    let invalid = |field: &'static str, reason: &'static str, value: &str| KataRefError::Field {
+        field,
+        reason,
+        value: value.to_string(),
+    };
+
+    if parsed.kind != crate::constants::KIND_CONFIG_MAP
+        && parsed.kind != crate::constants::KIND_SECRET
+    {
+        return Err(invalid("kind", "must be ConfigMap or Secret", &parsed.kind));
+    }
+    if !is_dns_label(&parsed.namespace) {
+        return Err(invalid(
+            "namespace",
+            "must be an RFC-1123 label",
+            &parsed.namespace,
+        ));
+    }
+    if !is_dns_subdomain(&parsed.name) {
+        return Err(invalid(
+            "name",
+            "must be an RFC-1123 subdomain",
+            &parsed.name,
+        ));
+    }
+    if !is_data_key(&parsed.key) {
+        return Err(invalid(
+            "key",
+            "must match the Kubernetes data-key charset",
+            &parsed.key,
+        ));
+    }
+    if !is_systemd_unit(&parsed.restart_service) {
+        return Err(invalid(
+            "restartService",
+            "must be a .service unit name not starting with a hyphen",
+            &parsed.restart_service,
+        ));
+    }
+
+    Ok(parsed)
 }
 
 /// Default interval between drift-watch sweeps, in seconds. The agent reads
@@ -365,11 +494,25 @@ const HOST_INIT_PID: &str = "1";
 const SYSTEMCTL_BIN: &str = "systemctl";
 /// `systemctl` subcommand.
 const SYSTEMCTL_RESTART: &str = "restart";
+/// End-of-options marker. Used twice in the restart argv: once for `nsenter`,
+/// once for `systemctl` (ADR 0012).
+const OPTION_TERMINATOR: &str = "--";
+
+/// RFC-1123 label cap, for the annotation's `namespace`.
+const MAX_DNS_LABEL_LEN: usize = 63;
+/// RFC-1123 subdomain cap, for the annotation's `name`.
+const MAX_DNS_SUBDOMAIN_LEN: usize = 253;
+/// Kubernetes `data`-key cap, for the annotation's `key`.
+const MAX_DATA_KEY_LEN: usize = 253;
+/// systemd unit-name cap, for the annotation's `restartService`.
+const MAX_UNIT_NAME_LEN: usize = 255;
+/// The only unit type the agent restarts.
+const UNIT_SUFFIX: &str = ".service";
 
 /// Build the exact argv for the in-pod host-service restart (ADR 0003):
 ///
 /// ```text
-/// nsenter -t 1 -m -u -i -n -p -- systemctl restart <service>
+/// nsenter -t 1 -m -u -i -n -p -- systemctl restart -- <service>
 /// ```
 ///
 /// `-t 1` targets host PID 1 (systemd); `-m -u -i -n -p` enter the host mount,
@@ -386,9 +529,13 @@ pub fn nsenter_restart_argv(service: &str) -> Vec<String> {
         "-i",
         "-n",
         "-p",
-        "--",
+        OPTION_TERMINATOR,
         SYSTEMCTL_BIN,
         SYSTEMCTL_RESTART,
+        // The second terminator is the load-bearing one (ADR 0012): it ends
+        // *systemctl's* option parsing, so a unit name beginning with `-` is a
+        // unit and not a flag. The first ends nsenter's.
+        OPTION_TERMINATOR,
         service,
     ]
     .into_iter()

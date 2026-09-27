@@ -250,7 +250,7 @@
       "unique-id": "service-kata-config-agent",
       "node-type": "service",
       "name": "5-Spot Kata Config Agent",
-      "description": "Privileged node-side DaemonSet on the workload cluster that delivers a per-node Kata containerd drop-in to the host filesystem and bounces the host k0s service so containerd reloads it. Reads its source ConfigMap/Secret from the workload API (keyed by the 5spot.finos.org/kata-config-ref Node annotation set by the controller per ADR 0002), atomically writes the fixed drop-in path /etc/k0s/containerd.d/kata.toml (KATA_CONFIG_DEST_PATH, ADR 0005 — no path travels through the CRD or annotations) under a hostPath mount narrowed to /etc/k0s, then runs `nsenter -t 1 -m -u -i -n -p -- systemctl restart <restartService>` to restart the host k0s service. Runs privileged with hostPID=true. Records the applied content hash (bare SHA-256, or 'absent') in the 5spot.finos.org/kata-config-applied annotation on its own Node before restarting; the hash is the restart-loop guard. Distinct field manager (5spot-kata-config-agent) attributes every write. Lands only on nodes carrying the 5spot.finos.org/kata-config=enabled opt-in label. Exposes fivespot_kata_config_* delivery metrics (writes, deletes, drift corrections, restarts, errors, last-sync staleness) on its HTTP /metrics interface, scraped via prometheus.io pod annotations. See ADR 0003.",
+      "description": "Privileged node-side DaemonSet on the workload cluster that delivers a per-node Kata containerd drop-in to the host filesystem and bounces the host k0s service so containerd reloads it. Reads its source ConfigMap/Secret from the workload API (keyed by the 5spot.finos.org/kata-config-ref Node annotation set by the controller per ADR 0002), atomically writes the fixed drop-in path /etc/k0s/containerd.d/kata.toml (KATA_CONFIG_DEST_PATH, ADR 0005 — no path travels through the CRD or annotations) under a hostPath mount narrowed to /etc/k0s, then runs `nsenter -t 1 -m -u -i -n -p -- systemctl restart -- <restartService>` to restart the host k0s service. Runs privileged with hostPID=true. Records the applied content hash (bare SHA-256, or 'absent') in the 5spot.finos.org/kata-config-applied annotation on its own Node before restarting; the hash is the restart-loop guard. Distinct field manager (5spot-kata-config-agent) attributes every write. Lands only on nodes carrying the 5spot.finos.org/kata-config=enabled opt-in label. Exposes fivespot_kata_config_* delivery metrics (writes, deletes, drift corrections, restarts, errors, last-sync staleness) on its HTTP /metrics interface, scraped via prometheus.io pod annotations. See ADR 0003.",
       "interfaces": [
         {
           "unique-id": "kata-config-agent-metrics",
@@ -611,6 +611,19 @@
               }
             }
           ]
+        },
+        "annotation-write-authority": {
+          "description": "The 5spot.finos.org/kata-config-ref annotation is an instruction, not data: a privileged agent acts on it by writing the host filesystem and restarting a host unit. Both node agents hold nodes patch cluster-wide because RBAC cannot express the Node a pod runs on, so a compromised agent could otherwise retarget a different node and move laterally through the control plane. A ValidatingAdmissionPolicy on the workload cluster rejects any Node UPDATE that changes this key when request.userInfo.username is one of the agent ServiceAccounts, comparing object against oldObject so their own kata-config-applied writes still pass (ADR 0013). failurePolicy Fail. It bounds the agents, not every holder of nodes patch - that residual stays recorded in the threat model.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["AC-3", "AC-6", "SI-10"],
+                "evidence": "deploy/admission/kata-config-annotation-policy.yaml, docs/adr/0013-kata-config-ref-annotation-admission-policy.md"
+              }
+            }
+          ]
         }
       }
     },
@@ -645,7 +658,7 @@
     },
     {
       "unique-id": "rel-kata-agent-writes-host",
-      "description": "Kata config agent writes the projected drop-in to the fixed host path /etc/k0s/containerd.d/kata.toml (atomic temp-file + rename under a hostPath mount narrowed to /etc/k0s, ADR 0005) and restarts the host k0s service via `nsenter -t 1 -m -u -i -n -p -- systemctl restart <restartService>`, which bounces containerd so it reloads the drop-in. This is the only host-filesystem write and host command execution in 5-Spot.",
+      "description": "Kata config agent writes the projected drop-in to the fixed host path /etc/k0s/containerd.d/kata.toml (atomic temp-file + rename under a hostPath mount narrowed to /etc/k0s, ADR 0005) and restarts the host k0s service via `nsenter -t 1 -m -u -i -n -p -- systemctl restart -- <restartService>`, which bounces containerd so it reloads the drop-in. This is the only host-filesystem write and host command execution in 5-Spot.",
       "relationship-type": {
         "connects": {
           "source": { "node": "service-kata-config-agent" },
@@ -662,6 +675,19 @@
                 "framework": "NIST SP 800-190",
                 "controls": ["AC-6", "CM-7", "SI-7"],
                 "evidence": "deploy/kata-config-agent/daemonset.yaml, src/kata_config_agent.rs, .trivyignore"
+              }
+            }
+          ]
+        },
+        "untrusted-annotation-validation": {
+          "description": "The agent treats the 5spot.finos.org/kata-config-ref Node annotation as untrusted input, not as a courier for a value the CRD already checked (ADR 0012). The CRD schema runs at the management cluster; the annotation is written in the workload cluster, where anything holding patch on nodes can set it, so parse_kata_ref re-validates every field against the same constraint its CRD counterpart enforces and rejects the annotation outright on a mismatch - no write and no restart. Independently of that, the restart argv terminates systemctl option parsing before the unit name, so a value beginning with a hyphen cannot be read as an option such as a remote host or an alternate root. The CRD pattern is anchored so a leading hyphen is not admissible in the first place. Each of the three is load-bearing on its own.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["SI-10", "SI-15", "AC-6"],
+                "evidence": "src/kata_config_agent.rs (parse_kata_ref, nsenter_restart_argv), src/crd.rs (kata_config_restart_service_schema), docs/adr/0012-kata-agent-validates-its-own-input.md"
               }
             }
           ]
@@ -1008,6 +1034,8 @@
     "../../adr/0002-kata-config-delivery-via-spec-kata.md",
     "../../adr/0003-in-pod-host-service-restart-via-nsenter.md",
     "../../adr/0006-pluggable-spot-schedule-provider-contract.md",
-    "../../adr/0009-unify-schedule-as-provider-reference.md"
+    "../../adr/0009-unify-schedule-as-provider-reference.md",
+    "docs/adr/0012-kata-agent-validates-its-own-input.md",
+    "docs/adr/0013-kata-config-ref-annotation-admission-policy.md"
   ]
 }

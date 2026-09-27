@@ -342,7 +342,7 @@ For Kubernetes 1.26–1.27, enable the feature gate on the API server:
 
 ### Apply the manifests
 
-`deploy/admission/` ships four policies, each with its own binding:
+`deploy/admission/` ships five policies, each with its own binding:
 
 - `validatingadmissionpolicy*.yaml` — validates `ScheduledMachine` CRs.
 - `controller-deployment-policy.yaml` + `controller-deployment-binding.yaml`
@@ -364,11 +364,22 @@ For Kubernetes 1.26–1.27, enable the feature gate on the API server:
   pod-security exception boundary for `5spot-system` described
   [above](#agent-pod-security-exception-boundary-workload-cluster)
   (ADR 0004). Pair it with your baseline engine's namespace exemption.
+- `kata-config-annotation-policy.yaml` — **applied to the child (workload)
+  cluster.** Rejects any Node `UPDATE` that changes
+  `5spot.finos.org/kata-config-ref` when the requester is one of the node
+  agents' ServiceAccounts (ADR 0013). That annotation is an *instruction*: the
+  privileged kata-config agent acts on it by writing the host filesystem and
+  restarting a host unit, and both agents hold `nodes: patch` cluster-wide
+  because RBAC cannot express "the Node this pod runs on" — so without this
+  policy a compromised agent could retarget another node and move laterally.
+  Only a *change* to that one key is rejected, so the agents' own
+  `kata-config-applied` writes (the restart-loop guard) still pass. This file
+  carries both the policy and its binding.
 
 Apply each policy before its binding (order matters — the binding
 references the policy by name). The first two go on the **management**
-cluster; the `child-cluster-*` and `agent-pod-security-*` pairs go on the
-**child** cluster:
+cluster; the `child-cluster-*`, `agent-pod-security-*` and
+`kata-config-annotation-*` policies go on the **child** cluster:
 
 ```bash
 # Management cluster
@@ -386,6 +397,9 @@ kubectl --kubeconfig <child-kubeconfig> apply \
   -f deploy/admission/agent-pod-security-policy.yaml
 kubectl --kubeconfig <child-kubeconfig> apply \
   -f deploy/admission/agent-pod-security-binding.yaml
+# Policy and binding in one file (ADR 0013)
+kubectl --kubeconfig <child-kubeconfig> apply \
+  -f deploy/admission/kata-config-annotation-policy.yaml
 ```
 
 ### Verify the policy is active

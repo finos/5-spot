@@ -208,7 +208,7 @@ spec:
                       layouts.
                     maxLength: 255
                     minLength: 1
-                    pattern: ^[A-Za-z0-9@._-]+\.service$
+                    pattern: ^[A-Za-z0-9@._][A-Za-z0-9@._-]*\.service$
                     type: string
                 required:
                 - kind

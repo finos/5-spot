@@ -14,8 +14,9 @@ flowchart LR
     TDD["3 - TDD - red, green, refactor"]
     IMPL["4 - Implement - minimum to pass"]
     DOCS["5 - Docs - changelog, guides, roadmap"]
+    TM["6 - Threat model - full pass, bump the stamp"]
 
-    ADR --> CALM --> TDD --> IMPL --> DOCS
+    ADR --> CALM --> TDD --> IMPL --> DOCS --> TM
 ```
 
 The order is fixed. Each step has an artifact and a gate:
@@ -27,8 +28,9 @@ The order is fixed. Each step has an artifact and a gate:
 | **3 · TDD** | A failing test that defines the behaviour | `src/foo_tests.rs` beside `src/foo.rs` | The test fails for the right reason before any implementation exists |
 | **4 · Implement** | The minimum code that passes | `src/` | `cargo fmt`, `clippy` and the full test suite, all clean |
 | **5 · Docs** | Changelog entry, affected guides, roadmap status | `.claude/CHANGELOG.md`, `docs/src/`, [`ROADMAPS.md`](https://github.com/finos/5-spot/blob/main/ROADMAPS.md) | Docs match the code; a roadmap row reflects reality, not intent |
+| **6 · Threat model** | A full pass over every section, and a bumped stamp | [`docs/src/security/threat-model.md`](../security/threat-model.md) | The **Covers** ADR range names this ADR. "No change" is a conclusion, not a skip — the stamp still moves |
 
-A change that is not reflected in CALM is not designed yet. A CRD shape change
+An ADR is not done until the threat-model pass has run — it is the last step, not an afterthought. A change that is not reflected in CALM is not designed yet. A CRD shape change
 starts in `src/crd.rs` — the source of truth — and regenerates with `make crds`
 then `make crddoc`; the YAML under `deploy/crds/` is generated and never
 hand-edited.
@@ -75,6 +77,8 @@ the table below is a convenience copy.
 | [0009](https://github.com/finos/5-spot/blob/main/docs/adr/0009-unify-schedule-as-provider-reference.md) | Unify activation under `spec.schedule` as a provider reference | Accepted |
 | [0010](https://github.com/finos/5-spot/blob/main/docs/adr/0010-base-image-pins-on-from-line.md) | Base-image digests pinned on the `FROM` line | Accepted |
 | [0011](https://github.com/finos/5-spot/blob/main/docs/adr/0011-schedule-gated-capacity-separate-controller.md) | Schedule-gated capacity in its own controller, scaling rather than creating | Proposed |
+| [0012](https://github.com/finos/5-spot/blob/main/docs/adr/0012-kata-agent-validates-its-own-input.md) | The kata-config agent validates its own Node annotation; the restart argv terminates options | Proposed |
+| [0013](https://github.com/finos/5-spot/blob/main/docs/adr/0013-kata-config-ref-annotation-admission-policy.md) | The `kata-config-ref` Node annotation is controller-writable only, enforced at admission | Proposed |
 
 Start with **0001** for the methodology, **0006** and **0009** for how
 activation works, **0007** before touching a CRD, and **0004** before deploying
