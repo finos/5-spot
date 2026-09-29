@@ -59,3 +59,6 @@ description: chronological action log per session, consolidated weekly
 | 06:55 | Edited .github/scripts/admission-deny.bats | 4→9 lines | ~125 |
 | 06:56 | Edited .claude/CHANGELOG.md | expanded (+27 lines) | ~314 |
 | 12:15 | PR 175 kind job round four: awaited policy denial aborted errexit'd setup_file at the bare out=$(patch_annotation) assignment; added || true (load-bearing comment); bats parses 5 tests | .github/scripts/admission-deny.bats, .claude/CHANGELOG.md, .wolf/buglog.json | previous fix (stderr/can-i) confirmed working — setup now reaches the probe loop | ~2500 |
+| 07:55 | Edited .github/scripts/admission-deny.bats | modified patch_annotation() | ~191 |
+| 07:55 | Edited .claude/CHANGELOG.md | expanded (+30 lines) | ~358 |
+| 13:05 | PR 175 round five: patch_annotation broke its own -p JSON on quoted values (kubectl parse error, no request sent) — 4/5 tests failed while quote-free values passed; escape quotes in helper; validated escaped/unescaped with json.load; bats parses 5 | .github/scripts/admission-deny.bats, .claude/CHANGELOG.md, .wolf/buglog.json | setup fully green since round four; this was the first run where tests executed | ~3000 |

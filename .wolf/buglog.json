@@ -44,6 +44,21 @@
         "admission",
         "pr-175"
       ]
+    },
+    {
+      "date": "2026-09-29",
+      "error_message": "PR #175 kind job round five: setup passes, then tests 1/2 fail the message assertion and tests 4/5 fail their allow assertion; only test 3 passes",
+      "root_cause": "patch_annotation interpolated the value into the patch JSON unescaped; JSON-shaped values like {\"namespace\":\"x\"} broke the patch document, so kubectl exited non-zero with a PARSE error before any request \u2014 deny tests saw the wrong message, allow tests saw a failure; quote-free values (probe-N, deadbeef) worked, masking it in setup and test 3",
+      "fix": "escape embedded quotes in the value (${value//\\\"/\\\\\\\"}) before building the -p document; verified unescaped form fails json.load and escaped form round-trips",
+      "tags": [
+        "ci",
+        "bats",
+        "json",
+        "kubectl-patch",
+        "quoting",
+        "admission",
+        "pr-175"
+      ]
     }
   ]
 }

@@ -1,13 +1,13 @@
 {
   "version": 1,
   "meta": {
-    "lastScanned": "2026-09-29T10:56:00.526Z",
+    "lastScanned": "2026-09-29T11:55:35.452Z",
     "fileCount": 305,
     "hits": 0,
     "misses": 0,
-    "renderedHash": "045772fae649e403ddd72e28ddb9a24401bae868dc96b16d459b2df64d66068c",
-    "storeUpdatedAt": "2026-09-29T10:56:00.532Z",
-    "rootHash": "1cb9532845d09e5e"
+    "renderedHash": "ef443c6ad1781b2bf36161ea79a738ac434a2930d0d0eb9906ddf1073c2ec032",
+    "storeUpdatedAt": "2026-09-29T11:55:35.458Z",
+    "rootHash": "421153f1e8e8c70d"
   },
   "files": {
     ".github/actions/extract-version/action.yml": {
@@ -6402,11 +6402,11 @@
     },
     ".claude/CHANGELOG.md": {
       "description": "Changelog",
-      "tokens": 94003,
-      "hash": "b4b736bdb3860a1d",
-      "size": 377814,
-      "mtimeMs": 1790679360480.1965,
-      "updatedAt": "2026-09-29T10:56:00.525Z",
+      "tokens": 94311,
+      "hash": "88f553bc56c1bd92",
+      "size": 379055,
+      "mtimeMs": 1790682935399.7065,
+      "updatedAt": "2026-09-29T11:55:35.451Z",
       "source": "hook"
     },
     ".github/community/03-release-diff-v0-2-2-to-main.md": {
@@ -6510,11 +6510,11 @@
     },
     ".github/scripts/admission-deny.bats": {
       "description": "shellcheck shell=bats",
-      "tokens": 2418,
-      "hash": "a702b0d232e3e543",
-      "size": 9089,
-      "mtimeMs": 1790679331954.3904,
-      "updatedAt": "2026-09-29T10:55:31.994Z",
+      "tokens": 2542,
+      "hash": "c4ffb77ba2b1fe81",
+      "size": 9554,
+      "mtimeMs": 1790682910740.055,
+      "updatedAt": "2026-09-29T11:55:10.785Z",
       "source": "hook"
     }
   },
