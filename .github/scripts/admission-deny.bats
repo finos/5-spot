@@ -91,25 +91,82 @@ subjects:
     namespace: ${NS}
 YAML
 
-  kc apply -f "$POLICY_FILE" >/dev/null
-
-  # A policy and its binding take a moment to become active. Poll the behaviour
-  # rather than a status field: the thing we need true is the denial itself.
-  local deadline=$((SECONDS + 60))
-  until [[ "$(patch_annotation "$KATA_SA" "$REF_KEY" probe)" == *"5-Spot controller only"* ]]; do
+  # RBAC first, as its own assertion. Without this the probe below cannot tell
+  # "the policy is not denying" from "the identity could never patch anyway":
+  # both surface as Forbidden, and the first run of this suite spent 60s
+  # reporting the wrong one.
+  local deadline=$((SECONDS + 30))
+  until [[ "$(kc auth can-i patch nodes --as="$KATA_SA" 2>&1)" == yes* ]]; do
     if (( SECONDS > deadline )); then
-      echo "policy never became active within 60s" >&2
+      echo "SETUP FAILED: $KATA_SA still cannot patch nodes after 30s." >&2
+      echo "The test grant did not apply, so a denial would prove nothing:" >&2
+      kc auth can-i patch nodes --as="$KATA_SA" >&2 || true
+      kc get clusterrolebinding 5spot-test-node-patcher -o yaml >&2 || true
       exit 1
     fi
     sleep 2
   done
+
+  kc apply -f "$POLICY_FILE" || {
+    echo "SETUP FAILED: the policy manifest did not apply" >&2
+    exit 1
+  }
+
+  # A CEL expression that fails type-checking still applies cleanly; the API
+  # server records the problem in status.typeChecking and the policy does not
+  # do what it says. Surface it before spending a minute on a poll.
+  local typecheck
+  typecheck=$(kc get validatingadmissionpolicy 5spot-kata-config-annotation \
+    -o jsonpath='{.status.typeChecking}' 2>&1 || true)
+  if [[ -n "$typecheck" && "$typecheck" != "{}" ]]; then
+    echo "NOTE: the API server reported type-checking output for the policy:" >&2
+    echo "  $typecheck" >&2
+  fi
+
+  # Start from a known state: an earlier run (or a failed probe) may have left
+  # the annotation set.
+  kc annotate "$NODE" "$REF_KEY-" >/dev/null 2>&1 || :
+
+  # Now poll the behaviour — the thing we actually need true is the denial —
+  # keeping the last response so a timeout reports the real reason.
+  #
+  # Each attempt MUST use a different value. The policy fires on a *change*, so
+  # a probe that repeats one value is only a change the first time: if that
+  # first attempt lands before the policy is enforcing it succeeds, writes the
+  # value, and every later attempt is a no-op the policy correctly allows. The
+  # poll could then only ever time out — which is exactly how the first CI run
+  # of this suite failed, reporting "policy never became active" for a policy
+  # that was working.
+  local out="" attempt=0
+  deadline=$((SECONDS + 90))
+  until [[ "$out" == *"5-Spot controller only"* ]]; do
+    if (( SECONDS > deadline )); then
+      echo "SETUP FAILED: the policy is not denying after 90s." >&2
+      echo "Last response to the probe patch:" >&2
+      echo "  ${out:-<empty>}" >&2
+      echo "Policy and binding as the server sees them:" >&2
+      kc get validatingadmissionpolicy,validatingadmissionpolicybinding \
+        -l app.kubernetes.io/name=5spot -o yaml >&2 || true
+      exit 1
+    fi
+    sleep 2
+    attempt=$((attempt + 1))
+    out=$(patch_annotation "$KATA_SA" "$REF_KEY" "probe-${attempt}")
+  done
+
+  # Leave no probe value behind: the tests below assert on transitions.
+  kc annotate "$NODE" "$REF_KEY-" >/dev/null 2>&1 || :
 }
 
 teardown_file() {
-  kc delete -f "$POLICY_FILE" --ignore-not-found >/dev/null 2>&1 || true
-  kc delete clusterrolebinding 5spot-test-node-patcher --ignore-not-found >/dev/null 2>&1 || true
-  kc delete clusterrole 5spot-test-node-patcher --ignore-not-found >/dev/null 2>&1 || true
-  kc annotate "$NODE" "$REF_KEY-" "$APPLIED_KEY-" >/dev/null 2>&1 || true
+  # Every cleanup is best-effort: a teardown that fails masks the real result,
+  # and bats surfaced exactly that on the first run. `|| :` on each, and an
+  # explicit success at the end.
+  kc delete -f "$POLICY_FILE" --ignore-not-found >/dev/null 2>&1 || :
+  kc delete clusterrolebinding 5spot-test-node-patcher --ignore-not-found >/dev/null 2>&1 || :
+  kc delete clusterrole 5spot-test-node-patcher --ignore-not-found >/dev/null 2>&1 || :
+  kc annotate "$NODE" "$REF_KEY-" "$APPLIED_KEY-" >/dev/null 2>&1 || :
+  return 0
 }
 
 @test "the kata agent cannot change kata-config-ref" {
@@ -140,6 +197,8 @@ teardown_file() {
   [ "$status" -eq 0 ]
 }
 
+# NOTE: this test depends on the one above having set the value it re-applies.
+# bats runs tests in file order, so that is stable — but do not reorder them.
 @test "re-applying the same kata-config-ref value is not a change" {
   # oldObject == object for this key, so the expression must not fire. Without
   # this, an agent's unrelated Node patch that happens to echo the annotation

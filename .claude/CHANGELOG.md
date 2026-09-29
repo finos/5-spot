@@ -9,6 +9,93 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-09-29] - Fix the admission deny suite: the probe poisoned itself, and the failure was unreadable
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `.github/scripts/admission-deny.bats` — **the probe could only ever time
+  out.** The policy fires on a *change* to `5spot.finos.org/kata-config-ref`,
+  and the activation poll patched the same value (`probe`) every attempt. A
+  policy and binding take a few seconds to start enforcing, so attempt 1 landed
+  first and **succeeded**, writing the value; from then on every attempt was a
+  no-op that the policy correctly allowed. The poll therefore reported
+  "policy never became active" for a policy that was working. Each attempt now
+  uses a distinct value (`probe-N`), the annotation is cleared before the poll
+  so the starting state is known, and the probe value is removed afterwards so
+  the tests below still assert on real transitions.
+- Same file — **the suite hid the reason it failed.** The poll discarded
+  `kubectl`'s output, so a 60-second timeout was the only evidence, and the
+  first CI run (run 36511502130) produced no way to tell a broken policy from a
+  broken test. Now:
+  - `kubectl auth can-i patch nodes --as=<agent>` is a **separate, gated
+    assertion** before the probe. An authorization failure and an admission
+    denial are both `Forbidden`; without splitting them, "the policy is not
+    denying" and "the identity could never patch anyway" are indistinguishable.
+  - the policy `apply` has its exit status checked instead of discarded;
+  - `status.typeChecking` is printed if the API server reported any — a CEL
+    expression that fails type-checking applies cleanly and then does not do
+    what it says;
+  - a timeout prints the last probe response and the policy plus binding as the
+    server sees them;
+  - the window is 90s rather than 60s.
+- Same file — `teardown_file` cleanup is `|| :` per command with an explicit
+  `return 0`. bats reported ``kc annotate ... || true' failed with status 0``
+  from teardown on the first run, which added a second, spurious failure to the
+  output and obscured the first.
+- Same file — the ordering dependency between the last two tests (one
+  re-applies the value the other sets) is now stated in a comment, since bats
+  file order is what makes it stable.
+
+### Why
+First real execution of the suite, which the previous entry said would be worth
+watching. Both defects were in the test, not in the policy — the structural unit
+test and the manifest were correct throughout. The lesson worth keeping: a poll
+that asserts on a *state transition* must vary its input, or a single early
+success turns the assertion into a permanent no-op.
+
+### Verification
+`shellcheck` clean; `bats --count` discovers all five tests. Still **not
+executed** here — the suite issues `kubectl apply`, which this project's rules
+prohibit without an explicit request — so CI on PR #175 remains its first real
+run.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+## [2026-09-28 09:45] - Bundle the codeql-action 4.38.1 bumps; fix the group pattern that let them split
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/{codeql,sast,scorecard,build}.yaml`: all six
+  `github/codeql-action/*` pins bumped together, `v4.38.0` →
+  `v4.38.1` (`b96794f…` → `1c5b675…`) — init, analyze, and the four
+  upload-sarif uses in one change, replacing Dependabot PRs #172/#173/#174.
+- `.github/dependabot.yml`: `actions-routine` group gains
+  `github/codeql-action/*`. The bare `github/codeql-action` pattern never
+  matched the monorepo's sub-action dependency names, so the three bumps
+  escaped the group as separate PRs.
+
+### Why
+Dependabot PRs #173 (init) and #174 (analyze) each failed every CodeQL job
+with `Loaded a configuration file for version '4.38.1', but running version
+'4.38.0'` — CodeQL requires init and analyze at the same version, so the
+family must move in lockstep. #172 (upload-sarif) passed only because its
+workflows don't pair it with init. Bundling matches the repo's existing
+pattern (#151, #164).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+---
+
 ## [2026-09-28] - ADR statuses corrected, and the admission policies get a test that proves they deny
 
 **Author:** Erick Bourgeois
