@@ -9,6 +9,34 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-09-29 10:20] - Admission deny suite round three: the RBAC probe matched kubectl's warning, not its answer
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/scripts/admission-deny.bats`: the setup's RBAC-readiness poll
+  compared `$(kc auth can-i patch nodes --as=… 2>&1)` against `yes*` — but
+  kubectl prints `Warning: resource 'nodes' is not namespace scoped` on
+  stderr, so with `2>&1` the substitution began with the warning and the glob
+  could never match, even with the grant applied. The job's own failure
+  diagnostics proved it: they printed the warning followed by `yes`. stderr
+  now stays out of the substitution (`2>/dev/null`) and the match is exact
+  (`== "yes"`), with a comment recording the trap.
+
+### Why
+PR #175's `🚫 Policies deny (kind)` job failed in setup with
+"still cannot patch nodes after 30s" although the ClusterRoleBinding had
+applied 33 seconds earlier — the poll was measuring its own stderr capture,
+not the authorization answer.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+---
+
 ## [2026-09-29] - Fix the admission deny suite: the probe poisoned itself, and the failure was unreadable
 
 **Author:** Erick Bourgeois

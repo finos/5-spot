@@ -95,8 +95,15 @@ YAML
   # "the policy is not denying" from "the identity could never patch anyway":
   # both surface as Forbidden, and the first run of this suite spent 60s
   # reporting the wrong one.
+  #
+  # stderr stays OUT of the substitution: kubectl prepends
+  # "Warning: resource 'nodes' is not namespace scoped" on stderr, and with
+  # 2>&1 that warning is what `yes*` was matched against — the poll timed out
+  # forever on a grant that had applied (its own failure diagnostics printed
+  # the warning followed by "yes"). can-i's stdout is exactly yes/no, so
+  # match it exactly.
   local deadline=$((SECONDS + 30))
-  until [[ "$(kc auth can-i patch nodes --as="$KATA_SA" 2>&1)" == yes* ]]; do
+  until [[ "$(kc auth can-i patch nodes --as="$KATA_SA" 2>/dev/null)" == "yes" ]]; do
     if (( SECONDS > deadline )); then
       echo "SETUP FAILED: $KATA_SA still cannot patch nodes after 30s." >&2
       echo "The test grant did not apply, so a denial would prove nothing:" >&2
