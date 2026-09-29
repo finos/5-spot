@@ -9,6 +9,36 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-09-29 13:05] - Admission deny suite round five: the patch helper broke its own JSON on quoted values
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/scripts/admission-deny.bats`: `patch_annotation` interpolated the
+  annotation value into the `-p` JSON document unescaped, so a JSON-shaped
+  ref value like `{"namespace":"x"}` produced an invalid patch — kubectl
+  exited non-zero on a PARSE error, no request ever sent. The deny tests
+  half-passed (non-zero status, wrong message), the allow tests failed
+  outright, and the quote-free probe (`probe-N`) and applied-hash
+  (`deadbeef`) values sailed through, which is why setup and test 3 were the
+  only green parts. Embedded quotes are now escaped before the document is
+  built.
+
+### Why
+First run where all five tests actually executed (rounds two–four fixed the
+setup); the 4-of-5 failure pattern — both deny tests missing the policy
+message, both allow tests failing, the one quote-free test passing — pointed
+at the helper, not the policy. Verified: the unescaped document fails
+`json.load`, the escaped one round-trips the value exactly.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+---
+
 ## [2026-09-29 12:15] - Admission deny suite round four: the awaited denial itself aborted setup_file
 
 **Author:** Erick Bourgeois

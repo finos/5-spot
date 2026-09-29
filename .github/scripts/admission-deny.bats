@@ -38,8 +38,15 @@ kc() {
 # A patch that sets one annotation to a value, as $1 (an impersonated user).
 patch_annotation() {
   local as="$1" key="$2" value="$3"
+  # The value lands inside a JSON string, so its own quotes must be escaped:
+  # a ref value like {"namespace":"x"} otherwise breaks the patch document
+  # itself, and kubectl fails to PARSE it — exit non-zero with a parse error,
+  # no request ever sent. That fooled the deny tests (non-zero status, wrong
+  # message) and broke the allow tests outright, while the quote-free probe
+  # and applied-hash values sailed through.
+  local escaped=${value//\"/\\\"}
   kc --as="$as" patch "$NODE" --type=merge \
-    -p "{\"metadata\":{\"annotations\":{\"${key}\":\"${value}\"}}}" 2>&1
+    -p "{\"metadata\":{\"annotations\":{\"${key}\":\"${escaped}\"}}}" 2>&1
 }
 
 setup_file() {
