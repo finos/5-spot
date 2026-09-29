@@ -1,13 +1,13 @@
 {
   "version": 1,
   "meta": {
-    "lastScanned": "2026-09-27T18:31:34.046Z",
+    "lastScanned": "2026-09-29T02:16:21.963Z",
     "fileCount": 304,
     "hits": 0,
     "misses": 0,
-    "renderedHash": "e476dcfd545c8037d2bb2fd148054ff1bb2e9c5b568a84174fdafbe3b75caff6",
-    "storeUpdatedAt": "2026-09-27T18:31:34.052Z",
-    "rootHash": "8ae768fae4134d99"
+    "renderedHash": "2bdbfe5beb0c38dacfaf365f6b5d23d810a699d16ee0def45e7565b07f14485c",
+    "storeUpdatedAt": "2026-09-29T02:16:21.969Z",
+    "rootHash": "9ad67d9a0fcb3c14"
   },
   "files": {
     ".github/actions/extract-version/action.yml": {
@@ -91,13 +91,12 @@
     },
     ".github/dependabot.yml": {
       "description": "/*.yaml — those pin our OWN ghcr.io/finos/5-spot* images to",
-      "tokens": 1671,
-      "hash": "920c9b881781fe26",
-      "size": 6746,
-      "mtimeMs": 1788966644243.1343,
-      "updatedAt": "2026-09-27T02:53:45.776Z",
-      "source": "scan",
-      "importance": 0.1054
+      "tokens": 1805,
+      "hash": "eb4c48e42737dbab",
+      "size": 7216,
+      "mtimeMs": 1790648147052.5393,
+      "updatedAt": "2026-09-29T02:15:47.100Z",
+      "source": "hook"
     },
     ".github/ISSUE_TEMPLATE/bug_report.yml": {
       "description": "SPDX-License-Identifier: Apache-2.0",
@@ -6403,11 +6402,11 @@
     },
     ".claude/CHANGELOG.md": {
       "description": "Changelog",
-      "tokens": 89492,
-      "hash": "2c81b977773b1032",
-      "size": 359663,
-      "mtimeMs": 1790533893993.0364,
-      "updatedAt": "2026-09-27T18:31:34.046Z",
+      "tokens": 92705,
+      "hash": "8a97961081419c9b",
+      "size": 372593,
+      "mtimeMs": 1790648181922.3196,
+      "updatedAt": "2026-09-29T02:16:21.963Z",
       "source": "hook"
     },
     ".github/community/03-release-diff-v0-2-2-to-main.md": {

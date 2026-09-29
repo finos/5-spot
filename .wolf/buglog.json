@@ -6,7 +6,30 @@
       "error_message": "PR #164 CI failed: cargo-deny 'error[vulnerability]: TLS 1.3 handshake messages incorrectly accepted across encryption level boundaries' (RUSTSEC-2026-0285) and Security Vulnerability Scan (cargo audit) exit 1 on the same advisory",
       "root_cause": "Cargo.lock pinned rustls v0.23.44 (transitive: kube client -> hyper-rustls -> rustls), which is below the RUSTSEC-2026-0285 / GHSA-2mjx-qc3c-rqvc fix version 0.23.45",
       "fix": "cargo update -p rustls (0.23.44 -> 0.23.45, lockfile-only); verified with `cargo deny check advisories` -> ok; changelog entry added",
-      "tags": ["ci", "cargo-deny", "cargo-audit", "rustsec", "dependencies", "rustls", "pr-164"]
+      "tags": [
+        "ci",
+        "cargo-deny",
+        "cargo-audit",
+        "rustsec",
+        "dependencies",
+        "rustls",
+        "pr-164"
+      ]
+    },
+    {
+      "date": "2026-09-28",
+      "error_message": "Dependabot PRs #173/#174 failed all CodeQL jobs: \"Loaded a configuration file for version '4.38.1', but running version '4.38.0'\"",
+      "root_cause": "codeql-action monorepo sub-actions (init/analyze/upload-sarif) are distinct dependency names; the dependabot.yml group pattern 'github/codeql-action' matched none of them, so the family split into three PRs and any single bump mismatches init vs analyze",
+      "fix": "re-pinned all six github/codeql-action/* refs to v4.38.1 (1c5b675) in one change across codeql/sast/scorecard/build workflows; added 'github/codeql-action/*' to the actions-routine group so the family bumps as one PR",
+      "tags": [
+        "ci",
+        "dependabot",
+        "codeql",
+        "github-actions",
+        "grouping",
+        "pr-173",
+        "pr-174"
+      ]
     }
   ]
 }

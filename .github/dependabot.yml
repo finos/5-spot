@@ -42,7 +42,14 @@ updates:
         patterns:
           - "actions/*"
           - "docker/*"
+          # The monorepo's sub-actions are distinct dependency names
+          # (github/codeql-action/init, /analyze, /upload-sarif), so the bare
+          # name alone never matched them — they escaped the group as three
+          # separate PRs, and any one of them alone fails CI with CodeQL's
+          # init/analyze version-mismatch error. Both spellings stay so a
+          # direct use of the root action would group too.
           - "github/codeql-action"
+          - "github/codeql-action/*"
           - "softprops/action-gh-release"
           - "anchore/sbom-action"
           - "aquasecurity/trivy-action"
