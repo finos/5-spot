@@ -56,3 +56,6 @@ description: chronological action log per session, consolidated weekly
 | 22:15 | Edited .github/dependabot.yml | expanded (+7 lines) | ~174 |
 | 22:16 | Edited .claude/CHANGELOG.md | expanded (+30 lines) | ~344 |
 | 09:45 | Fixed dependabot PRs: diagnosed CodeQL init/analyze 4.38.0-vs-4.38.1 mismatch on PRs 173/174 (172 passed, unpaired); re-pinned all 6 codeql-action refs to 4.38.1 across 4 workflows; added github/codeql-action/* to actions-routine group (bare pattern never matched sub-actions); changelog entry | .github/workflows/{codeql,sast,scorecard,build}.yaml, .github/dependabot.yml, .claude/CHANGELOG.md | PRs 170/171 green, leave for auto-merge; 172-174 to be superseded | ~5000 |
+| 06:55 | Edited .github/scripts/admission-deny.bats | 4→9 lines | ~125 |
+| 06:56 | Edited .claude/CHANGELOG.md | expanded (+27 lines) | ~314 |
+| 12:15 | PR 175 kind job round four: awaited policy denial aborted errexit'd setup_file at the bare out=$(patch_annotation) assignment; added || true (load-bearing comment); bats parses 5 tests | .github/scripts/admission-deny.bats, .claude/CHANGELOG.md, .wolf/buglog.json | previous fix (stderr/can-i) confirmed working — setup now reaches the probe loop | ~2500 |

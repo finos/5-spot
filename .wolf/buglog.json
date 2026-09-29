@@ -30,6 +30,20 @@
         "pr-173",
         "pr-174"
       ]
+    },
+    {
+      "date": "2026-09-29",
+      "error_message": "PR #175 kind job: setup_file failed at `out=$(patch_annotation ...)` right after the admission policy applied; 'bats warning: Executed 1 instead of expected 5 tests'",
+      "root_cause": "bats executes setup_file with errexit; the activation poll's probe patch exits non-zero exactly when the policy starts denying (the success condition), so the awaited denial aborted the file at the assignment",
+      "fix": "append `|| true` to the probe assignment (comment marks it load-bearing); all other patch_annotation call sites already use bats `run`",
+      "tags": [
+        "ci",
+        "bats",
+        "errexit",
+        "setup_file",
+        "admission",
+        "pr-175"
+      ]
     }
   ]
 }

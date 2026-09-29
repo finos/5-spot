@@ -1,13 +1,13 @@
 {
   "version": 1,
   "meta": {
-    "lastScanned": "2026-09-29T02:16:21.963Z",
-    "fileCount": 304,
+    "lastScanned": "2026-09-29T10:56:00.526Z",
+    "fileCount": 305,
     "hits": 0,
     "misses": 0,
-    "renderedHash": "2bdbfe5beb0c38dacfaf365f6b5d23d810a699d16ee0def45e7565b07f14485c",
-    "storeUpdatedAt": "2026-09-29T02:16:21.969Z",
-    "rootHash": "9ad67d9a0fcb3c14"
+    "renderedHash": "045772fae649e403ddd72e28ddb9a24401bae868dc96b16d459b2df64d66068c",
+    "storeUpdatedAt": "2026-09-29T10:56:00.532Z",
+    "rootHash": "1cb9532845d09e5e"
   },
   "files": {
     ".github/actions/extract-version/action.yml": {
@@ -6402,11 +6402,11 @@
     },
     ".claude/CHANGELOG.md": {
       "description": "Changelog",
-      "tokens": 92705,
-      "hash": "8a97961081419c9b",
-      "size": 372593,
-      "mtimeMs": 1790648181922.3196,
-      "updatedAt": "2026-09-29T02:16:21.963Z",
+      "tokens": 94003,
+      "hash": "b4b736bdb3860a1d",
+      "size": 377814,
+      "mtimeMs": 1790679360480.1965,
+      "updatedAt": "2026-09-29T10:56:00.525Z",
       "source": "hook"
     },
     ".github/community/03-release-diff-v0-2-2-to-main.md": {
@@ -6506,6 +6506,15 @@
       "size": 6100,
       "mtimeMs": 1790533241886.2585,
       "updatedAt": "2026-09-27T18:20:41.935Z",
+      "source": "hook"
+    },
+    ".github/scripts/admission-deny.bats": {
+      "description": "shellcheck shell=bats",
+      "tokens": 2418,
+      "hash": "a702b0d232e3e543",
+      "size": 9089,
+      "mtimeMs": 1790679331954.3904,
+      "updatedAt": "2026-09-29T10:55:31.994Z",
       "source": "hook"
     }
   },
