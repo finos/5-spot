@@ -158,7 +158,12 @@ YAML
     fi
     sleep 2
     attempt=$((attempt + 1))
-    out=$(patch_annotation "$KATA_SA" "$REF_KEY" "probe-${attempt}")
+    # `|| true` is load-bearing: bats runs setup_file with errexit, and the
+    # probe SUCCEEDING is kubectl exiting non-zero (the policy denied it).
+    # Without the guard, the poll survives only while the policy is not yet
+    # enforcing, and the first denial — the condition we are waiting for —
+    # aborts the whole file at this line.
+    out=$(patch_annotation "$KATA_SA" "$REF_KEY" "probe-${attempt}") || true
   done
 
   # Leave no probe value behind: the tests below assert on transitions.

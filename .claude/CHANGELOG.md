@@ -9,6 +9,33 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-09-29 12:15] - Admission deny suite round four: the awaited denial itself aborted setup_file
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/scripts/admission-deny.bats`: the policy-activation poll assigned
+  `out=$(patch_annotation …)` bare. bats runs `setup_file` under errexit, and
+  the probe *succeeding* is kubectl exiting non-zero — the policy denied the
+  patch — so the first denial aborted the file at that line ("Executed 1
+  instead of expected 5 tests"). The assignment now carries `|| true`, with a
+  comment marking it load-bearing. Every other `patch_annotation` call site
+  already goes through bats' `run`.
+
+### Why
+PR #175's kind job, third distinct setup failure mode: round two's fix (vary
+the probe value) let the poll reach the policy, round three's fix (keep
+kubectl's stderr warning out of the RBAC match) let it reach the probe loop,
+and the loop then died on the exact event it was polling for.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+---
+
 ## [2026-09-29 10:20] - Admission deny suite round three: the RBAC probe matched kubectl's warning, not its answer
 
 **Author:** Erick Bourgeois
