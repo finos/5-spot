@@ -415,6 +415,20 @@ kubectl get validatingadmissionpolicybinding scheduledmachine-validation-binding
 kubectl describe validatingadmissionpolicy scheduledmachine-validation
 ```
 
+A policy that exists is not the same as a policy that denies: a CEL typo, a
+wrong `matchConstraint` or a binding that never applied all fail **open**, and
+`kubectl get` still shows everything present. To prove denial against a real API
+server, on a throwaway cluster:
+
+```bash
+make kind-create
+make kind-verify-admission   # .github/scripts/admission-deny.bats
+make kind-delete
+```
+
+CI runs the same target on every change under `deploy/admission/`
+(`.github/workflows/admission-test.yaml`).
+
 Expected output includes `Type Ready` condition in the `Status` section.
 
 ---

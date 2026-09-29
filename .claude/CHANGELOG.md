@@ -9,6 +9,67 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-09-28] - ADR statuses corrected, and the admission policies get a test that proves they deny
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0012-*.md` and `docs/adr/0013-*.md`: **Proposed → Accepted.** Both
+  are implemented and merged (`ac5ecf5`, and the VAP is on `main`), so the
+  published log was asserting the opposite of the truth — and the Developer
+  Guide tells readers to check the Status line before relying on an ADR.
+  ADR-0011 correctly stays Proposed: no implementation exists. Both index
+  tables updated with them.
+- `docs/adr/0013-*.md`: decision 5 rewritten to name **two** test layers and
+  what each one proves, rather than implying the unit test covers denial.
+- `docs/src/security/admission-validation.md`: a "policy that exists is not a
+  policy that denies" note with the verification commands, since `kubectl get`
+  shows everything present either way.
+
+### Added
+- `.github/scripts/admission-deny.bats`: five behavioural tests against a real
+  API server. Two negative (neither agent may change
+  `5spot.finos.org/kata-config-ref`) and **three positive**, which are the ones
+  that matter for regressions: the kata agent can still write
+  `kata-config-applied` (the restart-loop guard depends on it), a non-agent
+  identity can still set the ref (the controller must not trip its own guard
+  rail), and re-applying an unchanged value is not a change.
+  - The suite **grants the impersonated identities `patch nodes` first**. Without
+    that the request fails at authorization, which is also `Forbidden`, and the
+    test would pass for entirely the wrong reason. It then asserts the policy's
+    own message text and the *absence* of `cannot patch resource`, so the layer
+    that refused is unambiguous.
+  - Policy activation is awaited by polling the behaviour, not a status field:
+    the thing the suite needs to be true is the denial itself.
+- `Makefile`: `kind-verify-admission` (registered in `.PHONY`). Needs no
+  controller image and no CRDs — a bare cluster, the manifests and
+  impersonation — which is what keeps it cheap enough to gate on.
+- `.github/workflows/admission-test.yaml`: runs it on any change under
+  `deploy/admission/`. Installs bats, then calls `make kind-create`,
+  `make kind-verify-admission`, `make kind-delete` — tool install plus Makefile
+  targets only, per `rules/github-workflows.md`, so CI runs exactly what a
+  contributor runs. No third-party action: `kind` comes from `kind-install`,
+  which verifies the download's SHA-256.
+
+### Why
+Every control in the threat model's TB-1 and §6.5 K5 is a
+`ValidatingAdmissionPolicy` whose whole guarantee is one CEL expression, and
+there was no test, in either this repo or banlieue, that any policy actually
+rejects anything. A typo, a wrong `matchConstraint` or an unapplied binding all
+fail **open** and silently. The unit test added with ADR-0013 asserts the
+manifest's shape; that is not the same claim.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+**Not executed here.** The suite is unrun: it issues `kubectl apply`, which this
+project's rules prohibit without an explicit request. `shellcheck` is clean, the
+workflow parses, and the first CI run on a `deploy/admission/` change will be its
+first real execution — worth watching, particularly the 60s activation poll.
+
 ## [2026-09-27] - 5S-02 and 5S-03: the kata-config-ref annotation gets an admission gate; the threat-model pass becomes mandatory
 
 **Author:** Erick Bourgeois

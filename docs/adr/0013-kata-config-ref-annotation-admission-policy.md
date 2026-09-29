@@ -4,7 +4,7 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0013 — The `kata-config-ref` annotation is writable by the controller only, enforced by admission
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-27
 - **Deciders:** Erick Bourgeois
 - **Supersedes:** —
@@ -83,12 +83,26 @@ identity is one of the 5-Spot node agents.**
 4. **`validationActions: [Deny]`,** with the file documenting `[Audit]` as the
    rollout option, mirroring ADR-0004's binding.
 
-5. **The manifest's strings are asserted against the Rust constants** by a unit
-   test. The policy hardcodes the annotation key and the ServiceAccount names;
-   nothing but a test stops a rename in `constants.rs` from silently leaving the
-   policy matching a key that no longer exists. This repository has been bitten
-   by exactly that class of drift before (ADR-0041's comment that claimed a
-   namespace scope the YAML did not grant).
+5. **Two test layers, because they prove different things.**
+   - A **unit test** asserts the manifest's strings against the Rust constants.
+     The policy hardcodes the annotation key and the ServiceAccount names;
+     nothing else stops a rename in `constants.rs` from silently leaving the
+     policy matching a key that no longer exists. This repository has been
+     bitten by exactly that class of drift before (ADR-0041's comment that
+     claimed a namespace scope the YAML did not grant).
+   - A **behavioural suite** (`.github/scripts/admission-deny.bats`, run by
+     `make kind-verify-admission` and the `Admission (deny tests)` workflow)
+     proves the policy *fires*, against a real API server. A CEL typo, a wrong
+     `matchConstraint` or a binding that never applied all fail **open** and
+     silently — the manifest applies, the policy exists, and nothing is
+     rejected. The suite grants the impersonated identities `patch nodes`
+     first, precisely so a denial cannot be an authorization failure wearing
+     admission's clothes, and asserts the policy's own message text to prove
+     which layer refused. It also asserts the *positive* paths: the agents can
+     still write `kata-config-applied`, and a non-agent identity can still set
+     `kata-config-ref` — without those, a policy that rejected every Node
+     update from an agent would pass the negative tests and break the
+     restart-loop guard.
 
 ## Consequences
 

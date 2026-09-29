@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
 # SPDX-License-Identifier: Apache-2.0
 
-.PHONY: help install build build-debug build-linux-amd64 build-linux-arm64 build-macos-arm64 prepare-binaries-linux-amd64 prepare-binaries-linux-arm64 test test-lib lint format clean crds crddoc docs docs-serve docs-clean docs-rustdoc calm-diagrams calm-validate run-local docker-build docker-build-amd64 docker-build-arm64 docker-build-chainguard docker-image docker-push docker-buildx docker-buildx-chainguard gitleaks gitleaks-install install-git-hooks security-scan-local sbom audit vexctl-install vex-validate vex-assemble vex-auto-presence vex-auto-reachability vex-auto vex-auto-check set-image-version kind-install kind-create kind-delete kind-load kind-deploy kind-example kind-setup kind-status
+.PHONY: help install build build-debug build-linux-amd64 build-linux-arm64 build-macos-arm64 prepare-binaries-linux-amd64 prepare-binaries-linux-arm64 test test-lib lint format clean crds crddoc docs docs-serve docs-clean docs-rustdoc calm-diagrams calm-validate run-local docker-build docker-build-amd64 docker-build-arm64 docker-build-chainguard docker-image docker-push docker-buildx docker-buildx-chainguard gitleaks gitleaks-install install-git-hooks security-scan-local sbom audit vexctl-install vex-validate vex-assemble vex-auto-presence vex-auto-reachability vex-auto vex-auto-check set-image-version kind-install kind-create kind-delete kind-load kind-deploy kind-example kind-setup kind-status kind-verify-admission
 
 # CALM (FINOS Common Architecture Language Model) configuration
 CALM_CLI_VERSION ?= 1.37.0
@@ -896,6 +896,19 @@ kind-status: ## Show kind cluster, controller, and ScheduledMachine status
 	@echo ""
 	@echo "=== ScheduledMachines (all namespaces) ==="
 	@kubectl --context kind-$(KIND_CLUSTER_NAME) get scheduledmachines -A 2>/dev/null || echo "(cluster unreachable)"
+
+kind-verify-admission: kind-install ## Verify the admission policies actually DENY (bats, needs a kind cluster)
+	@# Every control in the threat model's TB-1 and §6.5 K5 is a
+	@# ValidatingAdmissionPolicy whose guarantee is one CEL expression, and a
+	@# typo or an unapplied binding fails OPEN and silently. The unit tests
+	@# assert the manifests' shape; only an API server proves they fire.
+	@#
+	@# Needs no controller image and no CRDs — just a cluster where the caller
+	@# is cluster-admin, so it runs in ~30s on a fresh kind cluster.
+	@command -v bats >/dev/null || { 	  echo "bats not found. Install bats-core: apt-get install bats | brew install bats-core"; 	  exit 1; 	}
+	@kind get clusters 2>/dev/null | grep -qx $(KIND_CLUSTER_NAME) || { 	  echo "kind cluster '$(KIND_CLUSTER_NAME)' does not exist. Run: make kind-create"; 	  exit 1; 	}
+	@echo "Verifying admission denial against kind-$(KIND_CLUSTER_NAME)..."
+	@KUBECTL_CONTEXT=kind-$(KIND_CLUSTER_NAME) bats .github/scripts/admission-deny.bats
 
 kind-setup: kind-create kind-load kind-deploy ## One-shot: create cluster, build+load image, deploy CRDs & controller
 	@echo ""

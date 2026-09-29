@@ -4,7 +4,7 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0012 — The kata-config agent validates its own input, and the restart argv terminates options
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-27
 - **Deciders:** Erick Bourgeois
 - **Supersedes:** —

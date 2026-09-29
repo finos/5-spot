@@ -1,0 +1,62 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: Apache-2.0
+#
+# Behavioural tests for deploy/admission/ — that the policies actually DENY.
+#
+# Why this workflow exists: every control in the threat model's TB-1 and §6.5
+# K5 is a ValidatingAdmissionPolicy whose entire guarantee is one CEL
+# expression. A typo, a wrong matchConstraint, or a binding that never applied
+# all fail **open**, and silently — the manifests still apply, the policy still
+# exists, and nothing rejects anything. Unit tests assert the manifests' shape
+# (src/kata_config_agent_tests.rs); only a real API server proves they fire.
+#
+# This needs no controller image and no CRDs: a bare kind cluster, the policy
+# manifests, and impersonation. That is what keeps it cheap enough to gate on.
+name: Admission (deny tests)
+
+on:
+  pull_request:
+    paths:
+      - 'deploy/admission/**'
+      - '.github/scripts/admission-deny.bats'
+      - '.github/workflows/admission-test.yaml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'deploy/admission/**'
+      - '.github/scripts/admission-deny.bats'
+      - '.github/workflows/admission-test.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: admission-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deny:
+    name: 🚫 Policies deny (kind)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Tool install only — all logic lives in the Makefile, so CI runs exactly
+      # what a contributor runs (rules/github-workflows.md). kind itself is
+      # installed by `make kind-create`'s kind-install prerequisite, which
+      # verifies the download's SHA-256.
+      - name: Install bats-core
+        run: sudo apt-get update && sudo apt-get install -y bats
+
+      - name: Create kind cluster
+        run: make kind-create
+
+      - name: Verify the policies deny
+        run: make kind-verify-admission
+
+      - name: Delete kind cluster
+        if: always()
+        run: make kind-delete
