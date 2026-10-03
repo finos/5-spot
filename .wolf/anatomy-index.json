@@ -1,13 +1,13 @@
 {
   "version": 1,
   "meta": {
-    "lastScanned": "2026-09-29T11:55:35.452Z",
-    "fileCount": 305,
+    "lastScanned": "2026-10-03T15:44:53.111Z",
+    "fileCount": 317,
     "hits": 0,
     "misses": 0,
-    "renderedHash": "ef443c6ad1781b2bf36161ea79a738ac434a2930d0d0eb9906ddf1073c2ec032",
-    "storeUpdatedAt": "2026-09-29T11:55:35.458Z",
-    "rootHash": "421153f1e8e8c70d"
+    "renderedHash": "65a5a1aad99ed86dd4e8c2d8fbbdf9a0f77be48d6565dc13e6bac6b3599125a7",
+    "storeUpdatedAt": "2026-10-03T15:44:53.117Z",
+    "rootHash": "52fed166c638471c"
   },
   "files": {
     ".github/actions/extract-version/action.yml": {
@@ -6515,6 +6515,369 @@
       "size": 9554,
       "mtimeMs": 1790682910740.055,
       "updatedAt": "2026-09-29T11:55:10.785Z",
+      "source": "hook"
+    },
+    "docs/adr/0011-schedule-gated-capacity-separate-controller.md": {
+      "description": "0011 — Schedule-gated capacity: a `ScheduledCapacity` CRD and its own controller",
+      "tokens": 4168,
+      "hash": "14bc35511784b63f",
+      "size": 16711,
+      "mtimeMs": 1790985903442.2798,
+      "updatedAt": "2026-10-03T00:05:03.489Z",
+      "source": "hook"
+    },
+    "examples/scheduledcapacity.yaml": {
+      "description": "Example ScheduledCapacity objects (ADR 0011) — the NON-handover pattern.",
+      "tokens": 1543,
+      "hash": "b161617944133508",
+      "size": 5401,
+      "mtimeMs": 1790986609812.0813,
+      "updatedAt": "2026-10-03T00:16:49.859Z",
+      "source": "hook"
+    },
+    "src/leader.rs": {
+      "description": "# Leader election (Basel III HA)",
+      "tokens": 1558,
+      "hash": "6fabd0ba6e2d1078",
+      "size": 5839,
+      "mtimeMs": 1791041493119.4844,
+      "updatedAt": "2026-10-03T15:31:33.171Z",
+      "source": "hook",
+      "symbols": [
+        {
+          "name": "LeaderElectionConfig",
+          "kind": "class",
+          "startLine": 41,
+          "endLine": 54,
+          "tokens": 169
+        },
+        {
+          "name": "LeaderElectionConfig",
+          "kind": "section",
+          "startLine": 55,
+          "endLine": 94,
+          "tokens": 473
+        },
+        {
+          "name": "start_leader_election",
+          "kind": "fn",
+          "startLine": 95,
+          "endLine": 153,
+          "tokens": 538
+        }
+      ]
+    },
+    "src/leader_tests.rs": {
+      "description": "SPDX-License-Identifier: Apache-2.0",
+      "tokens": 1157,
+      "hash": "cfe154337e7f1966",
+      "size": 4338,
+      "mtimeMs": 1791041510870.8228,
+      "updatedAt": "2026-10-03T15:31:50.922Z",
+      "source": "hook"
+    },
+    "src/reconcilers/capacity_path_tests.rs": {
+      "description": "SPDX-License-Identifier: Apache-2.0",
+      "tokens": 3066,
+      "hash": "7f12d011a3fb03ea",
+      "size": 11495,
+      "mtimeMs": 1791041720784.8757,
+      "updatedAt": "2026-10-03T15:35:20.847Z",
+      "source": "hook"
+    },
+    "src/reconcilers/capacity_path.rs": {
+      "description": "# Capacity field paths: validation, patch construction, readback (ADR 0011)",
+      "tokens": 2375,
+      "hash": "d36cf1fffcc2d6cb",
+      "size": 8905,
+      "mtimeMs": 1791041760312.4846,
+      "updatedAt": "2026-10-03T15:36:00.364Z",
+      "source": "hook",
+      "symbols": [
+        {
+          "name": "CapacityPathError",
+          "kind": "class",
+          "startLine": 48,
+          "endLine": 98,
+          "tokens": 442
+        },
+        {
+          "name": "validate_segments",
+          "kind": "fn",
+          "startLine": 99,
+          "endLine": 137,
+          "tokens": 406
+        },
+        {
+          "name": "is_camel_case_field",
+          "kind": "fn",
+          "startLine": 138,
+          "endLine": 154,
+          "tokens": 144
+        },
+        {
+          "name": "validate_write_path",
+          "kind": "fn",
+          "startLine": 155,
+          "endLine": 164,
+          "tokens": 109
+        },
+        {
+          "name": "validate_drained_path",
+          "kind": "fn",
+          "startLine": 165,
+          "endLine": 170,
+          "tokens": 70
+        },
+        {
+          "name": "validate_prefixed",
+          "kind": "fn",
+          "startLine": 171,
+          "endLine": 199,
+          "tokens": 317
+        },
+        {
+          "name": "build_merge_patch",
+          "kind": "fn",
+          "startLine": 200,
+          "endLine": 224,
+          "tokens": 291
+        },
+        {
+          "name": "read_i64_at",
+          "kind": "fn",
+          "startLine": 225,
+          "endLine": 242,
+          "tokens": 116
+        }
+      ]
+    },
+    "src/reconcilers/capacity_decision.rs": {
+      "description": "# The capacity decision (ADR 0011): pure, no I/O",
+      "tokens": 3527,
+      "hash": "945cd1a47b16de21",
+      "size": 13227,
+      "mtimeMs": 1791041915452.7488,
+      "updatedAt": "2026-10-03T15:38:35.508Z",
+      "source": "hook",
+      "symbols": [
+        {
+          "name": "CapacityDecisionInput",
+          "kind": "class",
+          "startLine": 60,
+          "endLine": 95,
+          "tokens": 456
+        },
+        {
+          "name": "CapacityDecision",
+          "kind": "class",
+          "startLine": 96,
+          "endLine": 119,
+          "tokens": 266
+        },
+        {
+          "name": "CapacityDecision",
+          "kind": "section",
+          "startLine": 120,
+          "endLine": 140,
+          "tokens": 189
+        },
+        {
+          "name": "decide",
+          "kind": "fn",
+          "startLine": 141,
+          "endLine": 299,
+          "tokens": 1833
+        },
+        {
+          "name": "write_if_changed",
+          "kind": "fn",
+          "startLine": 300,
+          "endLine": 308,
+          "tokens": 78
+        },
+        {
+          "name": "describe_drained",
+          "kind": "fn",
+          "startLine": 309,
+          "endLine": 319,
+          "tokens": 70
+        }
+      ]
+    },
+    "src/reconcilers/capacity_decision_tests.rs": {
+      "description": "SPDX-License-Identifier: Apache-2.0",
+      "tokens": 5819,
+      "hash": "f0605ca5a05fdcc7",
+      "size": 21820,
+      "mtimeMs": 1791041983553.5894,
+      "updatedAt": "2026-10-03T15:39:43.607Z",
+      "source": "hook"
+    },
+    "src/reconcilers/scheduled_capacity.rs": {
+      "description": "# `ScheduledCapacity` reconciler (ADR 0011)",
+      "tokens": 7146,
+      "hash": "4e399937def19c43",
+      "size": 26795,
+      "mtimeMs": 1791042108973.659,
+      "updatedAt": "2026-10-03T15:41:49.021Z",
+      "source": "hook",
+      "symbols": [
+        {
+          "name": "CapacityError",
+          "kind": "class",
+          "startLine": 87,
+          "endLine": 107,
+          "tokens": 217
+        },
+        {
+          "name": "CapacityContext",
+          "kind": "class",
+          "startLine": 108,
+          "endLine": 117,
+          "tokens": 120
+        },
+        {
+          "name": "TargetResolution",
+          "kind": "class",
+          "startLine": 118,
+          "endLine": 135,
+          "tokens": 179
+        },
+        {
+          "name": "reconcile",
+          "kind": "fn",
+          "startLine": 136,
+          "endLine": 249,
+          "tokens": 1190
+        },
+        {
+          "name": "resolve_target",
+          "kind": "fn",
+          "startLine": 250,
+          "endLine": 329,
+          "tokens": 832
+        },
+        {
+          "name": "can_patch",
+          "kind": "fn",
+          "startLine": 330,
+          "endLine": 367,
+          "tokens": 465
+        },
+        {
+          "name": "detect_host_governance_conflict",
+          "kind": "fn",
+          "startLine": 368,
+          "endLine": 405,
+          "tokens": 375
+        },
+        {
+          "name": "write_capacity",
+          "kind": "fn",
+          "startLine": 406,
+          "endLine": 430,
+          "tokens": 267
+        },
+        {
+          "name": "parse_handback_timeout",
+          "kind": "fn",
+          "startLine": 431,
+          "endLine": 443,
+          "tokens": 208
+        },
+        {
+          "name": "parse_rfc3339",
+          "kind": "fn",
+          "startLine": 444,
+          "endLine": 450,
+          "tokens": 59
+        },
+        {
+          "name": "record_decision_metrics",
+          "kind": "fn",
+          "startLine": 451,
+          "endLine": 461,
+          "tokens": 153
+        },
+        {
+          "name": "patch_status",
+          "kind": "fn",
+          "startLine": 462,
+          "endLine": 578,
+          "tokens": 1049
+        },
+        {
+          "name": "verdict_message",
+          "kind": "fn",
+          "startLine": 579,
+          "endLine": 594,
+          "tokens": 209
+        },
+        {
+          "name": "requeue_for",
+          "kind": "fn",
+          "startLine": 595,
+          "endLine": 608,
+          "tokens": 153
+        },
+        {
+          "name": "error_policy",
+          "kind": "fn",
+          "startLine": 609,
+          "endLine": 629,
+          "tokens": 188
+        },
+        {
+          "name": "run",
+          "kind": "fn",
+          "startLine": 630,
+          "endLine": 702,
+          "tokens": 796
+        }
+      ]
+    },
+    "src/reconcilers/scheduled_capacity_tests.rs": {
+      "description": "SPDX-License-Identifier: Apache-2.0",
+      "tokens": 4216,
+      "hash": "d87880f2ae81ba74",
+      "size": 15809,
+      "mtimeMs": 1791042195614.9646,
+      "updatedAt": "2026-10-03T15:43:15.662Z",
+      "source": "hook"
+    },
+    "src/bin/scheduled_capacity_controller.rs": {
+      "description": "# `5spot-capacity-controller`",
+      "tokens": 1451,
+      "hash": "55b80c4d635ca1e1",
+      "size": 5441,
+      "mtimeMs": 1791042269008.9434,
+      "updatedAt": "2026-10-03T15:44:29.057Z",
+      "source": "hook",
+      "symbols": [
+        {
+          "name": "Cli",
+          "kind": "class",
+          "startLine": 61,
+          "endLine": 91,
+          "tokens": 341
+        },
+        {
+          "name": "main",
+          "kind": "fn",
+          "startLine": 92,
+          "endLine": 139,
+          "tokens": 494
+        }
+      ]
+    },
+    "src/bin/scheduled_capacity_controller_tests.rs": {
+      "description": "Parse with no arguments, as the Deployment does when it relies on",
+      "tokens": 1015,
+      "hash": "eb39a61fbafb5c2a",
+      "size": 3804,
+      "mtimeMs": 1791042293062.8726,
+      "updatedAt": "2026-10-03T15:44:53.110Z",
       "source": "hook"
     }
   },

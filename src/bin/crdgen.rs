@@ -17,14 +17,17 @@
 //! ```
 //!
 //! Accepted selectors (case-insensitive): `scheduledmachine`,
-//! `timebasedspotschedule`, `capitalmarketsschedule`. With no selector every CRD
-//! is emitted, separated by the YAML document marker `---`.
+//! `scheduledcapacity`, `timebasedspotschedule`, `capitalmarketsschedule`. With
+//! no selector every CRD is emitted, separated by the YAML document marker
+//! `---`.
 //!
 //! The Rust types in `src/crd.rs` are the **single source of truth**. Re-run
 //! `make crds` after any change to `src/crd.rs` and commit the refreshed YAML.
 
 use clap::{Parser, ValueEnum};
-use five_spot::crd::{CapitalMarketsSchedule, ScheduledMachine, TimeBasedSpotSchedule};
+use five_spot::crd::{
+    CapitalMarketsSchedule, ScheduledCapacity, ScheduledMachine, TimeBasedSpotSchedule,
+};
 use kube::CustomResourceExt;
 
 /// The CRDs this tool can emit. Each selector's `value` matches the committed
@@ -33,6 +36,8 @@ use kube::CustomResourceExt;
 enum CrdSelector {
     #[value(name = "scheduledmachine")]
     ScheduledMachine,
+    #[value(name = "scheduledcapacity")]
+    ScheduledCapacity,
     #[value(name = "timebasedspotschedule")]
     TimeBasedSpotSchedule,
     #[value(name = "capitalmarketsschedule")]
@@ -41,8 +46,9 @@ enum CrdSelector {
 
 impl CrdSelector {
     /// All selectors, in the canonical emit order used by the no-arg stream.
-    const ALL: [CrdSelector; 3] = [
+    const ALL: [CrdSelector; 4] = [
         CrdSelector::ScheduledMachine,
+        CrdSelector::ScheduledCapacity,
         CrdSelector::TimeBasedSpotSchedule,
         CrdSelector::CapitalMarketsSchedule,
     ];
@@ -51,6 +57,7 @@ impl CrdSelector {
     fn render(self) -> String {
         let yaml = match self {
             CrdSelector::ScheduledMachine => serde_yaml::to_string(&ScheduledMachine::crd()),
+            CrdSelector::ScheduledCapacity => serde_yaml::to_string(&ScheduledCapacity::crd()),
             CrdSelector::TimeBasedSpotSchedule => {
                 serde_yaml::to_string(&TimeBasedSpotSchedule::crd())
             }

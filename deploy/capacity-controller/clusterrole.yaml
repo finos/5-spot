@@ -1,0 +1,68 @@
+# Least-privilege ClusterRole for the schedule-gated capacity controller
+# (ADR 0011).
+#
+# This is the security deliverable of ADR 0011, so read it as a claim:
+#
+#   * NO create and NO delete anywhere. The controller's only mutation of a
+#     foreign object is `patch` on one field. A ScheduledCapacity can therefore
+#     never cause an object to come into existence or cease to exist, which is
+#     what makes the design safe for a consumer's pool with live claims.
+#   * NO secrets. Unlike the machine controller it reads no kubeconfig and no
+#     bootstrap payload, so it holds no credential path at all.
+#   * NO CAPI verbs. It cannot touch Machine, bootstrap or infrastructure
+#     resources. The machine controller's broad grants (recorded as HIGH
+#     residuals in docs/src/security/threat-model.md) are NOT extended here, and
+#     the whole point of the separate identity is to stop them compounding.
+#   * `patch` on exactly the allowlisted target API groups, which must stay in
+#     step with ALLOWED_CAPACITY_TARGET_API_GROUPS in src/constants.rs. Widening
+#     either is an ADR-level decision, not a configuration change.
+#
+# A cluster with no capacity consumer installs none of this.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: 5spot-capacity-controller
+  labels:
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: capacity-controller
+rules:
+  # Own CRD: watch the spec, publish the status.
+  - apiGroups: ["5spot.finos.org"]
+    resources: ["scheduledcapacities"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["5spot.finos.org"]
+    resources: ["scheduledcapacities/status"]
+    verbs: ["get", "update", "patch"]
+
+  # Spot-schedule providers: read-only. 5-Spot never writes a provider object
+  # and never reads its spec (ADR 0006); only the duck-typed status.active and
+  # the Ready condition are consumed.
+  - apiGroups: ["spotschedules.5spot.finos.org"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+
+  # ScheduledMachine: read-only, and only to detect that a host is governed by
+  # both kinds (ADR 0011 decision 7). This grant carries no write verb, so the
+  # capacity identity can observe the machine controller's objects but never
+  # alter them.
+  - apiGroups: ["5spot.finos.org"]
+    resources: ["scheduledmachines"]
+    verbs: ["get", "list", "watch"]
+
+  # The governed foreign objects. `patch` is the ONLY write verb, and the group
+  # list mirrors ALLOWED_CAPACITY_TARGET_API_GROUPS exactly.
+  - apiGroups: ["banlieue.io"]
+    resources: ["virtualmachinepools"]
+    verbs: ["get", "list", "watch", "patch"]
+
+  # Pre-flight permission check, so an RBAC gap surfaces as a TargetResolved
+  # condition rather than an opaque 403 partway through actuation.
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["selfsubjectaccessreviews"]
+    verbs: ["create"]
+
+  # Leader election. Its own Lease name, so this controller's leadership never
+  # gates the machine controller's.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]

@@ -635,6 +635,188 @@ pub const PHASE_ERROR: &str = "Error";
 pub const PHASE_EMERGENCY_REMOVE: &str = "EmergencyRemove";
 
 // ============================================================================
+// ScheduledCapacity Constants (ADR 0011)
+// ============================================================================
+//
+// `ScheduledCapacity` gates one numeric capacity field on a foreign object from
+// a spot-schedule provider's verdict, and is reconciled by its own binary under
+// its own identity. Its phases and conditions are deliberately **its own**, not
+// `ScheduledMachine`'s: a budget ramp and a drain wait are not node membership,
+// and ADR 0007's additive-only rule would make a borrowed enum permanent.
+
+/// Capacity phase: `Pending` (first reconcile, nothing resolved yet).
+pub const PHASE_CAPACITY_PENDING: &str = "Pending";
+
+/// Capacity phase: `Active` (the active value is written on the target).
+pub const PHASE_CAPACITY_ACTIVE: &str = "Active";
+
+/// Capacity phase: `HandingBack` (zero written; waiting for the consumer to
+/// report drained via `spec.handback.drainedPath`, up to the deadline).
+///
+/// Exists only on `ScheduledCapacity`. The machine controller's
+/// [`PHASE_SHUTTING_DOWN`] is not the same state: that one drains a Node the
+/// controller owns, this one waits on a consumer it does not.
+pub const PHASE_CAPACITY_HANDING_BACK: &str = "HandingBack";
+
+/// Capacity phase: `HandbackTimedOut` (the deadline passed with the consumer
+/// still not drained).
+///
+/// **Terminal only in the sense that the controller stops waiting: it HOLDS the
+/// written value and never forces it to zero** (ADR 0011 decision 6). A missed
+/// handover is visible and recoverable; killing in-flight work is neither.
+pub const PHASE_CAPACITY_HANDBACK_TIMED_OUT: &str = "HandbackTimedOut";
+
+/// Capacity phase: `Inactive` (zero written and the consumer reported drained).
+pub const PHASE_CAPACITY_INACTIVE: &str = "Inactive";
+
+/// Capacity phase: `Disabled` (`spec.enabled = false`).
+pub const PHASE_CAPACITY_DISABLED: &str = "Disabled";
+
+/// Capacity phase: `Terminated` (`spec.killSwitch = true`).
+pub const PHASE_CAPACITY_TERMINATED: &str = "Terminated";
+
+/// Capacity phase: `Error`.
+pub const PHASE_CAPACITY_ERROR: &str = "Error";
+
+/// Condition: the object named by `spec.targetRef` resolved, its API group is
+/// allowlisted, and the pre-flight `SelfSubjectAccessReview` for `patch`
+/// succeeded. `False` means the controller has not written and will not.
+pub const CONDITION_TYPE_TARGET_RESOLVED: &str = "TargetResolved";
+
+/// Condition: the controller's intended value is the value currently on the
+/// target's `spec.capacity.path`.
+pub const CONDITION_TYPE_CAPACITY_WRITTEN: &str = "CapacityWritten";
+
+/// Condition: the consumer has released the slice (`drainedPath` reads
+/// [`CAPACITY_INACTIVE_VALUE`]). `False` with reason
+/// [`REASON_HANDBACK_TIMED_OUT`] is the loud report that the deadline passed.
+pub const CONDITION_TYPE_HANDBACK_COMPLETE: &str = "HandbackComplete";
+
+/// Condition: `spec.nodeName` is also the `status.nodeRef` of a
+/// `ScheduledMachine` in this namespace, so one host would be both handed over
+/// and shared (ADR 0011 decision 7). `True` here means the controller is
+/// **refusing to write at all** (fail closed), not that it wrote and warned.
+pub const CONDITION_TYPE_HOST_GOVERNANCE_CONFLICT: &str = "HostGovernanceConflict";
+
+/// Reason: the active value is written and the schedule says active.
+pub const REASON_CAPACITY_ACTIVE: &str = "ScheduleActive";
+
+/// Reason: zero is written and the consumer reported drained.
+pub const REASON_CAPACITY_INACTIVE: &str = "ScheduleInactive";
+
+/// Reason: zero is written and the controller is waiting on `drainedPath`.
+pub const REASON_HANDBACK_WAITING: &str = "WaitingForDrain";
+
+/// Reason: the handback deadline passed; the written value is **held**.
+pub const REASON_HANDBACK_TIMED_OUT: &str = "HandbackTimedOut";
+
+/// Reason: `spec.handback` is absent, so handback completed on the zero write.
+pub const REASON_HANDBACK_NOT_OBSERVED: &str = "NoDrainSignalConfigured";
+
+/// Reason: `spec.targetRef` resolved and is writable.
+pub const REASON_TARGET_RESOLVED: &str = "Resolved";
+
+/// Reason: no CRD for `spec.targetRef`'s group/kind is installed.
+pub const REASON_TARGET_CRD_NOT_INSTALLED: &str = "TargetCRDNotInstalled";
+
+/// Reason: the CRD exists but the named object does not. Not an error and
+/// never a create (ADR 0011 decision 2).
+pub const REASON_TARGET_NOT_FOUND: &str = "TargetNotFound";
+
+/// Reason: `spec.targetRef.apiVersion`'s group is not in
+/// [`ALLOWED_CAPACITY_TARGET_API_GROUPS`].
+pub const REASON_TARGET_GROUP_NOT_ALLOWED: &str = "TargetGroupNotAllowed";
+
+/// Reason: the pre-flight `SelfSubjectAccessReview` says this ServiceAccount
+/// may not `patch` the resolved target resource.
+pub const REASON_TARGET_NOT_WRITABLE: &str = "TargetNotWritable";
+
+/// Reason: a host is governed by both `ScheduledMachine` and
+/// `ScheduledCapacity`.
+pub const REASON_HOST_GOVERNANCE_CONFLICT: &str = "AlsoGovernedByScheduledMachine";
+
+/// Reason for `HostGovernanceConflict=False`: no `ScheduledMachine` in this
+/// namespace claims the node named by `spec.nodeName` (or no node is named, so
+/// the two objects cannot be correlated at all).
+///
+/// A distinct constant because reusing [`REASON_TARGET_RESOLVED`] here made the
+/// condition read `HostGovernanceConflict=False reason=Resolved`, which says
+/// nothing about governance.
+pub const REASON_NO_HOST_GOVERNANCE_CONFLICT: &str = "SoleGovernor";
+
+/// The value written to `spec.capacity.path` when the schedule is inactive.
+///
+/// **Fixed, never configurable** (ADR 0011 decision 1): the inactive value is
+/// the type's zero, because a schedule that hands nothing back is not a
+/// schedule. It is also the value `spec.handback.drainedPath` must reach for
+/// handback to be complete.
+pub const CAPACITY_INACTIVE_VALUE: i64 = 0;
+
+/// Default for `spec.handback.timeout` when a `handback` block names a drain
+/// path but no timeout, so the cooperative wait can never be unbounded.
+pub const DEFAULT_HANDBACK_TIMEOUT: &str = "10m";
+
+/// Charset pattern for `spec.capacity.path` and `spec.handback.drainedPath`:
+/// dot-separated camelCase segments and nothing else.
+///
+/// **This is a security control, not a convenience.** The path names a field on
+/// an object 5-Spot does not own, so the pattern excludes array indices,
+/// wildcards, `..`, quotes and `/`: there is no way to express a JSON Pointer
+/// escape or traverse upward. The prefix pins (`spec.` for the write path,
+/// `status.` for the drain path) are separate CEL rules, and both are
+/// re-checked in the reconciler because the schema only holds if the deployed
+/// CRD is current.
+///
+/// The segment cap is encoded **in the pattern** (`{0,7}` after the first
+/// segment, so [`CAPACITY_PATH_MAX_SEGMENTS`] total) rather than as a
+/// `self.split('.').size()` CEL rule. `split` comes from CEL's extended
+/// strings library, and a structural-schema `pattern` is enforced
+/// unconditionally by every API server that can serve the CRD at all, so the
+/// cheaper guarantee is the stronger one here.
+pub const CAPACITY_PATH_PATTERN: &str = r"^[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9]*){0,7}$";
+
+/// Required prefix for `spec.capacity.path`.
+///
+/// `metadata.` is excluded because a CR author able to write
+/// `ownerReferences`, `finalizers` or labels on a foreign object would hold an
+/// elevation primitive; `status.` is excluded because a status is a
+/// controller's own report, not a knob.
+pub const CAPACITY_WRITE_PATH_PREFIX: &str = "spec.";
+
+/// Required prefix for `spec.handback.drainedPath`, a consumer's own report of
+/// how much of the slice is still in use.
+pub const CAPACITY_DRAINED_PATH_PREFIX: &str = "status.";
+
+/// Maximum number of dot-separated segments in a capacity path. Bounds the
+/// nesting the controller will construct in a merge patch.
+pub const CAPACITY_PATH_MAX_SEGMENTS: usize = 8;
+
+/// Allowed API groups for `ScheduledCapacity.spec.targetRef`: the third
+/// allowlist beside [`ALLOWED_BOOTSTRAP_API_GROUPS`] and
+/// [`ALLOWED_INFRASTRUCTURE_API_GROUPS`] (ADR 0011 decision 5).
+///
+/// Deliberately narrow: this is the only API family outside CAPI that 5-Spot
+/// writes at all, the capacity ServiceAccount holds `patch` on exactly these
+/// groups, and widening it is an ADR-level decision, not a configuration
+/// change.
+pub const ALLOWED_CAPACITY_TARGET_API_GROUPS: &[&str] = &["banlieue.io"];
+
+/// RBAC verb used for the pre-flight `SelfSubjectAccessReview` the capacity
+/// controller issues before its first write. Mirrors [`RBAC_VERB_CREATE`] on
+/// the machine controller: an RBAC gap becomes a clear
+/// `TargetResolved=False` condition instead of an opaque 403 mid-actuation.
+pub const RBAC_VERB_PATCH: &str = "patch";
+
+/// Requeue interval while a `ScheduledCapacity` is in
+/// [`PHASE_CAPACITY_HANDING_BACK`].
+///
+/// This is a **deadline backstop, not a poll**: the drain signal arrives
+/// through the dynamic target watch, and this only guarantees the controller
+/// wakes to notice an expired `handback.timeout` even if no further target
+/// event ever arrives.
+pub const CAPACITY_HANDBACK_DEADLINE_CHECK_SECS: u64 = 30;
+
+// ============================================================================
 // CAPI API Constants
 // ============================================================================
 

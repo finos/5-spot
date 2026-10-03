@@ -59,6 +59,28 @@
         "admission",
         "pr-175"
       ]
+    },
+    {
+      "id": "bug-005",
+      "date": "2026-10-03",
+      "error_message": "ScheduledCapacity controller re-patched its own status on every reconcile, re-triggering its own watch: ~50 resourceVersion bumps/sec and a single handback timeout counted 100 times in the Prometheus counter.",
+      "root_cause": "Three compounding mistakes in patch_status. (1) Condition::new() stamps lastTransitionTime with Utc::now(), so the computed condition set never equalled the stored one and every reconcile wrote. (2) There was no no-op guard comparing the computed status against the stored one before patching. (3) record_decision_metrics incremented the handback-timeout counter once per reconcile instead of once per transition into the phase. A later rewrite then introduced a fourth: build_status_value silently dropped the targetRef and spotSchedule keys, so the new no-op guard compared a desired status that could never equal the stored one and was permanently disabled, with no test failure and no visible symptom.",
+      "fix": "merge_condition_timestamps() preserves each condition's lastTransitionTime unless its `status` actually changed (matched by type, not position); spot_schedule_transition_time() does the same for the mirrored provider timestamp. patch_status() deserialises the computed status into ScheduledCapacityStatus and returns early when it equals the stored one. record_decision_metrics() gates on entered_phase(). build_status_value() always emits every key the controller owns, using explicit JSON null for cleared fields (an omitted key in a merge patch leaves the stored value, so handbackDeadline could never be cleared). Guarded by test_build_status_value_emits_every_field_of_the_status_type, which derives the expected key set from a fully-populated ScheduledCapacityStatus rather than a hand-written list.",
+      "lesson": "A controller that logs nothing on a successful reconcile cannot be debugged: the missing-success-log made a working watch look dead and sent the first diagnosis in the wrong direction. Always log reconcile completion. And any status field built by hand must be checked against the type, not against memory.",
+      "files": [
+        "src/reconcilers/scheduled_capacity.rs",
+        "src/reconcilers/scheduled_capacity_tests.rs",
+        "src/crd.rs"
+      ],
+      "tags": [
+        "controller",
+        "reconcile-loop",
+        "status-patch",
+        "lasttransitiontime",
+        "metrics",
+        "adr-0011",
+        "kube-rs"
+      ]
     }
   ]
 }

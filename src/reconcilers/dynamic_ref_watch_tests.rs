@@ -4,7 +4,10 @@
 #[allow(clippy::module_inception)]
 mod tests {
     use super::super::*;
-    use crate::crd::{ScheduledMachine, ScheduledMachineSpec, SpotScheduleRef};
+    use crate::crd::{
+        ScheduledCapacity, ScheduledCapacitySpec, ScheduledMachine, ScheduledMachineSpec,
+        SpotScheduleRef,
+    };
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
     use kube::core::GroupVersionKind;
     use kube::runtime::reflector::ObjectRef;
@@ -74,7 +77,7 @@ mod tests {
 
     #[test]
     fn test_register_then_lookup_returns_sm() {
-        let mut index = ReverseIndex::default();
+        let mut index: ReverseIndex<ScheduledMachine> = ReverseIndex::default();
         let key = provider_key("CapitalMarketsSchedule", "cm", "nyse");
         index.register(sm_ref("cm", "sm-a"), key.clone());
 
@@ -84,7 +87,7 @@ mod tests {
 
     #[test]
     fn test_two_sms_share_one_provider_key() {
-        let mut index = ReverseIndex::default();
+        let mut index: ReverseIndex<ScheduledMachine> = ReverseIndex::default();
         let key = provider_key("CapitalMarketsSchedule", "cm", "nyse");
         index.register(sm_ref("cm", "sm-a"), key.clone());
         index.register(sm_ref("cm", "sm-b"), key.clone());
@@ -99,7 +102,7 @@ mod tests {
 
     #[test]
     fn test_register_replaces_previous_key_for_same_sm() {
-        let mut index = ReverseIndex::default();
+        let mut index: ReverseIndex<ScheduledMachine> = ReverseIndex::default();
         let old = provider_key("CapitalMarketsSchedule", "cm", "nyse");
         let new = provider_key("CapitalMarketsSchedule", "cm", "tsx");
         index.register(sm_ref("cm", "sm-a"), old.clone());
@@ -114,7 +117,7 @@ mod tests {
 
     #[test]
     fn test_deregister_removes_sm_and_empties_key() {
-        let mut index = ReverseIndex::default();
+        let mut index: ReverseIndex<ScheduledMachine> = ReverseIndex::default();
         let key = provider_key("CapitalMarketsSchedule", "cm", "nyse");
         index.register(sm_ref("cm", "sm-a"), key.clone());
         index.deregister(&sm_ref("cm", "sm-a"));
@@ -126,7 +129,7 @@ mod tests {
 
     #[test]
     fn test_deregister_one_of_two_keeps_the_other() {
-        let mut index = ReverseIndex::default();
+        let mut index: ReverseIndex<ScheduledMachine> = ReverseIndex::default();
         let key = provider_key("CapitalMarketsSchedule", "cm", "nyse");
         index.register(sm_ref("cm", "sm-a"), key.clone());
         index.register(sm_ref("cm", "sm-b"), key.clone());
@@ -138,14 +141,14 @@ mod tests {
 
     #[test]
     fn test_deregister_unknown_sm_is_noop() {
-        let mut index = ReverseIndex::default();
+        let mut index: ReverseIndex<ScheduledMachine> = ReverseIndex::default();
         index.deregister(&sm_ref("cm", "ghost"));
         assert_eq!(index.key_count(), 0);
     }
 
     #[test]
     fn test_referenced_gvks_dedupes_across_providers_of_same_kind() {
-        let mut index = ReverseIndex::default();
+        let mut index: ReverseIndex<ScheduledMachine> = ReverseIndex::default();
         index.register(
             sm_ref("cm", "sm-a"),
             provider_key("CapitalMarketsSchedule", "cm", "nyse"),
@@ -207,13 +210,13 @@ mod tests {
         let (svc, _handle) = mock::pair::<Request<Body>, Response<Body>>();
         let client = kube::Client::new(svc, "default");
         let (tx, _rx) = mpsc::channel(8);
-        SpotScheduleWatchManager::new(client, tx)
+        SpotScheduleWatchManager::new(client, tx, provider_key_for, WATCH_LABEL_SPOT_SCHEDULE)
     }
 
     #[tokio::test]
     async fn test_observe_starts_one_watcher_and_indexes() {
         let mgr = manager();
-        mgr.observe_scheduled_machine(&scheduled_machine(
+        mgr.observe(&scheduled_machine(
             "cm",
             "sm-a",
             ("CapitalMarketsSchedule", "nyse"),
@@ -225,12 +228,12 @@ mod tests {
     #[tokio::test]
     async fn test_two_sms_same_gvk_share_one_watcher() {
         let mgr = manager();
-        mgr.observe_scheduled_machine(&scheduled_machine(
+        mgr.observe(&scheduled_machine(
             "cm",
             "sm-a",
             ("CapitalMarketsSchedule", "nyse"),
         ));
-        mgr.observe_scheduled_machine(&scheduled_machine(
+        mgr.observe(&scheduled_machine(
             "cm",
             "sm-b",
             ("CapitalMarketsSchedule", "tsx"),
@@ -243,14 +246,14 @@ mod tests {
     #[tokio::test]
     async fn test_forget_last_referencing_sm_stops_watcher() {
         let mgr = manager();
-        mgr.observe_scheduled_machine(&scheduled_machine(
+        mgr.observe(&scheduled_machine(
             "cm",
             "sm-a",
             ("CapitalMarketsSchedule", "nyse"),
         ));
         assert_eq!(mgr.watcher_count(), 1);
 
-        mgr.forget_scheduled_machine(&scheduled_machine(
+        mgr.forget(&scheduled_machine(
             "cm",
             "sm-a",
             ("CapitalMarketsSchedule", "nyse"),
@@ -263,4 +266,160 @@ mod tests {
     // deleted with ADR 0009: `spec.schedule` is now a required ref, so an SM can
     // never lose its provider reference on a re-apply. The forget/stop-watcher
     // path is still covered by `test_forget_last_referencing_sm_stops_watcher`.
+
+    // ========================================================================
+    // ScheduledCapacity reference edges (ADR 0011): the second consumer that
+    // made this module generic. A ScheduledCapacity has TWO edges, so the
+    // manager is instantiated per edge rather than per kind.
+    // ========================================================================
+
+    /// Build a `ScheduledCapacity` referencing provider `(kind, name)` and
+    /// target `(kind, name)`, both in `namespace`.
+    fn scheduled_capacity(
+        namespace: &str,
+        name: &str,
+        schedule: (&str, &str),
+        target: (&str, &str),
+    ) -> ScheduledCapacity {
+        let spec: ScheduledCapacitySpec = serde_json::from_value(json!({
+            "schedule": {
+                "apiVersion": "spotschedules.5spot.finos.org/v1alpha1",
+                "kind": schedule.0,
+                "name": schedule.1,
+            },
+            "targetRef": {
+                "apiVersion": "banlieue.io/v1alpha1",
+                "kind": target.0,
+                "name": target.1,
+            },
+            "capacity": { "path": "spec.warmReplicas", "activeValue": 10 },
+        }))
+        .expect("valid ScheduledCapacitySpec");
+        ScheduledCapacity {
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                namespace: Some(namespace.to_string()),
+                ..ObjectMeta::default()
+            },
+            spec,
+            status: None,
+        }
+    }
+
+    #[test]
+    fn test_capacity_schedule_key_for_extracts_the_provider_edge() {
+        let capacity = scheduled_capacity(
+            "sandboxes",
+            "scap-a",
+            ("CapitalMarketsSchedule", "nyse"),
+            ("VirtualMachinePool", "pool-a"),
+        );
+        let key = capacity_schedule_key_for(&capacity).expect("has schedule ref");
+        assert_eq!(key.gvk, gvk("CapitalMarketsSchedule"));
+        assert_eq!(key.namespace, "sandboxes");
+        assert_eq!(key.name, "nyse");
+    }
+
+    #[test]
+    fn test_capacity_target_key_for_extracts_the_target_edge() {
+        let capacity = scheduled_capacity(
+            "sandboxes",
+            "scap-a",
+            ("CapitalMarketsSchedule", "nyse"),
+            ("VirtualMachinePool", "pool-a"),
+        );
+        let key = capacity_target_key_for(&capacity).expect("has target ref");
+        assert_eq!(
+            key.gvk,
+            GroupVersionKind::gvk("banlieue.io", "v1alpha1", "VirtualMachinePool")
+        );
+        assert_eq!(key.namespace, "sandboxes");
+        assert_eq!(key.name, "pool-a");
+    }
+
+    /// The two extractors must disagree on the same object, or the capacity
+    /// controller would watch one edge twice and never learn about the other.
+    #[test]
+    fn test_capacity_edges_are_distinct_for_the_same_object() {
+        let capacity = scheduled_capacity(
+            "sandboxes",
+            "scap-a",
+            ("CapitalMarketsSchedule", "nyse"),
+            ("VirtualMachinePool", "pool-a"),
+        );
+        assert_ne!(
+            capacity_schedule_key_for(&capacity),
+            capacity_target_key_for(&capacity)
+        );
+    }
+
+    #[test]
+    fn test_capacity_key_extractors_none_without_namespace() {
+        let mut capacity = scheduled_capacity(
+            "sandboxes",
+            "scap-a",
+            ("CapitalMarketsSchedule", "nyse"),
+            ("VirtualMachinePool", "pool-a"),
+        );
+        capacity.metadata.namespace = None;
+        assert!(capacity_schedule_key_for(&capacity).is_none());
+        assert!(capacity_target_key_for(&capacity).is_none());
+    }
+
+    /// The index is generic, so a `ScheduledCapacity` index is a separate
+    /// namespace of keys from a `ScheduledMachine` one: the same provider
+    /// object indexed in both wakes each kind through its own channel.
+    #[test]
+    fn test_reverse_index_is_generic_over_the_referencing_kind() {
+        let mut capacity_index: ReverseIndex<ScheduledCapacity> = ReverseIndex::default();
+        let key = provider_key("CapitalMarketsSchedule", "sandboxes", "nyse");
+        let scap_ref: ObjectRef<ScheduledCapacity> = ObjectRef::new("scap-a").within("sandboxes");
+        capacity_index.register(scap_ref.clone(), key.clone());
+
+        assert_eq!(capacity_index.lookup(&key), vec![scap_ref]);
+        assert_eq!(capacity_index.key_count(), 1);
+
+        // An SM index built on the same key is independent of it.
+        let mut sm_index: ReverseIndex<ScheduledMachine> = ReverseIndex::default();
+        assert_eq!(sm_index.key_count(), 0);
+        sm_index.register(sm_ref("sandboxes", "sm-a"), key.clone());
+        assert_eq!(sm_index.lookup(&key), vec![sm_ref("sandboxes", "sm-a")]);
+        assert_eq!(capacity_index.key_count(), 1, "indexes do not share state");
+    }
+
+    /// Two managers over the same kind but different edges keep independent
+    /// watcher sets: the schedule edge watches the provider GVK, the target
+    /// edge watches the consumer GVK, and neither sees the other's.
+    /// Build a capacity manager for one edge over a mock client, exactly as
+    /// [`manager`] does for `ScheduledMachine`: no real cluster, so the test
+    /// can never pass by skipping.
+    fn capacity_manager(
+        key_for: KeyExtractor<ScheduledCapacity>,
+        label: &'static str,
+    ) -> CapacityRefWatchManager {
+        let (svc, _handle) = mock::pair::<Request<Body>, Response<Body>>();
+        let client = kube::Client::new(svc, "default");
+        let (tx, _rx) = mpsc::channel(8);
+        CapacityRefWatchManager::new(client, tx, key_for, label)
+    }
+
+    #[tokio::test]
+    async fn test_two_edges_of_one_kind_watch_different_gvks() {
+        let schedule_mgr = capacity_manager(capacity_schedule_key_for, WATCH_LABEL_SPOT_SCHEDULE);
+        let target_mgr = capacity_manager(capacity_target_key_for, WATCH_LABEL_CAPACITY_TARGET);
+
+        let capacity = scheduled_capacity(
+            "sandboxes",
+            "scap-a",
+            ("CapitalMarketsSchedule", "nyse"),
+            ("VirtualMachinePool", "pool-a"),
+        );
+        schedule_mgr.observe(&capacity);
+        target_mgr.observe(&capacity);
+
+        assert_eq!(schedule_mgr.watcher_count(), 1);
+        assert_eq!(target_mgr.watcher_count(), 1);
+        assert_eq!(schedule_mgr.indexed_key_count(), 1);
+        assert_eq!(target_mgr.indexed_key_count(), 1);
+    }
 }

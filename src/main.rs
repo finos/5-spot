@@ -12,25 +12,25 @@
 //! 6. Runs the `kube-rs` [`Controller`] loop, distributing reconciliation work
 //!    across all active instances via consistent hashing
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
 use five_spot::constants::{
     capi_machine_api_version, set_capi_machine_api_version, CAPI_GROUP, CAPI_RESOURCE_MACHINES,
-    CHILD_NODE_EVENT_CHANNEL_CAP, DEFAULT_LEASE_DURATION_SECS, DEFAULT_LEASE_GRACE_SECS,
-    DEFAULT_LEASE_NAME, DEFAULT_LEASE_NAMESPACE, DEFAULT_LEASE_RENEW_DEADLINE_SECS,
-    DEFAULT_LEASE_RETRY_PERIOD_SECS, HEALTH_PORT, K8S_API_TIMEOUT_SECS, METRICS_PORT,
-    SPOT_SCHEDULE_EVENT_CHANNEL_CAP,
+    CHILD_NODE_EVENT_CHANNEL_CAP, DEFAULT_LEASE_DURATION_SECS, DEFAULT_LEASE_NAME,
+    DEFAULT_LEASE_NAMESPACE, DEFAULT_LEASE_RENEW_DEADLINE_SECS, DEFAULT_LEASE_RETRY_PERIOD_SECS,
+    HEALTH_PORT, K8S_API_TIMEOUT_SECS, METRICS_PORT, SPOT_SCHEDULE_EVENT_CHANNEL_CAP,
 };
 use five_spot::crd::ScheduledMachine;
 use five_spot::health::{start_health_server, HealthState};
 use five_spot::labels::LABEL_SCHEDULED_MACHINE;
+use five_spot::leader::{start_leader_election, LeaderElectionConfig};
 use five_spot::metrics::init_controller_info;
 use five_spot::reconcilers::{
     error_policy, machine_to_scheduled_machine, node_to_scheduled_machines_via_machine,
-    reconcile_scheduled_machine, ChildNodeWatchManager, Context, SpotScheduleWatchManager,
+    provider_key_for, reconcile_scheduled_machine, ChildNodeWatchManager, Context,
+    SpotScheduleWatchManager, WATCH_LABEL_SPOT_SCHEDULE,
 };
 use futures::{StreamExt, TryStreamExt};
 use k8s_openapi::api::core::v1::Node;
@@ -197,65 +197,25 @@ async fn main() -> Result<()> {
 
     // Leader election (Basel III HA — P2-4)
     //
-    // When enabled, all replicas start as non-leaders (is_leader = false).  A
-    // background task runs the LeaseManager and flips is_leader to true only
-    // when this instance holds the Kubernetes Lease.  reconcile_guarded returns
+    // The lease dance itself lives in `five_spot::leader` so this binary and
+    // the capacity controller cannot drift on what "leader" means. All
+    // replicas start as non-leaders; `reconcile_guarded` returns
     // Action::await_change() immediately for non-leaders, so standby replicas
-    // react instantly once they acquire the lease — without polling.
+    // react instantly once they acquire the lease, without polling.
     if cli.enable_leader_election {
-        let grace_secs = cli
-            .lease_duration_secs
-            .checked_sub(cli.lease_renew_deadline_secs)
-            .filter(|g| *g > 0)
-            .unwrap_or(DEFAULT_LEASE_GRACE_SECS);
-
-        let holder_id =
-            std::env::var("POD_NAME").unwrap_or_else(|_| format!("5spot-{}", cli.instance_id));
-
-        info!(
-            lease_name = %cli.lease_name,
-            lease_namespace = %cli.lease_namespace,
-            lease_duration_secs = cli.lease_duration_secs,
-            grace_secs,
-            holder_id = %holder_id,
-            "Leader election enabled — starting as non-leader"
-        );
-
-        // All replicas start as non-leaders; the background task will flip
-        // is_leader once the Kubernetes Lease is acquired.
-        context.is_leader.store(false, Ordering::Release);
-
-        let manager = kube_lease_manager::LeaseManagerBuilder::new(client.clone(), &cli.lease_name)
-            .with_namespace(&cli.lease_namespace)
-            .with_duration(cli.lease_duration_secs)
-            .with_grace(grace_secs)
-            .with_identity(&holder_id)
-            .build()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to initialise leader election: {e}"))?;
-
-        let is_leader = Arc::clone(&context.is_leader);
-        tokio::spawn(async move {
-            let (mut channel, task) = manager.watch().await;
-            loop {
-                if let Ok(()) = channel.changed().await {
-                    let acquired = *channel.borrow_and_update();
-                    is_leader.store(acquired, Ordering::Release);
-                    if acquired {
-                        info!(holder_id = %holder_id, "Acquired leadership lease");
-                    } else {
-                        info!(holder_id = %holder_id, "Lost leadership lease — standby");
-                    }
-                } else {
-                    error!("Leader election watch channel closed unexpectedly");
-                    break;
-                }
-            }
-            drop(channel);
-            if let Err(e) = task.await {
-                error!(error = %e, "Leader election background task failed");
-            }
-        });
+        let leader_config = LeaderElectionConfig {
+            lease_name: cli.lease_name.clone(),
+            lease_namespace: cli.lease_namespace.clone(),
+            lease_duration_secs: cli.lease_duration_secs,
+            lease_renew_deadline_secs: cli.lease_renew_deadline_secs,
+            fallback_identity: format!("5spot-{}", cli.instance_id),
+        };
+        start_leader_election(
+            client.clone(),
+            &leader_config,
+            Arc::clone(&context.is_leader),
+        )
+        .await?;
     } else {
         info!("Leader election disabled — this instance will reconcile all resources");
     }
@@ -365,17 +325,22 @@ async fn main() -> Result<()> {
     // the reflector's initial list rebuilds the index from cluster state.
     let (spot_schedule_tx, spot_schedule_rx) =
         tokio::sync::mpsc::channel(SPOT_SCHEDULE_EVENT_CHANNEL_CAP);
-    let spot_schedule_watch = SpotScheduleWatchManager::new(client.clone(), spot_schedule_tx);
+    let spot_schedule_watch = SpotScheduleWatchManager::new(
+        client.clone(),
+        spot_schedule_tx,
+        provider_key_for,
+        WATCH_LABEL_SPOT_SCHEDULE,
+    );
     let spot_schedule_reflector_api = Api::<ScheduledMachine>::all(client.clone());
     tokio::spawn(async move {
         let mut stream = watcher::watcher(spot_schedule_reflector_api, Config::default()).boxed();
         while let Some(event) = stream.next().await {
             match event {
                 Ok(watcher::Event::Apply(sm) | watcher::Event::InitApply(sm)) => {
-                    spot_schedule_watch.observe_scheduled_machine(&sm);
+                    spot_schedule_watch.observe(&sm);
                 }
                 Ok(watcher::Event::Delete(sm)) => {
-                    spot_schedule_watch.forget_scheduled_machine(&sm);
+                    spot_schedule_watch.forget(&sm);
                 }
                 Ok(watcher::Event::Init | watcher::Event::InitDone) => {}
                 Err(e) => {
