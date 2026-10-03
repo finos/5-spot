@@ -926,7 +926,10 @@ pub enum TaintEffect {
 // ============================================================================
 
 /// Reference to a Kubernetes object with apiVersion, kind, name, namespace
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+// `PartialEq` lets a reconciler compare a computed status against the stored
+// one and skip a no-op patch; see `Condition` for why that matters. A `//`
+// comment so it stays out of the generated CRD schema.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ObjectReference {
     /// API version of the referenced object
@@ -1094,7 +1097,16 @@ pub struct SpotScheduleStatus {
 // Condition - Status condition information
 // ============================================================================
 
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+// `PartialEq` is load-bearing, not a convenience: reconcilers compare a freshly
+// computed condition set against the stored one to decide whether a status
+// patch is needed at all. Without that comparison a same-value write still
+// counts as an object update, re-triggers the controller's own watch, and
+// produces an unbounded tight reconcile loop.
+//
+// Deliberately a `//` comment, not `///`: doc comments in this file land in the
+// generated CRD YAML and in `kubectl explain`, where Rust trait rationale is
+// noise for an API consumer.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Condition {
     /// Type of condition (e.g., "Ready", "`MachineReady`", "`ReferencesValid`")
@@ -1558,6 +1570,328 @@ fn iso_date_list_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
             "type": "string",
             "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
         }
+    })
+}
+
+// ============================================================================
+// ScheduledCapacity CRD (ADR 0011)
+// ============================================================================
+
+/// Schedule-gated capacity on a foreign object (ADR 0011).
+///
+/// The **non-handover** pattern. A [`ScheduledMachine`] answers "this metal
+/// leaves the cluster when the schedule closes"; a `ScheduledCapacity` answers
+/// "this metal stays, and a bounded slice of it is conceded while the schedule
+/// is open". It gates exactly one numeric field on an object 5-Spot does not
+/// own, and it **never creates or deletes that object**: writing a capacity
+/// field is reversible and bounded, while deleting a consumer's pool with live
+/// claims would destroy in-flight work using knowledge this controller does not
+/// have.
+///
+/// Reconciled by the separate `5spot-capacity-controller` binary under its own
+/// ServiceAccount, so compromising it cannot delete a CAPI `Machine` and
+/// compromising the machine controller cannot write capacity.
+#[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[kube(
+    group = "5spot.finos.org",
+    version = "v1alpha1",
+    kind = "ScheduledCapacity",
+    namespaced,
+    shortname = "scap",
+    status = "ScheduledCapacityStatus",
+    printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#,
+    printcolumn = r#"{"name":"Written","type":"integer","jsonPath":".status.writtenValue"}"#,
+    printcolumn = r#"{"name":"Target","type":"string","jsonPath":".spec.targetRef.kind"}"#,
+    printcolumn = r#"{"name":"Schedule","type":"string","jsonPath":".spec.schedule.kind"}"#,
+    printcolumn = r#"{"name":"Enabled","type":"boolean","jsonPath":".spec.enabled"}"#,
+    printcolumn = r#"{"name":"KillSwitch","type":"boolean","jsonPath":".spec.killSwitch"}"#,
+    printcolumn = r#"{"name":"Node","type":"string","jsonPath":".status.governedNode"}"#,
+    printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
+)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledCapacitySpec {
+    /// **Required** reference to the spot-schedule provider object that owns
+    /// the active/inactive decision. The same [`SpotScheduleRef`] shape ADR
+    /// 0009 pinned for `ScheduledMachine`, resolved by the same
+    /// `resolve_spot_schedule` function, so provider semantics cannot drift
+    /// between the two controllers.
+    ///
+    /// `Unresolved` is never treated as inactive: the last written value is
+    /// held and the reason reported.
+    pub schedule: SpotScheduleRef,
+
+    /// Administrative master switch. When `false` the object is held
+    /// **Disabled** and capacity is driven to zero regardless of the provider.
+    /// Defaults to `true`.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+
+    /// Immediate, terminal handback. Takes precedence over both
+    /// [`enabled`](Self::enabled) and the provider verdict.
+    #[serde(default)]
+    pub kill_switch: bool,
+
+    /// **Required** reference to the object whose capacity field this schedule
+    /// gates. Must live in **this `ScheduledCapacity`'s namespace**, and its
+    /// API group must be in `ALLOWED_CAPACITY_TARGET_API_GROUPS`.
+    ///
+    /// 5-Spot patches one field on it and nothing else: no `ownerReference` is
+    /// set, no other field is touched, and the object is never created or
+    /// deleted.
+    pub target_ref: CapacityTargetRef,
+
+    /// **Required** description of the single field to write and the value to
+    /// write while the schedule is active.
+    pub capacity: CapacityWrite,
+
+    /// Optional cooperative handback policy. Absent means handback completes as
+    /// soon as the zero write lands, which is the honest answer for a consumer
+    /// that exposes no in-use counter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handback: Option<HandbackPolicy>,
+
+    /// Optional name of the Kubernetes Node this object believes it governs.
+    ///
+    /// Supplying it enables the one-host-one-governor check: the controller
+    /// refuses to write capacity if this node is also the `status.nodeRef` of a
+    /// `ScheduledMachine` in this namespace, because a host cannot both be
+    /// handed over and shared. Without it the two objects cannot be correlated
+    /// and the invariant is documentation only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "node_name_schema")]
+    pub node_name: Option<String>,
+}
+
+/// Reference to the foreign object a [`ScheduledCapacity`] governs.
+///
+/// Deliberately **not** [`ObjectReference`]: that type is the controller's own
+/// record of resources it created, while this is user input naming an object in
+/// an API group 5-Spot does not own, so its fields are schema-constrained.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CapacityTargetRef {
+    /// API version of the target, `group/version` (e.g.
+    /// `banlieue.io/v1alpha1`). The group must be in
+    /// `ALLOWED_CAPACITY_TARGET_API_GROUPS`, enforced in the reconciler.
+    ///
+    /// The allowlist is deliberately **not** a CEL rule here: unlike the
+    /// spot-schedule group, which is one fixed value ADR 0009 pinned forever,
+    /// this list is an operator-visible security decision that must be
+    /// greppable in one place in `src/constants.rs` rather than baked into a
+    /// generated CRD that a stale `kubectl apply` could leave behind.
+    #[schemars(schema_with = "capacity_target_api_version_schema")]
+    pub api_version: String,
+
+    /// Kind of the target resource, e.g. `VirtualMachinePool`.
+    #[schemars(schema_with = "spot_schedule_kind_schema")]
+    pub kind: String,
+
+    /// Name of the target object in **this `ScheduledCapacity`'s namespace**.
+    #[schemars(schema_with = "spot_schedule_name_schema")]
+    pub name: String,
+}
+
+/// The single field to write, and the value to write while active.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CapacityWrite {
+    /// Dot-separated path of the numeric field to write on the target, e.g.
+    /// `spec.warmReplicas`.
+    ///
+    /// # Security
+    ///
+    /// **This field is a control.** It names a field on an object 5-Spot does
+    /// not own, so it is restricted to dot-separated camelCase segments and
+    /// pinned to the `spec.` prefix by a CEL rule. `metadata.` is unreachable
+    /// (a CR author who could write `ownerReferences`, `finalizers` or labels
+    /// on a foreign object would hold an elevation primitive) and so is
+    /// `status.` (a controller's own report is not a knob). Array indices,
+    /// wildcards, `..`, quotes and `/` are all unexpressible, so the value can
+    /// never be abused as a JSON Pointer escape. The reconciler re-validates
+    /// it, because the schema only holds while the deployed CRD is current.
+    #[schemars(schema_with = "capacity_write_path_schema")]
+    pub path: String,
+
+    /// Value written to [`path`](Self::path) while the schedule is active.
+    ///
+    /// At least `1`. The **inactive** value is fixed at
+    /// `CAPACITY_INACTIVE_VALUE` and is not configurable: a schedule that
+    /// hands nothing back is not a schedule, which also makes an active value
+    /// of zero meaningless.
+    #[schemars(schema_with = "capacity_active_value_schema")]
+    pub active_value: i64,
+}
+
+/// Cooperative, bounded handback policy (ADR 0011 decision 6).
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HandbackPolicy {
+    /// Dot-separated path of a numeric field on the target's **status** that
+    /// reports how much of the slice is still in use, e.g. `status.claimed`.
+    /// Handback is complete when it reads `CAPACITY_INACTIVE_VALUE`.
+    ///
+    /// Pinned to the `status.` prefix by a CEL rule. Absent means there is
+    /// nothing to observe and handback completes on the zero write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "capacity_drained_path_schema")]
+    pub drained_path: Option<String>,
+
+    /// How long to wait for [`drained_path`](Self::drained_path) to reach zero
+    /// before giving up on the wait (e.g. `"10m"`).
+    ///
+    /// On expiry the controller **holds** the written value and reports
+    /// `HandbackTimedOut` loudly. It never forces the value to zero: a missed
+    /// handover is visible and recoverable, while killing in-flight work is
+    /// neither.
+    #[serde(default = "default_handback_timeout")]
+    pub timeout: String,
+}
+
+/// Runtime status of a [`ScheduledCapacity`].
+///
+/// Its own surface, not [`ScheduledMachineStatus`]'s: a budget ramp and a drain
+/// wait are not node membership, and ADR 0007 makes a borrowed shape permanent.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledCapacityStatus {
+    /// Current phase: `Pending`, `Active`, `HandingBack`, `HandbackTimedOut`,
+    /// `Inactive`, `Disabled`, `Terminated`, or `Error`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+
+    /// Human-readable status message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+
+    /// The value this controller last successfully wrote to
+    /// `spec.capacity.path`.
+    ///
+    /// **Not** `skip_serializing_if = "Option::is_none"`-equivalent on zero: a
+    /// written `0` is meaningful state (handback in progress or complete) and
+    /// must survive serialisation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub written_value: Option<i64>,
+
+    /// When [`written_value`](Self::written_value) was last written (RFC3339).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_write_time: Option<String>,
+
+    /// The resolved target object, recorded so operators can see what was
+    /// actually written without re-resolving the reference.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_ref: Option<ObjectReference>,
+
+    /// The Node this object believes it governs, echoed from
+    /// `spec.nodeName`. Reported even when the overlap check cannot run, so an
+    /// operator can correlate by hand (ADR 0011 decision 7).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub governed_node: Option<String>,
+
+    /// Last value read from `spec.handback.drainedPath`: how much of the slice
+    /// the consumer still reports in use.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_drained_value: Option<i64>,
+
+    /// When the current handback wait expires (RFC3339). Cleared once handback
+    /// completes or times out.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handback_deadline: Option<String>,
+
+    /// Standard Kubernetes conditions: `Ready`, `TargetResolved`,
+    /// `CapacityWritten`, `HandbackComplete`, `HostGovernanceConflict`, and
+    /// `SpotScheduleResolved` reused from ADR 0006.
+    #[serde(default)]
+    pub conditions: Vec<Condition>,
+
+    /// Observed generation for change detection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_generation: Option<i64>,
+
+    /// `true` only in the `Active` phase, surfaced for fast operator triage.
+    #[serde(default)]
+    pub ready: bool,
+
+    /// Spot-schedule provider resolution state, the same
+    /// [`SpotScheduleStatus`] shape the machine controller publishes so one
+    /// `kubectl` habit reads both kinds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spot_schedule: Option<SpotScheduleStatus>,
+}
+
+fn default_handback_timeout() -> String {
+    crate::constants::DEFAULT_HANDBACK_TIMEOUT.to_string()
+}
+
+/// Schema for `CapacityWrite.path`: the charset pattern from
+/// `CAPACITY_PATH_PATTERN` plus a CEL rule pinning the `spec.` prefix.
+///
+/// Both halves matter. The pattern stops a JSON Pointer escape or an array
+/// index; the prefix rule stops `metadata.ownerReferences`.
+fn capacity_write_path_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    let pattern = crate::constants::CAPACITY_PATH_PATTERN;
+    schemars::json_schema!({
+        "type": "string",
+        "minLength": 6,
+        "maxLength": 253,
+        "pattern": pattern,
+        "x-kubernetes-validations": [
+            {
+                "rule": "self.startsWith('spec.')",
+                "message": "spec.capacity.path must start with 'spec.'; metadata. and status. paths are not writable"
+            }
+        ]
+    })
+}
+
+/// Schema for `HandbackPolicy.drainedPath`: same charset, `status.` prefix.
+fn capacity_drained_path_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    let pattern = crate::constants::CAPACITY_PATH_PATTERN;
+    schemars::json_schema!({
+        "type": "string",
+        "minLength": 8,
+        "maxLength": 253,
+        "pattern": pattern,
+        "x-kubernetes-validations": [
+            {
+                "rule": "self.startsWith('status.')",
+                "message": "spec.handback.drainedPath must start with 'status.'"
+            }
+        ]
+    })
+}
+
+/// Schema for `CapacityWrite.activeValue`: at least 1, since 0 is the fixed
+/// inactive value. Bounded above to keep a typo from asking a consumer for an
+/// absurd slice.
+fn capacity_active_value_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "integer",
+        "format": "int64",
+        "minimum": 1,
+        "maximum": 1_000_000
+    })
+}
+
+/// Schema for `CapacityTargetRef.apiVersion`: a bounded `group/version`
+/// string. The *group allowlist* is enforced in the reconciler against
+/// `ALLOWED_CAPACITY_TARGET_API_GROUPS`, not here: see the field's own docs.
+fn capacity_target_api_version_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "string",
+        "minLength": 3,
+        "maxLength": 253,
+        "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?/[A-Za-z0-9][A-Za-z0-9.-]*$"
+    })
+}
+
+/// Schema for `ScheduledCapacitySpec.nodeName`: an RFC-1123 DNS subdomain,
+/// matching how Kubernetes names Nodes.
+fn node_name_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 253,
+        "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
     })
 }
 

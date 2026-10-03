@@ -4,6 +4,7 @@
 #[allow(clippy::module_inception)]
 mod tests {
     use super::super::*;
+    use crate::constants;
     use std::collections::HashSet;
 
     // ========================================================================
@@ -1930,5 +1931,438 @@ mod tests {
         let status = ScheduledMachineStatus::default();
         let json = serde_json::to_value(&status).unwrap();
         assert!(json.get("spotSchedule").is_none());
+    }
+
+    // ========================================================================
+    // ScheduledCapacity (ADR 0011)
+    // ========================================================================
+
+    /// Canonical `ScheduledCapacity` spec JSON: the worked example from ADR
+    /// 0011, gating a banlieue `VirtualMachinePool`'s `spec.warmReplicas` on a
+    /// `CapitalMarketsSchedule`. Reused so a contract change touches one place.
+    fn scheduled_capacity_json() -> serde_json::Value {
+        serde_json::json!({
+            "schedule": {
+                "apiVersion": "spotschedules.5spot.finos.org/v1alpha1",
+                "kind": "CapitalMarketsSchedule",
+                "name": "nyse-trading-day"
+            },
+            "targetRef": {
+                "apiVersion": "banlieue.io/v1alpha1",
+                "kind": "VirtualMachinePool",
+                "name": "agent-sandboxes"
+            },
+            "capacity": { "path": "spec.warmReplicas", "activeValue": 10 },
+            "handback": { "drainedPath": "status.claimed", "timeout": "10m" },
+            "nodeName": "worker-3"
+        })
+    }
+
+    #[test]
+    fn test_scheduled_capacity_spec_round_trips() {
+        let spec: ScheduledCapacitySpec =
+            serde_json::from_value(scheduled_capacity_json()).unwrap();
+
+        assert_eq!(spec.schedule.kind, "CapitalMarketsSchedule");
+        assert_eq!(spec.target_ref.api_version, "banlieue.io/v1alpha1");
+        assert_eq!(spec.target_ref.kind, "VirtualMachinePool");
+        assert_eq!(spec.capacity.path, "spec.warmReplicas");
+        assert_eq!(spec.capacity.active_value, 10);
+        let handback = spec.handback.as_ref().expect("handback present");
+        assert_eq!(handback.drained_path.as_deref(), Some("status.claimed"));
+        assert_eq!(handback.timeout, "10m");
+        assert_eq!(spec.node_name.as_deref(), Some("worker-3"));
+
+        // camelCase on the wire, both directions.
+        let json = serde_json::to_value(&spec).unwrap();
+        assert_eq!(
+            json.pointer("/capacity/activeValue")
+                .and_then(serde_json::Value::as_i64),
+            Some(10)
+        );
+        assert_eq!(
+            json.pointer("/handback/drainedPath")
+                .and_then(serde_json::Value::as_str),
+            Some("status.claimed")
+        );
+        assert_eq!(
+            json.pointer("/targetRef/apiVersion")
+                .and_then(serde_json::Value::as_str),
+            Some("banlieue.io/v1alpha1")
+        );
+        assert_eq!(
+            json.get("nodeName").and_then(serde_json::Value::as_str),
+            Some("worker-3")
+        );
+    }
+
+    #[test]
+    fn test_scheduled_capacity_spec_defaults() {
+        // Only the four required fields; everything else defaults.
+        let spec: ScheduledCapacitySpec = serde_json::from_value(serde_json::json!({
+            "schedule": {
+                "apiVersion": "spotschedules.5spot.finos.org/v1alpha1",
+                "kind": "TimeBasedSpotSchedule",
+                "name": "office-hours"
+            },
+            "targetRef": {
+                "apiVersion": "banlieue.io/v1alpha1",
+                "kind": "VirtualMachinePool",
+                "name": "pool"
+            },
+            "capacity": { "path": "spec.warmReplicas", "activeValue": 4 }
+        }))
+        .unwrap();
+
+        assert!(spec.enabled, "spec.enabled defaults to true");
+        assert!(!spec.kill_switch, "spec.killSwitch defaults to false");
+        assert!(
+            spec.handback.is_none(),
+            "spec.handback is optional (ADR 0011 decision 6): absent means no wait"
+        );
+        assert!(spec.node_name.is_none());
+    }
+
+    #[test]
+    fn test_scheduled_capacity_handback_timeout_defaults() {
+        // A handback block naming only the drain path still gets a bounded
+        // timeout, so the wait can never be unbounded.
+        let handback: HandbackPolicy =
+            serde_json::from_value(serde_json::json!({ "drainedPath": "status.claimed" })).unwrap();
+        assert_eq!(handback.timeout, constants::DEFAULT_HANDBACK_TIMEOUT);
+    }
+
+    #[test]
+    fn test_scheduled_capacity_handback_drained_path_is_optional() {
+        // A timeout with no drain path: nothing to observe, so handback
+        // completes on the zero write. Still parses.
+        let handback: HandbackPolicy =
+            serde_json::from_value(serde_json::json!({ "timeout": "5m" })).unwrap();
+        assert!(handback.drained_path.is_none());
+        assert_eq!(handback.timeout, "5m");
+    }
+
+    #[test]
+    fn test_scheduled_capacity_reuses_spot_schedule_ref_group_pin() {
+        // ADR 0011 decision 1: the same SpotScheduleRef shape ADR 0009 pinned,
+        // so the group helpers behave identically on both kinds.
+        let spec: ScheduledCapacitySpec =
+            serde_json::from_value(scheduled_capacity_json()).unwrap();
+        assert_eq!(spec.schedule.group(), constants::SPOT_SCHEDULE_API_GROUP);
+        assert!(spec.schedule.is_spot_schedule_group());
+    }
+
+    #[test]
+    fn test_scheduled_capacity_status_defaults_and_omits_absent_fields() {
+        let status = ScheduledCapacityStatus::default();
+        let json = serde_json::to_value(&status).unwrap();
+        for absent in [
+            "phase",
+            "message",
+            "writtenValue",
+            "lastWriteTime",
+            "governedNode",
+            "observedDrainedValue",
+            "handbackDeadline",
+            "targetRef",
+            "observedGeneration",
+            "spotSchedule",
+        ] {
+            assert!(
+                json.get(absent).is_none(),
+                "status.{absent} must be omitted when unset"
+            );
+        }
+        assert!(!status.ready);
+        assert!(status.conditions.is_empty());
+    }
+
+    #[test]
+    fn test_scheduled_capacity_status_round_trips() {
+        let status = ScheduledCapacityStatus {
+            phase: Some(constants::PHASE_CAPACITY_HANDING_BACK.to_string()),
+            written_value: Some(0),
+            observed_drained_value: Some(3),
+            governed_node: Some("worker-3".to_string()),
+            handback_deadline: Some("2026-10-02T14:30:00+00:00".to_string()),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(
+            json.get("writtenValue").and_then(serde_json::Value::as_i64),
+            Some(0),
+            "a written zero must survive serialisation, not be skipped as a default"
+        );
+        assert_eq!(
+            json.get("observedDrainedValue")
+                .and_then(serde_json::Value::as_i64),
+            Some(3)
+        );
+        let parsed: ScheduledCapacityStatus = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.phase.as_deref(), Some("HandingBack"));
+        assert_eq!(parsed.governed_node.as_deref(), Some("worker-3"));
+    }
+
+    #[test]
+    fn test_scheduled_capacity_crd_group_version_kind() {
+        use kube::CustomResourceExt;
+        let crd = ScheduledCapacity::crd();
+        assert_eq!(crd.spec.group, constants::API_GROUP);
+        assert_eq!(crd.spec.names.kind, "ScheduledCapacity");
+        assert_eq!(crd.spec.names.plural, "scheduledcapacities");
+        assert_eq!(
+            crd.spec.names.short_names.as_deref(),
+            Some(&["scap".to_string()][..])
+        );
+        assert_eq!(crd.spec.scope, "Namespaced");
+        assert_eq!(crd.spec.versions.len(), 1);
+        assert_eq!(crd.spec.versions[0].name, "v1alpha1");
+        assert!(crd.spec.versions[0].storage);
+    }
+
+    /// The write path is a security control (ADR 0011 decision 1), so the CRD
+    /// must carry both the charset pattern and the `spec.`-prefix CEL rule.
+    /// A schema that lost either would let `metadata.ownerReferences` through
+    /// admission and leave only the reconciler guard standing.
+    #[test]
+    fn test_scheduled_capacity_crd_pins_write_path_to_spec_prefix() {
+        use kube::CustomResourceExt;
+        let crd = ScheduledCapacity::crd();
+        let schema = crd.spec.versions[0]
+            .schema
+            .as_ref()
+            .and_then(|s| s.open_api_v3_schema.as_ref())
+            .expect("CRD has an OpenAPI schema");
+        let json = serde_json::to_value(schema).unwrap();
+
+        let path = json
+            .pointer("/properties/spec/properties/capacity/properties/path")
+            .expect("capacity.path is in the schema");
+        assert_eq!(
+            path.get("pattern").and_then(serde_json::Value::as_str),
+            Some(constants::CAPACITY_PATH_PATTERN)
+        );
+        let rules = path
+            .get("x-kubernetes-validations")
+            .and_then(serde_json::Value::as_array)
+            .expect("capacity.path carries a CEL rule");
+        assert!(
+            rules.iter().any(|r| r
+                .get("rule")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|rule| rule.contains("startsWith('spec.')"))),
+            "capacity.path must be CEL-pinned to the spec. prefix, got {rules:?}"
+        );
+    }
+
+    #[test]
+    fn test_scheduled_capacity_crd_pins_drained_path_to_status_prefix() {
+        use kube::CustomResourceExt;
+        let crd = ScheduledCapacity::crd();
+        let json = serde_json::to_value(
+            crd.spec.versions[0]
+                .schema
+                .as_ref()
+                .and_then(|s| s.open_api_v3_schema.as_ref())
+                .unwrap(),
+        )
+        .unwrap();
+        let drained = json
+            .pointer("/properties/spec/properties/handback/properties/drainedPath")
+            .expect("handback.drainedPath is in the schema");
+        let rules = drained
+            .get("x-kubernetes-validations")
+            .and_then(serde_json::Value::as_array)
+            .expect("handback.drainedPath carries a CEL rule");
+        assert!(
+            rules.iter().any(|r| r
+                .get("rule")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|rule| rule.contains("startsWith('status.')"))),
+            "handback.drainedPath must be CEL-pinned to the status. prefix, got {rules:?}"
+        );
+    }
+
+    /// `activeValue` is what gets written to a foreign object, so its floor
+    /// matters: zero is the *inactive* value by construction (ADR 0011
+    /// decision 1), which makes an active value of zero a schedule that does
+    /// nothing, and a negative one meaningless.
+    #[test]
+    fn test_scheduled_capacity_crd_bounds_active_value() {
+        use kube::CustomResourceExt;
+        let crd = ScheduledCapacity::crd();
+        let json = serde_json::to_value(
+            crd.spec.versions[0]
+                .schema
+                .as_ref()
+                .and_then(|s| s.open_api_v3_schema.as_ref())
+                .unwrap(),
+        )
+        .unwrap();
+        let active_value = json
+            .pointer("/properties/spec/properties/capacity/properties/activeValue")
+            .expect("capacity.activeValue is in the schema");
+        assert_eq!(
+            active_value
+                .get("minimum")
+                .and_then(serde_json::Value::as_f64),
+            Some(1.0),
+            "activeValue must be at least 1; 0 is the fixed inactive value"
+        );
+    }
+
+    #[test]
+    fn test_scheduled_capacity_crd_pins_target_api_version_charset() {
+        use kube::CustomResourceExt;
+        let crd = ScheduledCapacity::crd();
+        let json = serde_json::to_value(
+            crd.spec.versions[0]
+                .schema
+                .as_ref()
+                .and_then(|s| s.open_api_v3_schema.as_ref())
+                .unwrap(),
+        )
+        .unwrap();
+        let api_version = json
+            .pointer("/properties/spec/properties/targetRef/properties/apiVersion")
+            .expect("targetRef.apiVersion is in the schema");
+        assert!(
+            api_version.get("pattern").is_some(),
+            "targetRef.apiVersion must constrain its charset; the group allowlist \
+             is enforced in the reconciler but the shape is enforced here"
+        );
+    }
+
+    #[test]
+    fn test_scheduled_capacity_crd_has_operator_printcolumns() {
+        use kube::CustomResourceExt;
+        let crd = ScheduledCapacity::crd();
+        let names: Vec<&str> = crd.spec.versions[0]
+            .additional_printer_columns
+            .as_ref()
+            .expect("printer columns")
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        for expected in ["Phase", "Written", "Target", "Schedule", "Enabled"] {
+            assert!(
+                names.contains(&expected),
+                "printer column {expected} missing from {names:?}"
+            );
+        }
+    }
+
+    /// ADR 0011 decision 8: its own phase set, not `ScheduledMachine`'s. A
+    /// borrowed enum is permanent under ADR 0007, so the two must stay
+    /// distinct and each capacity phase must be unique.
+    #[test]
+    fn test_capacity_phases_are_distinct_and_not_borrowed() {
+        let capacity_phases = [
+            constants::PHASE_CAPACITY_PENDING,
+            constants::PHASE_CAPACITY_ACTIVE,
+            constants::PHASE_CAPACITY_HANDING_BACK,
+            constants::PHASE_CAPACITY_HANDBACK_TIMED_OUT,
+            constants::PHASE_CAPACITY_INACTIVE,
+            constants::PHASE_CAPACITY_DISABLED,
+            constants::PHASE_CAPACITY_TERMINATED,
+            constants::PHASE_CAPACITY_ERROR,
+        ];
+        let unique: HashSet<&str> = capacity_phases.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            capacity_phases.len(),
+            "capacity phases must be distinct"
+        );
+        // The two phases that exist only here are the whole point of a separate
+        // phase set: a drain wait is not node membership.
+        assert!(unique.contains("HandingBack"));
+        assert!(unique.contains("HandbackTimedOut"));
+    }
+
+    #[test]
+    fn test_capacity_condition_types_are_distinct() {
+        let conditions = [
+            constants::CONDITION_TYPE_TARGET_RESOLVED,
+            constants::CONDITION_TYPE_CAPACITY_WRITTEN,
+            constants::CONDITION_TYPE_HANDBACK_COMPLETE,
+            constants::CONDITION_TYPE_HOST_GOVERNANCE_CONFLICT,
+            // Reused unchanged from ADR 0006 so provider resolution reports
+            // identically across both controllers.
+            constants::CONDITION_TYPE_SPOT_SCHEDULE_RESOLVED,
+        ];
+        let unique: HashSet<&str> = conditions.iter().copied().collect();
+        assert_eq!(unique.len(), conditions.len());
+    }
+
+    #[test]
+    fn test_capacity_inactive_value_is_zero() {
+        // ADR 0011 decision 1: the inactive value is fixed at the type's zero,
+        // never configurable. A schedule that hands nothing back is not a
+        // schedule.
+        assert_eq!(constants::CAPACITY_INACTIVE_VALUE, 0);
+    }
+
+    /// The segment cap lives in two places that must agree: the schema pattern
+    /// (enforced at admission) and `CAPACITY_PATH_MAX_SEGMENTS` (enforced in
+    /// the reconciler). Bumping one without the other would let a path through
+    /// admission that the reconciler then rejects, or worse the reverse.
+    #[test]
+    fn test_capacity_path_pattern_encodes_the_segment_cap() {
+        let repetitions = constants::CAPACITY_PATH_MAX_SEGMENTS - 1;
+        let expected = format!("{{0,{repetitions}}}");
+        assert!(
+            constants::CAPACITY_PATH_PATTERN.contains(&expected),
+            "CAPACITY_PATH_PATTERN must bound repetitions to {expected} to match \
+             CAPACITY_PATH_MAX_SEGMENTS = {}, got {}",
+            constants::CAPACITY_PATH_MAX_SEGMENTS,
+            constants::CAPACITY_PATH_PATTERN
+        );
+    }
+
+    /// The pattern is a security control, so pin the one property that is
+    /// checkable without a regex engine and that silently breaks everything
+    /// else if lost: anchoring. An unanchored pattern would match a *substring*,
+    /// so `metadata.labels` would pass by virtue of containing `data.labels`.
+    ///
+    /// Behavioural rejection (array indices, `..`, quotes, `/`) is proven
+    /// against the reconciler's own validator, which uses no regex, and against
+    /// a real API server in the kind e2e.
+    #[test]
+    fn test_capacity_path_pattern_is_anchored() {
+        let pattern = constants::CAPACITY_PATH_PATTERN;
+        assert!(
+            pattern.starts_with('^'),
+            "pattern must be start-anchored, else a prefix check is bypassable: {pattern}"
+        );
+        assert!(
+            pattern.ends_with('$'),
+            "pattern must be end-anchored, else trailing junk is accepted: {pattern}"
+        );
+        // The only literal dot allowed is the escaped separator: an unescaped
+        // `.` would match any character and widen the charset to everything.
+        assert!(
+            !pattern.replace(r"\.", "").contains('.'),
+            "pattern must contain no unescaped '.': {pattern}"
+        );
+    }
+
+    #[test]
+    fn test_allowed_capacity_target_api_groups_is_a_closed_allowlist() {
+        // ADR 0011 decision 5: a third allowlist beside bootstrap and
+        // infrastructure. It must be non-empty and must not have grown to
+        // include a group the capacity controller has no business patching.
+        let allowed = constants::ALLOWED_CAPACITY_TARGET_API_GROUPS;
+        assert!(!allowed.is_empty());
+        for forbidden in [
+            constants::CAPI_MACHINE_API_GROUP,
+            constants::API_GROUP,
+            constants::SPOT_SCHEDULE_API_GROUP,
+            "",
+        ] {
+            assert!(
+                !allowed.contains(&forbidden),
+                "{forbidden} must not be a capacity target group"
+            );
+        }
     }
 }

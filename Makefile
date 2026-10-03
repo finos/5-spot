@@ -211,7 +211,7 @@ run-local: ## Run operator locally
 # crdgen prints one CRD to stdout per selector; this target owns the file layout
 # (the binary makes no path assumptions). Keep this list in sync with crdgen's
 # SELECTORS and the committed deploy/crds/*.yaml filenames.
-CRD_SELECTORS ?= scheduledmachine timebasedspotschedule capitalmarketsschedule
+CRD_SELECTORS ?= scheduledmachine scheduledcapacity timebasedspotschedule capitalmarketsschedule
 
 crds: ## Generate CRD YAML files from Rust types
 	@echo "Generating CRD YAML files from src/crd.rs..."
