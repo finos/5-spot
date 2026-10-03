@@ -1,0 +1,19 @@
+# Binds the capacity controller's ServiceAccount to its own least-privilege
+# ClusterRole (ADR 0011). Never bind this ServiceAccount to the machine
+# controller's ClusterRole: that would recreate the compounded identity this
+# ADR exists to avoid.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: 5spot-capacity-controller
+  labels:
+    app.kubernetes.io/name: 5spot
+    app.kubernetes.io/component: capacity-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: 5spot-capacity-controller
+subjects:
+  - kind: ServiceAccount
+    name: 5spot-capacity-controller
+    namespace: 5spot-system

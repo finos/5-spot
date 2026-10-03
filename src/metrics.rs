@@ -729,11 +729,97 @@ pub fn record_capital_markets_transition(namespace: &str, name: &str) {
         .inc();
 }
 
+/// Value this controller last wrote to a `ScheduledCapacity`'s target field
+/// (ADR 0011), labelled by namespace + name. Zero is a meaningful value here
+/// (handback), so an absent series means "never written", not "zero".
+pub static CAPACITY_WRITTEN_VALUE: LazyLock<GaugeVec> = LazyLock::new(|| {
+    register_gauge_vec!(
+        "fivespot_scheduled_capacity_written_value",
+        "Value last written to a ScheduledCapacity target field (0 = handed back)",
+        &["namespace", "name"]
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("WARN: Failed to register fivespot_scheduled_capacity_written_value: {e}");
+        fallback_gauge_vec(
+            "fivespot_scheduled_capacity_written_value",
+            "Value last written to a ScheduledCapacity target field (0 = handed back)",
+            &["namespace", "name"],
+        )
+    })
+});
+
+/// Handback deadlines that expired with the consumer still not drained
+/// (ADR 0011 decision 6). **This is the alert-worthy one**: the controller holds
+/// rather than forcing, so a missed handover is only visible if someone is
+/// watching this counter.
+pub static CAPACITY_HANDBACK_TIMEOUTS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
+    register_counter_vec!(
+        "fivespot_scheduled_capacity_handback_timeouts_total",
+        "Handback deadlines that expired with the consumer still not drained",
+        &["namespace", "name"]
+    )
+    .unwrap_or_else(|e| {
+        eprintln!(
+            "WARN: Failed to register fivespot_scheduled_capacity_handback_timeouts_total: {e}"
+        );
+        fallback_counter_vec(
+            "fivespot_scheduled_capacity_handback_timeouts_total",
+            "Handback deadlines that expired with the consumer still not drained",
+            &["namespace", "name"],
+        )
+    })
+});
+
+/// Reconciles that found one host governed by both a `ScheduledMachine` and a
+/// `ScheduledCapacity` (ADR 0011 decision 7). Non-zero means a misconfiguration
+/// is actively blocking capacity writes.
+pub static CAPACITY_HOST_GOVERNANCE_CONFLICTS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
+    register_counter_vec!(
+        "fivespot_scheduled_capacity_host_governance_conflicts_total",
+        "Reconciles where a host was governed by both ScheduledMachine and ScheduledCapacity",
+        &["namespace", "name"]
+    )
+    .unwrap_or_else(|e| {
+        eprintln!(
+            "WARN: Failed to register \
+             fivespot_scheduled_capacity_host_governance_conflicts_total: {e}"
+        );
+        fallback_counter_vec(
+            "fivespot_scheduled_capacity_host_governance_conflicts_total",
+            "Reconciles where a host was governed by both ScheduledMachine and ScheduledCapacity",
+            &["namespace", "name"],
+        )
+    })
+});
+
 /// Set the current active state of a `TimeBasedSpotSchedule` provider object.
 pub fn set_time_based_active(namespace: &str, name: &str, active: bool) {
     TIME_BASED_ACTIVE
         .with_label_values(&[namespace, name])
         .set(if active { 1.0 } else { 0.0 });
+}
+
+/// Set the value last written to a `ScheduledCapacity` target field (ADR 0011).
+pub fn set_capacity_written_value(namespace: &str, name: &str, value: i64) {
+    #[allow(clippy::cast_precision_loss)]
+    // Capacity values are small by construction (CRD caps at 1e6).
+    CAPACITY_WRITTEN_VALUE
+        .with_label_values(&[namespace, name])
+        .set(value as f64);
+}
+
+/// Record a handback deadline expiring with the consumer still not drained.
+pub fn record_capacity_handback_timeout(namespace: &str, name: &str) {
+    CAPACITY_HANDBACK_TIMEOUTS_TOTAL
+        .with_label_values(&[namespace, name])
+        .inc();
+}
+
+/// Record a host governed by both `ScheduledMachine` and `ScheduledCapacity`.
+pub fn record_capacity_host_governance_conflict(namespace: &str, name: &str) {
+    CAPACITY_HOST_GOVERNANCE_CONFLICTS_TOTAL
+        .with_label_values(&[namespace, name])
+        .inc();
 }
 
 /// Record a `TimeBasedSpotSchedule` active⇄inactive transition.

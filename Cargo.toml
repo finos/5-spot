@@ -3,10 +3,16 @@ name = "five_spot"
 version = "0.3.0"
 edition = "2021"
 rust-version = "1.90"
-authors = ["Erick Bourgeois<erick.bourgeois@rbccm.com>"]
+authors = ["Erick Bourgeois <erick@jeb.ca>"]
 description = "A cloud-native Kubernetes controller for managing machine scheduling on physical nodes"
 license = "Apache-2.0"
-repository = "https://github.com/RBC/5-spot"
+repository = "https://github.com/finos/5-spot"
+
+# Every binary is declared explicitly below, so auto-discovery is off. Without
+# this, Cargo would treat each `src/bin/*_tests.rs` file as its own binary and
+# fail on the missing `main`, which is why the `_tests.rs` convention
+# (rules/testing.md) could not previously be applied to bin targets.
+autobins = false
 
 [[bin]]
 name = "5spot"
@@ -98,6 +104,13 @@ path = "src/bin/reclaim_agent.rs"
 [[bin]]
 name = "5spot-kata-config-agent"
 path = "src/bin/kata_config_agent.rs"
+
+# Schedule-gated capacity controller (ADR 0011). Its own binary, image and
+# ServiceAccount on purpose: compromising it cannot delete a CAPI Machine, and
+# compromising the machine controller cannot write capacity.
+[[bin]]
+name = "5spot-capacity-controller"
+path = "src/bin/scheduled_capacity_controller.rs"
 
 [dev-dependencies]
 tokio-test = "0.4"

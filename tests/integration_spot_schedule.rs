@@ -18,7 +18,7 @@
 //!    name)` maps back to exactly the `ScheduledMachine`s that reference it.
 //!
 //! The controller's `reconcile_on` wiring itself (manager → mpsc → Controller)
-//! is validated structurally by the unit tests in `spot_schedule_watch_tests`;
+//! is validated structurally by the unit tests in `dynamic_ref_watch_tests`;
 //! a full Active→ShuttingDown cycle against a real provider controller is left
 //! to a future two-resource cluster harness (the provider controller lands in
 //! roadmap Phase 5).
@@ -32,8 +32,8 @@ use tower_test::mock;
 use five_spot::constants;
 use five_spot::crd::{EmbeddedResource, ScheduledMachine, ScheduledMachineSpec, SpotScheduleRef};
 use five_spot::reconcilers::compose_should_be_active;
+use five_spot::reconcilers::dynamic_ref_watch::{provider_key_for, ProviderKey, ReverseIndex};
 use five_spot::reconcilers::spot_schedule::{resolve_spot_schedule, SpotScheduleVerdict};
-use five_spot::reconcilers::spot_schedule_watch::{provider_key_for, ProviderKey, ReverseIndex};
 
 const NS: &str = "capital-markets";
 
@@ -163,7 +163,7 @@ fn test_watch_index_maps_provider_event_to_referencing_machines() {
     let sm_b = scheduled_machine("sm-b", "nyse-equities");
     let sm_c = scheduled_machine("sm-c", "tsx-equities");
 
-    let mut index = ReverseIndex::default();
+    let mut index: ReverseIndex<ScheduledMachine> = ReverseIndex::default();
     index.register(ObjectRef::from_obj(&sm_a), provider_key_for(&sm_a).unwrap());
     index.register(ObjectRef::from_obj(&sm_b), provider_key_for(&sm_b).unwrap());
     index.register(ObjectRef::from_obj(&sm_c), provider_key_for(&sm_c).unwrap());
