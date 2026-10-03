@@ -11,6 +11,7 @@
 //! - [`crd`] — `ScheduledMachine` CRD type definitions (source of truth for YAML generation)
 //! - [`health`] — HTTP health and readiness server
 //! - [`labels`] — standard Kubernetes label helpers
+//! - [`leader`] - shared Kubernetes Lease leader election for every controller binary
 //! - [`loop_protection`] — rapid-re-reclaim detection helpers (pure;
 //!   used by the reconciler to throttle warning events)
 //! - [`metrics`] — Prometheus metric definitions and recording helpers
@@ -26,6 +27,7 @@ pub mod crd;
 pub mod health;
 pub mod kata_config_agent;
 pub mod labels;
+pub mod leader;
 pub mod loop_protection;
 pub mod metrics;
 pub mod netlink_proc;
@@ -34,8 +36,9 @@ pub mod reclaim_agent;
 pub mod reconcilers;
 
 // Re-export main types
-pub use crd::ScheduledMachine;
+pub use crd::{ScheduledCapacity, ScheduledMachine};
 pub use health::HealthState;
+pub use leader::{start_leader_election, LeaderElectionConfig};
 pub use metrics::{
     init_controller_info, record_error, record_node_drain, record_pod_eviction,
     record_reconciliation_failure, record_reconciliation_success, record_schedule_evaluation,

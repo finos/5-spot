@@ -62,3 +62,31 @@ description: chronological action log per session, consolidated weekly
 | 07:55 | Edited .github/scripts/admission-deny.bats | modified patch_annotation() | ~191 |
 | 07:55 | Edited .claude/CHANGELOG.md | expanded (+30 lines) | ~358 |
 | 13:05 | PR 175 round five: patch_annotation broke its own -p JSON on quoted values (kubectl parse error, no request sent) — 4/5 tests failed while quote-free values passed; escape quotes in helper; validated escaped/unescaped with json.load; bats parses 5 | .github/scripts/admission-deny.bats, .claude/CHANGELOG.md, .wolf/buglog.json | setup fully green since round four; this was the first run where tests executed | ~3000 |
+
+## Session: 2026-09-30 16:05
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+| 16:06 | Session end: 43 writes across 21 files (no-pii.md, settings.local.json, settings.json, CLAUDE.md, CHANGELOG.md) | 1 reads | ~25474 tok |
+
+## Session: 2026-09-30 16:06
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+| 20:03 | Edited docs/adr/0011-schedule-gated-capacity-separate-controller.md | 2→3 lines | ~35 |
+| 20:04 | Edited docs/adr/0011-schedule-gated-capacity-separate-controller.md | expanded (+43 lines) | ~678 |
+| 20:04 | Edited docs/adr/0011-schedule-gated-capacity-separate-controller.md | expanded (+23 lines) | ~455 |
+| 20:04 | Edited docs/adr/0011-schedule-gated-capacity-separate-controller.md | expanded (+17 lines) | ~307 |
+| 20:04 | Edited docs/adr/0011-schedule-gated-capacity-separate-controller.md | expanded (+8 lines) | ~142 |
+| 20:05 | Edited docs/adr/0011-schedule-gated-capacity-separate-controller.md | expanded (+12 lines) | ~282 |
+| 20:16 | Created examples/scheduledcapacity.yaml | — | ~1543 |
+| 11:31 | Created src/leader.rs | — | ~1558 |
+| 11:31 | Created src/leader_tests.rs | — | ~1157 |
+| 11:35 | Created src/reconcilers/capacity_path_tests.rs | — | ~3066 |
+| 11:36 | Created src/reconcilers/capacity_path.rs | — | ~2375 |
+| 11:38 | Created src/reconcilers/capacity_decision.rs | — | ~3527 |
+| 11:39 | Created src/reconcilers/capacity_decision_tests.rs | — | ~5819 |
+| 11:41 | Created src/reconcilers/scheduled_capacity.rs | — | ~7146 |
+| 11:43 | Created src/reconcilers/scheduled_capacity_tests.rs | — | ~4216 |
+| 11:44 | Created src/bin/scheduled_capacity_controller.rs | — | ~1451 |
+| 11:44 | Created src/bin/scheduled_capacity_controller_tests.rs | — | ~1015 |

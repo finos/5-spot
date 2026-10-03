@@ -9,6 +9,312 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-10-03 14:57] - Fix a hot reconcile loop the live test exposed (ADR 0011)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/scheduled_capacity.rs`: `merge_condition_timestamps()`
+  preserves each condition's `lastTransitionTime` unless its `status` actually
+  changed, matched by `type` rather than position.
+  `spot_schedule_transition_time()` does the same for the mirrored provider
+  timestamp. `patch_status()` now deserialises the computed status into
+  `ScheduledCapacityStatus` and **returns early when it equals the stored
+  one**. `record_decision_metrics()` gates on `entered_phase()`.
+  `build_status_value()` always emits every key this controller owns, with an
+  explicit JSON `null` for cleared fields. The `for_each` logs every reconcile
+  outcome, not only failures. Status-builder arguments are grouped into
+  `ObservedState`.
+- `src/reconcilers/scheduled_capacity_tests.rs`: 14 tests for the above,
+  including `test_build_status_value_emits_every_field_of_the_status_type`,
+  which derives the expected key set from a fully-populated
+  `ScheduledCapacityStatus` instead of a hand-written list.
+- `.wolf/buglog.json`: logged as `bug-005`.
+
+### Why
+The live test measured ~50 `resourceVersion` bumps per second on an idle
+object, and a single handback timeout counted **100** times in
+`handback_timeouts_total`.
+
+Four compounding causes. `Condition::new()` stamps `lastTransitionTime` with
+`now`, so the computed status never equalled the stored one and every reconcile
+wrote; that write re-triggered the controller's own watch. There was no no-op
+guard. The timeout metric counted reconciles rather than transitions. And a
+merge patch that *omits* a key leaves the stored value, so `handbackDeadline`
+could never be cleared once set.
+
+Then the fix itself regressed: rewriting the status builder silently dropped
+`targetRef` and `spotSchedule`, so the new guard compared a desired status that
+could never equal the stored one and was **permanently disabled** with no
+failing test and no visible symptom. Hence the key-coverage test, which
+compares against the type rather than against memory.
+
+Two process lessons, both recorded in the buglog. A controller that logs
+nothing on a successful reconcile cannot be debugged: the missing success log
+made a working watch look dead and sent the first diagnosis in the wrong
+direction. And none of this was reachable by unit tests alone; it took a real
+API server to see it.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+Pre-release fix to code added earlier the same day, so nothing shipped with the
+defect. Re-verified live: a fresh object converges in 2 patches and then skips
+every subsequent reconcile, with `resourceVersion` frozen across 15s and the
+timeout counter reading 0 where it previously read 100. `cargo fmt`, `cargo
+clippy --all-targets --all-features -D warnings`, `cargo test`: **840 passed**.
+
+## [2026-10-03 14:57] - ScheduledCapacity reconciler, binary and RBAC, proven live (ADR 0011 phases 4-5)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/capacity_path.rs` + tests (new, 29 tests): pure path
+  validation, merge-patch construction and numeric readback. The charset is an
+  allowlist (`[a-z][a-zA-Z0-9]*` segments), not a denylist of dangerous
+  characters, because the value reaches an API group 5-Spot does not own.
+- `src/reconcilers/capacity_decision.rs` + tests (new, 25 tests): the whole
+  decision as one pure function, including a 2,592-case sweep proving only
+  zero or `activeValue` is ever written and that `ready` implies `Active`.
+  Reuses `compose_should_be_active` so `Unresolved`-is-not-`Inactive` cannot
+  drift from the machine controller.
+- `src/reconcilers/scheduled_capacity.rs` + tests (new, 45 tests): the async
+  half. Group allowlist, discovery, pre-flight `SelfSubjectAccessReview` for
+  `patch`, drain readback, controller-side host-governance conflict detection,
+  status publication, and the two dynamic watches wired into `reconcile_on`.
+- `src/bin/scheduled_capacity_controller.rs` + tests (new, 6 tests): the
+  `5spot-capacity-controller` binary. `Cargo.toml` gains its `[[bin]]` and
+  `autobins = false`, without which Cargo treats every `src/bin/*_tests.rs`
+  as its own binary and fails on the missing `main`. That is why the
+  `_tests.rs` convention could not previously be applied to bin targets.
+- `src/metrics.rs`: `written_value` gauge, `handback_timeouts_total` and
+  `host_governance_conflicts_total` counters.
+- `src/crd.rs`: `PartialEq`/`Eq` on `Condition`, `ObjectReference` and
+  `ScheduledCapacityStatus`. Load-bearing, not cosmetic: the no-op patch guard
+  compares a computed status against the stored one.
+- `deploy/capacity-controller/`: ServiceAccount, least-privilege ClusterRole,
+  binding, Deployment, kustomization. The machine controller's ClusterRole is
+  untouched.
+
+### Why
+ADR 0011's actuation had to be a field write under a separate identity. The
+reconciler is split pure/async so every transition is a table row rather than a
+mocked cluster, and the two watches (provider and target) keep handback
+event-driven: polling the target for its drain counter would break the
+event-driven rule exactly as polling a schedule would.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+`cargo fmt`, `cargo clippy --all-targets --all-features -D warnings` and
+`cargo test` green: **840 passed**, 0 failed.
+
+### Verified live against a real cluster and a real `VirtualMachinePool`
+- **RBAC, 26/26 assertions** via `SubjectAccessReview`: can `patch`
+  `virtualmachinepools` and its own `/status`; **cannot** delete or create a
+  pool, patch a `VirtualMachine` or `VirtualMachineClaim`, touch
+  `cluster.x-k8s.io/machines`, read a Secret, patch a `ScheduledMachine`, or
+  evict a Pod. `kubectl auth can-i` reports a false `no` for CRD
+  subresources; `SubjectAccessReview` is the authoritative check.
+- **Path control at real admission**: `metadata.ownerReferences`,
+  `metadata.finalizers`, `metadata.labels`, `status.claimed`, a 9-segment path,
+  `spec.Upper` and `spec.` all rejected by the CEL rule or the pattern;
+  `spec.warmReplicas` and an 8-segment path accepted. `activeValue` bounded to
+  1..=1e6; `drainedPath` pinned to `status.`.
+- **Restraint**: writing `spec.warmReplicas` left every sibling field
+  untouched and set **no** `ownerReferences`, finalizers or labels.
+- **Never a create**: a `ScheduledCapacity` naming a non-existent pool reported
+  `TargetResolved=False` and did **not** create the pool.
+- **Full cycle**: `Active/10` -> close window -> `HandingBack/0` -> consumer
+  reports `status.claimed=0` -> `Inactive/0`; and a `HandbackTimedOut` object
+  returned to `Active/10` when the window reopened, which is the reversibility
+  ADR 0011 bought by scaling rather than deleting.
+- **Conflict**: with `spec.nodeName` matching a `ScheduledMachine`'s
+  `status.nodeRef`, the object went to `Error` with
+  `HostGovernanceConflict=True` and refused to write.
+
+---
+
+## [2026-10-03 11:34] - Generalize the dynamic watch over the referencing kind; extract leader election (ADR 0011 phase 3)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/spot_schedule_watch.rs` -> `dynamic_ref_watch.rs` (and its
+  `_tests.rs`), via `git mv` so history follows. `ReverseIndex` and the manager
+  are now generic over the kind that *holds* the reference, taking a `key_for`
+  extractor, so one implementation serves three reference edges:
+  `ScheduledMachine.spec.schedule`, `ScheduledCapacity.spec.schedule`, and
+  `ScheduledCapacity.spec.targetRef`.
+- `src/reconcilers/dynamic_ref_watch.rs`: new `capacity_schedule_key_for` and
+  `capacity_target_key_for` extractors, a `KeyExtractor<K>` alias, per-manager
+  log labels, and `SpotScheduleWatchManager` / `CapacityRefWatchManager` type
+  aliases. `Default`, `Clone` and `Debug` are hand-written rather than derived,
+  so none of them imposes a bound on `K` that callers would have to satisfy for
+  no benefit.
+- `src/reconcilers/mod.rs`, `src/main.rs`, `tests/integration_spot_schedule.rs`:
+  call sites updated. `observe_scheduled_machine`/`forget_scheduled_machine`
+  are now `observe`/`forget`.
+- `src/leader.rs` + `src/leader_tests.rs` (new): the ~60-line lease dance moved
+  out of `main.rs` behind `LeaderElectionConfig` and
+  `start_leader_election`, with 7 tests covering the grace-period guard
+  (including the underflow case where the renew deadline exceeds the duration)
+  and holder identity.
+- `src/lib.rs`: `leader` module registered and re-exported; `ScheduledCapacity`
+  added to the type re-exports.
+
+### Why
+The capacity controller needs **two** watch sets, and the second one is the
+interesting one: handback waits for the consumer's `drainedPath` to reach zero,
+and discovering that by polling the target would break the event-driven rule
+exactly as polling a schedule would. One generic manager instantiated per
+reference edge is the smallest thing that serves all three edges without
+duplicating the watcher-lifecycle logic three ways.
+
+Leader election was extracted for the same anti-drift reason the schedule
+resolver is shared: two copies of the lease dance in two binaries would diverge,
+and the two controllers must agree on what "leader" means. Each binary still
+contends for its **own** Lease, so one controller's leadership never gates the
+other's: they are deliberately separate identities under ADR 0011.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+Internal refactor, no behaviour change. Evidence: all 12 pre-existing watch
+tests pass with **no assertion changes** (only constructor arity and the two
+method renames), and the 4 spot-schedule integration tests pass untouched
+apart from the module path and one type annotation. 6 new watch tests cover the
+generic index and both capacity edges. `cargo fmt`, `cargo clippy
+--all-targets --all-features -D warnings` and `cargo test` green: **750
+passed**, 0 failed.
+
+One test I wrote initially early-returned when no kubeconfig was present, which
+is the "a test that skips must never report success" anti-pattern in
+`rules/testing.md`. It now uses the same `tower_test` mock client the
+pre-existing manager tests use, so it cannot pass by skipping.
+
+## [2026-10-02 20:18] - ScheduledCapacity CRD type, generated CRD, and the path control (ADR 0011 phase 2)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/crd.rs`: new `ScheduledCapacity` CRD at `5spot.finos.org/v1alpha1`
+  (shortname `scap`), with `ScheduledCapacitySpec`, `CapacityTargetRef`,
+  `CapacityWrite`, `HandbackPolicy` and `ScheduledCapacityStatus`. Reuses
+  `SpotScheduleRef`, `Condition`, `ObjectReference` and `SpotScheduleStatus`
+  rather than parallel types, so one `kubectl` habit reads both kinds.
+- `src/crd.rs`: five new schema functions. `capacity_write_path_schema` and
+  `capacity_drained_path_schema` carry the charset pattern plus the CEL prefix
+  pin (`spec.` and `status.` respectively); `capacity_active_value_schema`
+  floors the active value at 1 because 0 is the fixed inactive value.
+- `src/constants.rs`: the `ScheduledCapacity` constant block, including its own
+  eight phases (`HandingBack` and `HandbackTimedOut` exist nowhere else), five
+  conditions, eleven reasons, `CAPACITY_INACTIVE_VALUE = 0`,
+  `CAPACITY_PATH_PATTERN`, the two path prefixes,
+  `CAPACITY_PATH_MAX_SEGMENTS = 8`, `RBAC_VERB_PATCH`, and
+  `ALLOWED_CAPACITY_TARGET_API_GROUPS` (the third allowlist beside bootstrap
+  and infrastructure, ADR 0011 decision 5).
+- `src/crd_tests.rs`: 19 tests written before the types existed, covering
+  round-trip, every default, status zero-survival, the CRD's group/version/kind
+  and printer columns, both CEL prefix pins, the `activeValue` floor, phase and
+  condition distinctness, and the allowlist's closedness.
+- `src/bin/crdgen.rs`, `Makefile`: `scheduledcapacity` selector added to
+  `CrdSelector`/`ALL` and to `CRD_SELECTORS`.
+- `deploy/crds/scheduledcapacity.yaml`: generated. The other three CRD files
+  are byte-identical after `make crds`, so nothing drifted.
+- `examples/scheduledcapacity.yaml`: the ADR's worked example (gating a
+  `VirtualMachinePool`'s `spec.warmReplicas` on a `CapitalMarketsSchedule`)
+  plus a minimal four-field form.
+
+### Why
+ADR 0011's CRD had to exist before its reconciler, and `src/crd.rs` is the
+source of truth that `deploy/crds/` is generated from.
+
+The segment cap moved out of CEL and into the regex pattern
+(`{0,7}` after the first segment). A `self.split('.').size() <= 8` rule depends
+on CEL's extended strings library, while a structural-schema `pattern` is
+enforced unconditionally by any API server that can serve the CRD at all, so
+the cheaper guarantee is the stronger one. `CAPACITY_PATH_MAX_SEGMENTS` and the
+pattern are tied together by a drift-guard test, since the reconciler enforces
+the former and admission the latter.
+
+### Impact
+- [x] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+Breaking/rollout only in the sense that a NEW CRD must be applied
+(`deploy/crds/scheduledcapacity.yaml`); nothing existing changed shape, and no
+controller reconciles the new kind yet. `cargo fmt`, `cargo clippy
+--all-targets --all-features -D warnings` and `cargo test` (724 passed, 705
+baseline + 19) all green.
+
+Path control verified against the generated schema offline: `spec.warmReplicas`
+and an 8-segment path accepted; `metadata.ownerReferences`,
+`metadata.finalizers`, `metadata.labels`, `status.claimed`,
+`spec.items[0].count`, `spec.a/b`, a quoted segment, a wildcard, a 9-segment
+path and a trailing dot all rejected.
+
+## [2026-10-02 20:08] - ADR 0011 accepted: ScheduledCapacity decisions settled and modelled in CALM
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0011-schedule-gated-capacity-separate-controller.md`: Status
+  Proposed -> Accepted, with three substantive amendments recorded rather than
+  made silently. (1) Decision 1 settles the field names (`targetRef`,
+  `capacity.path` / `capacity.activeValue`, `handback.drainedPath` /
+  `handback.timeout`, `nodeName`), pins `capacity.path` to a strict camelCase
+  pattern that must start with `spec.`, and records merge patch over
+  server-side apply. (2) Decision 6 resolves the ADR's own open decision: on
+  `handback.timeout` expiry the controller HOLDS the written value and reports
+  loudly, never forcing to zero, and `spec.handback` is now optional.
+  (3) Decision 7's enforcement moves from a `ValidatingAdmissionPolicy` to the
+  controller. Decision 8 enumerates the phase and condition sets.
+- `docs/adr/README.md`, `docs/src/development/index.md`: ADR 0011 row flipped
+  to Accepted in both indexes.
+- `docs/architecture/calm/architecture.json`: three new nodes
+  (`service-capacity-controller`, `data-asset-scheduledcapacity-cr`,
+  `data-asset-capacity-target`), four new relationships, and the
+  `flow-schedule-gated-capacity` flow covering activation through handback and
+  the timeout hold. The capacity controller is registered in the
+  management-cluster `deployed-in` list and ADR 0011 in `adrs`. The new trust
+  boundary ("5-Spot writes an API group it does not own") is modelled as the
+  `foreign-api-group-write-boundary` control on
+  `rel-capacity-controller-writes-target`, naming all four containments.
+
+### Why
+ADD requires the ADR and the CALM model to be settled before code
+(`ADR -> CALM -> TDD -> implement -> docs -> threat model`). ADR 0011 was
+Proposed with an explicitly open decision and a deliberately sketched CRD
+shape, so it could not be implemented as written.
+
+Decision 7 needed more than settling: a `ValidatingAdmissionPolicy` evaluates
+one request against its own object and its bound `paramRef` and cannot look up
+other objects, so it can never answer "is any ScheduledMachine in this
+namespace already governing this node?". The check is now controller-side and
+fails closed.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+`make calm-validate` passes with 0 errors and 0 warnings; `make calm-diagrams`
+renders the new flow and nodes (output is gitignored, built at docs time).
+No code changed in this commit.
+
 ## [2026-09-29 13:05] - Admission deny suite round five: the patch helper broke its own JSON on quoted values
 
 **Author:** Erick Bourgeois

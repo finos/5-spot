@@ -1,7 +1,7 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-09-29T11:55:35.452Z
-> Files: 305 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-10-03T15:44:53.111Z
+> Files: 317 tracked | Anatomy hits: 0 | Misses: 0
 
 > Project structure index. Auto-maintained by OpenWolf hooks and daemon.
 > Run `openwolf scan` to generate, or wait for the first Claude Code session.
@@ -214,6 +214,7 @@
 - `0008-autovex-presubmission-gate.md` — 0008 — Auto-VEX is generated and signed off before submission, enforced by a byte-exact CI gate (~1527 tok)
 - `0009-unify-schedule-as-provider-reference.md` — 0009 — Unify activation under `spec.schedule` as a provider reference; ship `TimeBasedSpotSchedule` as the core provider (~2051 tok)
 - `0010-base-image-pins-on-from-line.md` — 0010 — Base-image digests are pinned on the `FROM` line so Dependabot re-pins them (~1681 tok)
+- `0011-schedule-gated-capacity-separate-controller.md` — 0011 — Schedule-gated capacity: a `ScheduledCapacity` CRD and its own controller (~4168 tok)
 - `README.md` — Project documentation (~809 tok)
 - `template.md` — NNNN — <short decision title> (~251 tok)
 
@@ -491,6 +492,7 @@
 ## examples/
 
 - `capitalmarketsschedule.yaml` — Example CapitalMarketsSchedule — the reference spot-schedule provider (~500 tok)
+- `scheduledcapacity.yaml` — Example ScheduledCapacity objects (ADR 0011) — the NON-handover pattern. (~1543 tok)
 - `scheduledmachine-bad-taint.yaml` — Example ScheduledMachine with INVALID nodeTaints — intentionally rejected (~548 tok)
 - `scheduledmachine-basic.yaml` — Example ScheduledMachine resource (~617 tok)
 - `scheduledmachine-child-cluster.yaml` — Example ScheduledMachine targeting a CAPI / k0smotron child cluster. (~680 tok)
@@ -538,6 +540,8 @@
 - `kata_config_agent.rs` — # Kata config agent — host-filesystem sync engine (~5467 tok)
 - `labels_tests.rs` — SPDX-License-Identifier: Apache-2.0 (~390 tok)
 - `labels.rs` — # Standard Kubernetes labels (~1458 tok)
+- `leader_tests.rs` — SPDX-License-Identifier: Apache-2.0 (~1157 tok)
+- `leader.rs` — # Leader election (Basel III HA) (~1558 tok)
 - `lib.rs` — # `five_spot` — library crate (~511 tok)
 - `loop_protection_tests.rs` — Tests for the rapid-re-reclaim loop-protection helpers. (~2173 tok)
 - `loop_protection.rs` — # Rapid-re-reclaim loop protection (~988 tok)
@@ -558,6 +562,8 @@
 - `crdgen.rs` — # CRD YAML generator (~934 tok)
 - `kata_config_agent.rs` — # `5spot-kata-config-agent` (~3684 tok)
 - `reclaim_agent.rs` — # 5spot-reclaim-agent — node-side emergency reclaim trigger (~6727 tok)
+- `scheduled_capacity_controller_tests.rs` — Parse with no arguments, as the Deployment does when it relies on (~1015 tok)
+- `scheduled_capacity_controller.rs` — # `5spot-capacity-controller` (~1451 tok)
 - `spot_schedule_capital_markets.rs` — # `spot-schedule-capital-markets` (~645 tok)
 - `spot_schedule_time_based.rs` — # `spot-schedule-time-based` (~607 tok)
 
@@ -571,6 +577,10 @@
 
 ## src/reconcilers/
 
+- `capacity_decision_tests.rs` — SPDX-License-Identifier: Apache-2.0 (~5819 tok)
+- `capacity_decision.rs` — # The capacity decision (ADR 0011): pure, no I/O (~3527 tok)
+- `capacity_path_tests.rs` — SPDX-License-Identifier: Apache-2.0 (~3066 tok)
+- `capacity_path.rs` — # Capacity field paths: validation, patch construction, readback (ADR 0011) (~2375 tok)
 - `child_client_tests.rs` — Tests for the [`ChildClientCache`] resolver. Lock the contract for: (~8597 tok)
 - `child_client.rs` — # Child-cluster client resolver (~6551 tok)
 - `child_watch_tests.rs` — Tests for [`super::ChildNodeWatchManager`]. The actual `kube::runtime` (~3388 tok)
@@ -578,6 +588,8 @@
 - `helpers_tests.rs` — SPDX-License-Identifier: Apache-2.0 (~57946 tok)
 - `helpers.rs` — # Reconciliation helper functions (~41295 tok)
 - `mod.rs` — # Reconcilers (~536 tok)
+- `scheduled_capacity_tests.rs` — SPDX-License-Identifier: Apache-2.0 (~4216 tok)
+- `scheduled_capacity.rs` — # `ScheduledCapacity` reconciler (ADR 0011) (~7146 tok)
 - `scheduled_machine_tests.rs` — SPDX-License-Identifier: Apache-2.0 (~15332 tok)
 - `scheduled_machine.rs` — # `ScheduledMachine` reconciler (~17862 tok)
 - `spot_schedule_tests.rs` — SPDX-License-Identifier: Apache-2.0 (~2861 tok)
