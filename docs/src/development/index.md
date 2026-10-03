@@ -76,7 +76,7 @@ the table below is a convenience copy.
 | [0008](https://github.com/finos/5-spot/blob/main/docs/adr/0008-autovex-presubmission-gate.md) | Auto-VEX signed off before submission, enforced in CI | Accepted |
 | [0009](https://github.com/finos/5-spot/blob/main/docs/adr/0009-unify-schedule-as-provider-reference.md) | Unify activation under `spec.schedule` as a provider reference | Accepted |
 | [0010](https://github.com/finos/5-spot/blob/main/docs/adr/0010-base-image-pins-on-from-line.md) | Base-image digests pinned on the `FROM` line | Accepted |
-| [0011](https://github.com/finos/5-spot/blob/main/docs/adr/0011-schedule-gated-capacity-separate-controller.md) | Schedule-gated capacity in its own controller, scaling rather than creating | Proposed |
+| [0011](https://github.com/finos/5-spot/blob/main/docs/adr/0011-schedule-gated-capacity-separate-controller.md) | Schedule-gated capacity in its own controller, scaling rather than creating | Accepted |
 | [0012](https://github.com/finos/5-spot/blob/main/docs/adr/0012-kata-agent-validates-its-own-input.md) | The kata-config agent validates its own Node annotation; the restart argv terminates options | Accepted |
 | [0013](https://github.com/finos/5-spot/blob/main/docs/adr/0013-kata-config-ref-annotation-admission-policy.md) | The `kata-config-ref` Node annotation is controller-writable only, enforced at admission | Accepted |
 

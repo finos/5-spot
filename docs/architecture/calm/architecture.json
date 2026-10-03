@@ -337,6 +337,76 @@
       "node-type": "data-asset",
       "name": "Spot Schedule Provider Custom Resource",
       "description": "Namespaced CRD in the spotschedules.5spot.finos.org group (TimeBasedSpotSchedule, CapitalMarketsSchedule, or a third-party kind), stored in the management cluster API. Owned by its provider controller, which writes status.active (the authoritative active/inactive signal), a Ready condition, observedGeneration, and lastTransitionTime. Referenced by ScheduledMachine.spec.schedule (apiVersion/kind/name, same namespace) — the single, required activation source after ADR 0009."
+    },
+    {
+      "unique-id": "service-capacity-controller",
+      "node-type": "service",
+      "name": "5-Spot Capacity Controller",
+      "description": "Rust kube-rs controller that reconciles ScheduledCapacity CRs (ADR 0011). It gates ONE numeric capacity field on a foreign object from a spot-schedule provider's verdict, and it NEVER creates or deletes that object. A separate binary (5spot-capacity-controller), Deployment and ServiceAccount from the machine controller, deliberately: compromising this identity cannot delete a CAPI Machine, and compromising the machine controller cannot write capacity. A cluster with no capacity consumer installs none of it. Phases: Pending -> Active -> HandingBack -> Inactive, with HandbackTimedOut, Disabled, Terminated and Error. Reuses resolve_spot_schedule unchanged (src/reconcilers/spot_schedule.rs) so provider semantics cannot drift from the machine controller.",
+      "interfaces": [
+        {
+          "unique-id": "capacity-controller-metrics",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "host": "0.0.0.0",
+            "port": 8080,
+            "path": "/metrics",
+            "protocol": "HTTP"
+          }
+        },
+        {
+          "unique-id": "capacity-controller-health",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "host": "0.0.0.0",
+            "port": 8081,
+            "path": "/healthz",
+            "protocol": "HTTP"
+          }
+        }
+      ],
+      "controls": {
+        "least-privilege": {
+          "description": "Its own ServiceAccount and ClusterRole: get,list,watch + patch on scheduledcapacities and /status; get,list,watch on the spotschedules group; get,list,watch on scheduledmachines (overlap detection, read-only); get,list,watch + patch on exactly the allowlisted target API group. NO Secret access, NO CAPI verbs, NO create or delete anywhere. The machine controller's ClusterRole is NOT extended.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["AC-3", "AC-6"],
+                "evidence": "deploy/capacity-controller/clusterrole.yaml, docs/adr/0011-schedule-gated-capacity-separate-controller.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "data-asset-scheduledcapacity-cr",
+      "node-type": "data-asset",
+      "name": "ScheduledCapacity Custom Resource",
+      "description": "Namespaced CRD 5spot.finos.org/v1alpha1, kind ScheduledCapacity, shortname scap (ADR 0011). States the whole intent in one object: spec.schedule (a SpotScheduleRef), spec.targetRef (the foreign object to govern, same namespace, API group allowlisted), spec.capacity.path + activeValue (the single field to write; the inactive value is fixed at zero), optional spec.handback.drainedPath + timeout (the cooperative bounded wait), and optional spec.nodeName (overlap detection). spec.capacity.path is a SECURITY CONTROL: constrained to dot-separated camelCase segments and required to start with spec., so metadata. (ownerReferences, finalizers, labels) and status. are unreachable.",
+      "controls": {
+        "input-validation": {
+          "description": "capacity.path and handback.drainedPath are validated by CRD schema pattern plus a CEL x-kubernetes-validations rule, AND re-validated in the reconciler so the check still holds if an out-of-date CRD is applied. No array indices, wildcards, .., quotes or / so the path can never be abused as a JSON Pointer escape.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["SI-10"],
+                "evidence": "src/crd.rs, src/reconcilers/capacity_path.rs, deploy/crds/scheduledcapacity.yaml"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "data-asset-capacity-target",
+      "node-type": "data-asset",
+      "name": "Foreign Capacity Target Object",
+      "description": "An object in an API group 5-Spot does NOT own, named by ScheduledCapacity.spec.targetRef and holding the numeric capacity field 5-Spot writes. The reference consumer is banlieue.io/v1alpha1 VirtualMachinePool: spec.warmReplicas is written, status.claimed is watched as the drain signal. 5-Spot patches ONE field by JSON merge patch, never sets an ownerReference, and never creates or deletes the object. Server-side apply was rejected so 5-Spot does not become a permanent co-owner fighting the consumer's own GitOps field manager."
     }
   ],
 
@@ -353,7 +423,8 @@
             "service-capi-core",
             "service-capi-bootstrap-provider",
             "service-capi-infrastructure-provider",
-            "service-spot-schedule-provider"
+            "service-spot-schedule-provider",
+            "service-capacity-controller"
           ]
         }
       }
@@ -756,6 +827,109 @@
           ]
         }
       }
+    },
+    {
+      "unique-id": "rel-operator-authors-scheduledcapacity",
+      "description": "The platform operator authors and applies ScheduledCapacity custom resources declaring which schedule gates how much capacity on which foreign object (ADR 0011).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "actor-platform-operator"
+          },
+          "destination": {
+            "node": "data-asset-scheduledcapacity-cr"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "rel-capacity-controller-kube-api",
+      "description": "The capacity controller watches ScheduledCapacity CRs, watches the provider object named by spec.schedule and the object named by spec.targetRef (both via dynamic, discovery-based watches, not polling), lists ScheduledMachines read-only for overlap detection, issues a pre-flight SelfSubjectAccessReview for patch, and writes its own /status.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-capacity-controller"
+          },
+          "destination": {
+            "node": "service-kubernetes-api",
+            "interfaces": ["kube-api-https"]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "pre-flight-authorization": {
+          "description": "A SelfSubjectAccessReview for the patch verb on the resolved target resource runs BEFORE the first write, so an RBAC gap surfaces as a clear TargetResolved=False condition instead of an opaque 403 partway through actuation (ADR 0011 decision 5). Mirrors ensure_can_create on the machine controller.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["AC-3", "AC-6"],
+                "evidence": "src/reconcilers/scheduled_capacity.rs, deploy/capacity-controller/clusterrole.yaml"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-capacity-controller-writes-target",
+      "description": "The capacity controller writes ONE numeric field on an object in an API group it does not own, by JSON merge patch built from the validated spec.capacity.path, and reads spec.handback.drainedPath to know when the consumer has handed the slice back. It never creates the object, never deletes it, and never sets an ownerReference on it.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-capacity-controller"
+          },
+          "destination": {
+            "node": "data-asset-capacity-target"
+          }
+        }
+      },
+      "controls": {
+        "foreign-api-group-write-boundary": {
+          "description": "NEW TRUST BOUNDARY (ADR 0011): the first place 5-Spot writes outside the CAPI API family. It is contained four ways. (1) Identity: a separate ServiceAccount holding patch on exactly the allowlisted target group and nothing else, so this grant cannot compound the machine controller's bootstrap/infrastructure wildcards. (2) Group allowlist: ALLOWED_CAPACITY_TARGET_API_GROUPS, a third constant beside the bootstrap and infrastructure allowlists. (3) Path validation: spec.capacity.path must start with spec. and match a strict camelCase pattern, so metadata. (ownerReferences, finalizers, labels) is unreachable and no JSON Pointer escape is expressible. (4) Verb: patch only, never create or delete, so a compromised capacity controller cannot destroy a consumer's workload the way deleting a pool with live claims would.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["AC-3", "AC-6", "SC-7", "SI-10"],
+                "evidence": "deploy/capacity-controller/clusterrole.yaml, src/reconcilers/capacity_path.rs, src/constants.rs, docs/src/security/threat-model.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-capacity-controller-reads-schedule",
+      "description": "The capacity controller reads the spot-schedule provider object's duck-typed status.active and Ready condition through resolve_spot_schedule, reused unchanged from the machine controller. It never reads the provider spec and never writes the provider object. Unresolved is never treated as Inactive: the last written capacity is held and the reason reported.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-capacity-controller"
+          },
+          "destination": {
+            "node": "data-asset-spot-schedule-cr"
+          }
+        }
+      },
+      "controls": {
+        "shared-verdict-path": {
+          "description": "Both controllers call one function, so the Unresolved-is-not-Inactive rule, the Ready gate and the killSwitch > enabled > provider precedence order cannot drift between them. This is the reuse that made a separate binary affordable (ADR 0011 context).",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": ["SI-10"],
+                "evidence": "src/reconcilers/spot_schedule.rs, docs/src/reference/spot-schedule-contract.md"
+              }
+            }
+          ]
+        }
+      }
     }
   ],
 
@@ -998,6 +1172,56 @@
           ]
         }
       }
+    },
+    {
+      "unique-id": "flow-schedule-gated-capacity",
+      "name": "Schedule-Gated Capacity (host stays in the cluster, a slice is conceded)",
+      "description": "The non-handover pattern (ADR 0011). The machine never leaves the cluster: when the schedule says active, 5-Spot writes a bounded capacity value onto a foreign object so a consumer can size ephemeral microVM workloads on the host's spare cores, and when it says inactive 5-Spot writes zero and waits for the consumer to hand the slice back. Contrast flow-schedule-activation, where the whole physical node is added to and removed from the cluster.",
+      "transitions": [
+        {
+          "sequence-number": 1,
+          "relationship-unique-id": "rel-operator-authors-scheduledcapacity",
+          "description": "Operator applies a ScheduledCapacity CR naming the schedule, the target object, the field to write (spec.capacity.path), the active value, and optionally the drain signal and the governed node."
+        },
+        {
+          "sequence-number": 2,
+          "relationship-unique-id": "rel-capacity-controller-reads-schedule",
+          "description": "The controller resolves spec.schedule through resolve_spot_schedule and reads the provider's status.active. Unresolved holds the last written value rather than zeroing it.",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 3,
+          "relationship-unique-id": "rel-capacity-controller-kube-api",
+          "description": "Guard clauses in precedence order: killSwitch, then spec.enabled, then the provider verdict. If spec.nodeName is also the status.nodeRef of a ScheduledMachine in this namespace, the controller sets HostGovernanceConflict and refuses to write at all, because one host cannot both be handed over and shared."
+        },
+        {
+          "sequence-number": 4,
+          "relationship-unique-id": "rel-capacity-controller-kube-api",
+          "description": "Pre-flight SelfSubjectAccessReview for patch on the resolved target resource, so an RBAC gap is reported as a condition rather than failing mid-write."
+        },
+        {
+          "sequence-number": 5,
+          "relationship-unique-id": "rel-capacity-controller-writes-target",
+          "description": "Active: the controller merge-patches spec.capacity.activeValue onto the validated path (for example spec.warmReplicas of a VirtualMachinePool). Phase becomes Active, CapacityWritten=True. The consumer sizes its guests under its own cgroup budget; 5-Spot knows nothing about guests."
+        },
+        {
+          "sequence-number": 6,
+          "relationship-unique-id": "rel-capacity-controller-reads-schedule",
+          "description": "The schedule flips inactive (for example market open on a CapitalMarketsSchedule). The dynamic provider watch wakes the reconcile at watch latency, not on a timer.",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 7,
+          "relationship-unique-id": "rel-capacity-controller-writes-target",
+          "description": "Handback begins: the controller writes zero to the same path and moves to HandingBack, recording a deadline from spec.handback.timeout. It does not delete the object and does not force anything."
+        },
+        {
+          "sequence-number": 8,
+          "relationship-unique-id": "rel-capacity-controller-writes-target",
+          "description": "The controller watches spec.handback.drainedPath on the target (for example status.claimed). Reaching zero means the consumer has released the slice: phase Inactive, HandbackComplete=True. If the deadline passes first, the controller HOLDS the written value, reports HandbackTimedOut loudly and increments a metric, because a missed handover is visible and recoverable while killing in-flight agent work is neither.",
+          "direction": "destination-to-source"
+        }
+      ]
     }
   ],
 
@@ -1036,6 +1260,7 @@
     "../../adr/0006-pluggable-spot-schedule-provider-contract.md",
     "../../adr/0009-unify-schedule-as-provider-reference.md",
     "docs/adr/0012-kata-agent-validates-its-own-input.md",
+    "docs/adr/0011-schedule-gated-capacity-separate-controller.md",
     "docs/adr/0013-kata-config-ref-annotation-admission-policy.md"
   ]
 }

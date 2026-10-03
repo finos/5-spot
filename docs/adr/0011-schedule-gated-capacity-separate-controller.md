@@ -4,8 +4,9 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0011 — Schedule-gated capacity: a `ScheduledCapacity` CRD and its own controller
 
-- **Status:** Proposed
-- **Date:** 2026-09-27
+- **Status:** Accepted
+- **Date:** 2026-09-27 (proposed), 2026-10-02 (accepted, field names and the
+  handback decision settled)
 - **Deciders:** Erick Bourgeois
 - **Supersedes:** —
 - **Related:** ADR [0006](./0006-pluggable-spot-schedule-provider-contract.md)
@@ -85,11 +86,54 @@ domain knowledge is.
 ServiceAccount. It never creates or deletes the object it governs.**
 
 1. **`ScheduledCapacity`**, namespaced, group `5spot.finos.org`, served
-   `v1alpha1`. Its spec carries a `schedule` reference (the same
-   `SpotScheduleRef` shape ADR-0009 pinned), a `targetRef` naming the object to
-   govern, the JSON path of the field to write, and the `active` value to write.
-   The inactive value is fixed at the type's zero — a schedule that hands
-   nothing back is not a schedule.
+   `v1alpha1`, shortname `scap`. Its spec carries a `schedule` reference (the
+   same `SpotScheduleRef` shape ADR-0009 pinned), a `targetRef` naming the
+   object to govern, the JSON path of the field to write, and the `active` value
+   to write. The inactive value is fixed at the type's zero: a schedule that
+   hands nothing back is not a schedule.
+
+   The field names, settled 2026-10-02 at the TDD step:
+
+   ```yaml
+   spec:
+     schedule:                   # SpotScheduleRef, group-pinned as ADR-0009
+       apiVersion: spotschedules.5spot.finos.org/v1alpha1
+       kind: CapitalMarketsSchedule
+       name: nyse-trading-day
+     enabled: true               # default true
+     killSwitch: false           # default false
+     targetRef:                  # this object's own namespace, group allowlisted
+       apiVersion: banlieue.io/v1alpha1
+       kind: VirtualMachinePool
+       name: agent-sandboxes
+     capacity:
+       path: spec.warmReplicas   # must start with `spec.`
+       activeValue: 10           # inactive value fixed at 0
+     handback:                   # optional, see decision 6
+       drainedPath: status.claimed
+       timeout: 10m
+     nodeName: worker-3          # optional, see decision 7
+   ```
+
+   **`capacity.path` validation is a control, not a convenience.** The path
+   names a field on an object 5-Spot does not own, so it is constrained to
+   dot-separated camelCase segments
+   (`^[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9]*)*$`, at most 8 of them): no array
+   indices, no wildcards, no `..`, no quotes and no `/`, so it can never be
+   abused as a JSON Pointer escape. `capacity.path` **must** start with
+   `spec.`; `metadata.` is rejected because a CR author who could write
+   `ownerReferences`, `finalizers` or labels on a foreign object would have an
+   elevation primitive, and `status.` is rejected because a status is a
+   controller's own report, not a knob. `handback.drainedPath` must start with
+   `status.`. Enforced both in the CRD schema (pattern plus a CEL rule) and
+   again in the reconciler, because the second is the one that holds if the
+   CRD is ever applied out of date.
+
+   **Actuation is a JSON merge patch**, built by nesting the validated path.
+   Server-side apply was considered and rejected: SSA would make 5-Spot a
+   permanent co-owner of the target field and fight the consumer's own GitOps
+   field manager on every reconcile. A merge patch writes the value and leaves
+   ownership where it was.
 
 2. **Actuation is a field write, never a create or a delete.** The controller
    patches one field on an object it does not own and never sets an
@@ -111,22 +155,70 @@ ServiceAccount. It never creates or deletes the object it governs.**
    pre-flight `SelfSubjectAccessReview` for `patch` runs before the first write
    so an RBAC gap surfaces as a clear condition rather than a failed reconcile.
 
-6. **Handback is cooperative and bounded.** On deactivation the controller writes
-   zero and then *waits* for the consumer to report drained, up to
-   `handbackTimeout`. It does not delete, force, or escalate on its own.
+6. **Handback is cooperative and bounded, and on expiry it holds.** On
+   deactivation the controller writes zero and then *waits* for the consumer to
+   report drained, up to `handback.timeout`. It does not delete, force, or
+   escalate on its own.
+
+   "Drained" is read from `handback.drainedPath`, a validated `status.` path on
+   the target that must reach zero. That keeps the wait as generic as the write:
+   any consumer exposing a numeric in-use counter can be gated without a line of
+   code here, and no consumer has to adopt a 5-Spot-specific `Drained`
+   condition. For banlieue's `VirtualMachinePool` the path is `status.claimed`.
+
+   **`handback` is optional.** Absent, handback completes as soon as the zero
+   write lands. This is a deliberate relaxation of the original wording, which
+   required the wait unconditionally: a consumer with no observable in-use
+   counter can still legitimately be gated, and ADR-0007's additive-only rule
+   means a wrongly-required field could never be removed later.
+
+   **When `handback.timeout` expires with the consumer still not drained, the
+   controller holds the written value and reports loudly** (phase
+   `HandbackTimedOut`, `HandbackComplete=False`, a metric). It never forces the
+   value to zero. This resolves the open decision this ADR carried: a missed
+   handover is visible and recoverable, while a killed agent task is neither,
+   and forcing would destroy in-flight work using knowledge this controller does
+   not have, which is the same reasoning that made actuation a scale rather
+   than a delete. No per-object `onTimeout` knob: ADR-0007 would make that enum
+   permanent, and it would push a safety decision onto every author of a CR.
 
 7. **A host is governed by `ScheduledMachine` or by `ScheduledCapacity`, never
    both.** They are opposite answers to "what happens to this metal on a
    schedule": one removes the node, the other keeps it and shares it. Both
    pointed at one host is a contradiction, and it half-works — the node is
-   drained for handover while a capacity gate is still sizing guests on it. A
-   `ValidatingAdmissionPolicy` rejects the overlap where the two objects can be
-   correlated; where they cannot, the invariant is documented and the
-   `ScheduledCapacity` status says which host it believes it governs.
+   drained for handover while a capacity gate is still sizing guests on it.
+
+   **The overlap is detected in the controller, not at admission.** The original
+   wording said a `ValidatingAdmissionPolicy` rejects it. That is not
+   implementable: a VAP evaluates one request against its own object and its
+   bound `paramRef`, and has no way to look up other objects, so it cannot ask
+   "is any `ScheduledMachine` in this namespace already governing this node?".
+   Instead:
+
+   - `spec.nodeName` is an optional declaration of the host this object
+     believes it governs;
+   - the reconciler lists `ScheduledMachine`s in the namespace and compares
+     `spec.nodeName` against each `status.nodeRef.name`;
+   - on a hit it sets `HostGovernanceConflict=True` and **refuses to write
+     capacity at all** (fail closed), rather than half-applying the
+     contradiction;
+   - `status.governedNode` reports the host either way, which is what the
+     original wording already prescribed for the uncorrelatable case.
+
+   Where `spec.nodeName` is absent the two objects cannot be correlated at all
+   and the invariant is documentation only, as before.
 
 8. **Its own phase and condition set**, not `ScheduledMachine`'s. A budget ramp
    and a drain wait are not node membership, and ADR-0007 makes a borrowed enum
    permanent.
+
+   Phases: `Pending`, `Active`, `HandingBack`, `HandbackTimedOut`, `Inactive`,
+   `Disabled`, `Terminated`, `Error`.
+
+   Conditions: `Ready`, `TargetResolved`, `CapacityWritten`,
+   `HandbackComplete`, `HostGovernanceConflict`, plus `SpotScheduleResolved`
+   reused unchanged from ADR-0006 so the two controllers report provider
+   resolution identically.
 
 ## Consequences
 
@@ -160,15 +252,27 @@ residuals already recorded (`bootstrapSpec.spec` plaintext, and the
 `bootstrap`/`infrastructure` wildcards), and the reason the grant is separate is
 to keep them from compounding. A full pass is due when this is implemented.
 
-**Open decision, needed before code.** What happens when `handbackTimeout`
-expires and the consumer has not finished draining: hold capacity above zero and
-miss the handover, or force it to zero and break in-flight work? That is a
-business call, not an engineering one. Until it is answered, the controller
-should fail safe by holding and reporting loudly, because a missed handover is
-visible and recoverable while a killed agent task is neither.
+**Resolved decision (2026-10-02), formerly open.** What happens when
+`handback.timeout` expires and the consumer has not finished draining: hold
+capacity above zero and miss the handover, or force it to zero and break
+in-flight work? **Hold and report loudly**, per decision 6. The provisional
+fail-safe this ADR recorded while the question was open is now the decision, for
+the reason it gave: a missed handover is visible and recoverable while a killed
+agent task is neither. Revisit only with a superseding ADR, not with a CRD
+field.
+
+**Amended at acceptance (2026-10-02).** Three things changed between Proposed
+and Accepted, all recorded above rather than silently:
+
+1. Decision 7's enforcement moved from a `ValidatingAdmissionPolicy` to the
+   controller, because a VAP cannot correlate across objects.
+2. Decision 6's wait became optional (`spec.handback` absent means no wait),
+   so a consumer with no in-use counter is still gateable.
+3. Decision 1 settled the field names, the path-validation rules, and merge
+   patch over server-side apply.
 
 **Follow-ups.** The roadmap entry for the integration lives on the consumer
 side; 5-Spot carries a `ROADMAPS.md` row pointing at it so the dependency is
-visible from both repositories. The CRD shape above is deliberately sketched,
-not settled — field names land with the TDD step, under ADR-0007's
-additive-only rule.
+visible from both repositories. The CRD shape above was deliberately sketched
+when this ADR was Proposed; it is settled as of acceptance (decision 1), and
+every later field is additive-only under ADR-0007.
