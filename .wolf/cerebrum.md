@@ -30,9 +30,12 @@ budget_tokens: 2000
   `RBC/` reference against 75 `finos/` ones. The maintainer-identity carve-out
   in `rules/no-pii.md` covers git authorship, `Cargo.toml` and
   `SECURITY.md` only, so the address itself is not repeated here.
-  `MAINTAINERS.md` still lists employer addresses for three people and was
-  deliberately left alone: two of them are other people's, which
-  `rules/no-pii.md` says are never ours to change.
+  **`MAINTAINERS.md` is different and keeps its employer addresses**, Erick's
+  included: Erick said to leave his employer email there (2026-10-04). A
+  maintainer contact in a FINOS project's `MAINTAINERS.md` is deliberately
+  published identity, which is
+  exactly what the carve-out is for, and the other two entries are other
+  people's and never ours to change. Settled: do not raise this again.
 - **[2026-10-03] Erick commits himself; hand back the exact command.** He asked
   twice for "the git commit commands" rather than having them run. Finish a
   piece of work by printing ready-to-paste `git commit -s -S -m "..."` with a

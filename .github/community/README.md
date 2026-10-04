@@ -17,6 +17,7 @@ holds the detail each row links to.
 | [02](02-conventions.md) | Coding conventions | 📄 | How code in this tree is written: style, errors, logging, the reconciliation pattern, CRD authoring, testing, docs discipline, commit rules |
 | [03](03-release-diff-v0-2-2-to-main.md) | Release diff `v0.2.2` → `main` | 📄 | What shipped across the kata-config-agent and spot-schedule-provider arcs, with the ADRs behind each. A point-in-time record, generated 2026-07-22 |
 | [04](04-dependency-internalization-matrix.md) | Dependency internalization matrix | ✅ | Every direct dependency, the API surface actually used, and whether it could be maintained internally. Closed 2026-09-27: all six unused crates removed, runtime deps 31 → 22; §§2–3 stay as the internalization reference |
+| [05](05-schedule-gated-capacity.md) | Schedule-gated capacity | ✅ | The non-handover pattern (ADR 0011): a host stays in the cluster and a bounded slice of it is conceded on a schedule, through a `ScheduledCapacity` CRD and a separate controller identity that patches one field on a foreign API group. Closed 2026-10-04, verified against a live cluster |
 
 ## Conventions
 

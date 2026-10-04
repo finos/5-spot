@@ -325,3 +325,202 @@ for removal on a subsequent reconcile — admin-added taints colliding on
 overwritten.
 
 See `spec.nodeTaints` for the `NodeTaint` field schema.
+
+---
+
+## ScheduledCapacity
+
+The `ScheduledCapacity` custom resource gates **one numeric capacity field on
+an object 5-Spot does not own**, from the same spot-schedule providers a
+`ScheduledMachine` uses (ADR 0011).
+
+It is the opposite of `ScheduledMachine`. A `ScheduledMachine` is *handover*:
+the whole physical machine leaves the cluster when the schedule closes. A
+`ScheduledCapacity` keeps the machine in the cluster the whole time and
+concedes a bounded slice of it while the schedule is open. On a 32-core host
+whose incumbent only ever uses 16, that is how the spare capacity gets used
+without the incumbent ever losing the node.
+
+**It never creates or deletes the object it governs.** Writing a capacity
+field is reversible and bounded; deleting a consumer's pool with live claims
+would destroy in-flight work using knowledge this controller does not have.
+
+Reconciled by the separate `5spot-capacity-controller` binary under its own
+ServiceAccount, so compromising it cannot delete a CAPI `Machine` and
+compromising the machine controller cannot write capacity. A cluster with no
+capacity consumer installs none of it.
+
+### API Group and Version
+
+- **Group**: `5spot.finos.org`
+- **Version**: `v1alpha1`
+- **Kind**: `ScheduledCapacity`
+- **Short name**: `scap`
+- **Scope**: Namespaced
+
+> `v1alpha1` while the consumer contract settles; `ScheduledMachine` is at
+> `v1beta1`. Field evolution follows ADR 0007's additive-only rule.
+
+### Example
+
+```yaml
+apiVersion: 5spot.finos.org/v1alpha1
+kind: ScheduledCapacity
+metadata:
+  name: agent-sandbox-capacity
+  namespace: sandboxes
+spec:
+  schedule:
+    apiVersion: spotschedules.5spot.finos.org/v1alpha1
+    kind: CapitalMarketsSchedule
+    name: nyse-trading-day
+  targetRef:
+    apiVersion: banlieue.io/v1alpha1
+    kind: VirtualMachinePool
+    name: agent-sandboxes
+  capacity:
+    path: spec.warmReplicas
+    activeValue: 10
+  handback:
+    drainedPath: status.claimed
+    timeout: 10m
+  nodeName: worker-3
+```
+
+### Spec Fields
+
+#### schedule
+
+(required, object) Reference to the spot-schedule provider that owns the
+active/inactive decision. The same shape as
+`ScheduledMachine.spec.schedule`, resolved by the same code, so the
+`Unresolved`-is-not-`Inactive` rule cannot drift between the two kinds.
+
+An unresolved provider **holds the last written value** and reports why; it is
+never read as inactive.
+
+#### enabled
+
+(optional, boolean, default: `true`) Administrative master switch. `false`
+holds the object `Disabled` and drives capacity to zero regardless of the
+provider.
+
+#### killSwitch
+
+(optional, boolean, default: `false`) Immediate, terminal handback. Takes
+precedence over `enabled` **and** the provider verdict, and is the one path
+that does not wait for a drain, because the operator has explicitly asked for
+the slice back now. It is still only a field write; nothing is deleted.
+
+#### targetRef
+
+(required, object) The foreign object whose capacity field this schedule
+gates. Must live in **this object's namespace**.
+
+- **apiVersion** (required, string): `group/version` of the target. The group
+  must be in the controller's allowlist, checked at reconcile time so the
+  permitted set lives in one place and cannot be widened by a stale CRD
+- **kind** (required, string): Kind of the target resource
+- **name** (required, string): Name of the target object
+
+5-Spot sets no `ownerReference` on the target and touches no other field.
+
+#### capacity
+
+(required, object) The single field to write and the value to write while the
+schedule is active.
+
+- **path** (required, string): dot-separated path of the numeric field, e.g.
+  `spec.warmReplicas`
+- **activeValue** (required, integer, 1..=1000000): value written while active
+
+**`path` is a security control, not a convenience.** It names a field on an
+object 5-Spot does not own, so it is restricted to dot-separated camelCase
+segments (at most 8) and must start with `spec.`:
+
+- `metadata.` is rejected: a path reaching `ownerReferences`, `finalizers` or
+  labels on a foreign object would let a CR author use the controller's
+  credential as an elevation primitive
+- `status.` is rejected: a status is a controller's own report, not a knob
+- array indices, wildcards, `..`, quotes and `/` are all inexpressible, so the
+  value can never be read as a JSON Pointer or JSONPath expression
+
+The **inactive** value is fixed at `0` and is deliberately not configurable: a
+schedule that hands nothing back is not a schedule.
+
+#### handback
+
+(optional, object) The cooperative, bounded handback.
+
+- **drainedPath** (optional, string): a numeric field on the target's
+  **status** reporting how much of the slice is still in use, e.g.
+  `status.claimed`. Must start with `status.`
+- **timeout** (optional, string, default: `10m`): how long to wait for
+  `drainedPath` to reach zero
+
+On deactivation the controller writes zero **first**, then waits. Zero is what
+makes the drain converge: the gated field is a warm-pool target, so zero stops
+the consumer replenishing idle capacity while work already claimed finishes on
+its own. Holding the field above zero until the consumer reported drained would
+be circular.
+
+When `timeout` expires with the consumer still not drained, the controller
+**holds and reports loudly** (phase `HandbackTimedOut`, a `False`
+`HandbackComplete` condition, a metric). It never forces, deletes or
+escalates: a missed handover is visible and recoverable, while killing an
+agent mid-task is neither.
+
+Omit the whole block for a consumer that exposes no in-use counter; handback
+then completes as soon as the zero write lands.
+
+#### nodeName
+
+(optional, string) The Kubernetes Node this object believes it governs.
+
+A host is governed by `ScheduledMachine` **or** by `ScheduledCapacity`, never
+both: one removes the node, the other keeps it and shares it, and both at once
+half-works. Setting this lets the controller detect the contradiction, by
+comparing it against every `ScheduledMachine.status.nodeRef.name` in the
+namespace; on a match it sets `HostGovernanceConflict` and refuses to write at
+all. Without it the two objects cannot be correlated and the invariant is
+documentation only.
+
+### Status Fields
+
+#### phase
+
+(optional, string) One of `Pending`, `Active`, `HandingBack`,
+`HandbackTimedOut`, `Inactive`, `Disabled`, `Terminated`, `Error`.
+
+Its own phase set, not `ScheduledMachine`'s: a budget ramp and a drain wait are
+not node membership. `HandingBack` and `HandbackTimedOut` exist nowhere else.
+
+#### writtenValue
+
+(optional, integer) The value this controller last successfully wrote. A
+written `0` is meaningful state (handback in progress or complete), not an
+absent one.
+
+#### observedDrainedValue
+
+(optional, integer) Last value read from `spec.handback.drainedPath`. Absent
+and `0` are different answers: an unread counter is not a drained one, and
+only `0` completes a handback.
+
+#### handbackDeadline
+
+(optional, string) RFC3339 instant at which the current handback wait expires.
+Cleared once handback completes.
+
+#### governedNode
+
+(optional, string) The Node this object believes it governs, echoed from
+`spec.nodeName`. Reported even when the overlap check cannot run, so an
+operator can correlate by hand.
+
+#### conditions
+
+(optional, array) `Ready`, `TargetResolved`, `CapacityWritten`,
+`HandbackComplete`, `HostGovernanceConflict`, plus `SpotScheduleResolved`
+reused unchanged from ADR 0006 so provider resolution reads the same on both
+kinds.

@@ -9,6 +9,59 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-10-04 11:03] - Phase 6: docs and the threat-model pass ADR-0011 owed
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/src/security/threat-model.md`: **full pass, stamp 1.2 to 1.3.** ADR-0011
+  was Accepted but unimplemented at 1.2, so the document described neither the
+  second controller identity nor the first boundary where 5-Spot writes an API
+  group it does not own. Every section walked. §1 scope gains a second binary
+  and CRD and declares the consumer out of scope; §2 gains the component and
+  flows F8/F9; §3 gains three assets; §4 gains TB7 with its diagram subgraph
+  and the prose explaining why the identity is separate; §5 gains two actors;
+  §6.6 is new with nine threats; §7 gains seven controls; §8 gains two
+  residuals; §9 gains two assumptions. §10 unchanged.
+- `src/bin/crddoc.rs` + `docs/src/reference/api.md`: the `ScheduledCapacity`
+  reference, which did not exist (the kind appeared zero times).
+- `docs/src/concepts/scheduled-capacity.md` (new) + `docs/mkdocs.yml` nav.
+- `.github/community/05-schedule-gated-capacity.md` (new), with a `ROADMAPS.md`
+  row and a `.github/community/README.md` reading-order row in the same commit.
+
+### Why
+`rules/threat-modeling.md` states that an ADR is not done until a full pass has
+happened, and the ADR was already merged as Accepted. The pass is substantive
+rather than a stamp bump, because ADR-0011 adds a posture the document had no
+vocabulary for.
+
+Two things the pass found that assertion alone would have missed. The draft
+stamp claimed §§1 and 3 were unchanged; checking showed both do change, since a
+new binary and a new CRD are in scope and the conceded slice is an asset in its
+own right. And the most interesting attacker at TB7 is not the compromised pod
+but the `ScheduledCapacity` **author**: they supply a field path that the
+controller writes with its own broader credential, which is a confused-deputy
+shape (C1) rather than inert configuration. That is now §9 assumption 8:
+`create` on `scheduledcapacities` deserves the same care as on
+`scheduledmachines`.
+
+The C5 gap is recorded as a MEDIUM residual rather than quietly fixed: a
+governance conflict arising after a value was written leaves that value in
+place, because refusing to write also refuses to write zero. Closing it is a
+superseding-ADR decision.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+`cargo fmt`, `cargo clippy --all-targets --all-features -D warnings` and
+`cargo test` green (842 passed); `make crds` idempotent; `make calm-validate`
+clean; every `roadmap NN` reference falls inside the contiguous `00`..`05`
+range.
+
+
 ## [2026-10-03 14:57] - Fix a hot reconcile loop the live test exposed (ADR 0011)
 
 **Author:** Erick Bourgeois

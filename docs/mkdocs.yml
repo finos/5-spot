@@ -210,6 +210,7 @@ nav:
       - System Diagram: architecture/system.md
       - Architecture Flows: architecture/flows.md
       - ScheduledMachine: concepts/scheduled-machine.md
+      - ScheduledCapacity: concepts/scheduled-capacity.md
       - Machine Lifecycle: concepts/machine-lifecycle.md
       - Child-Cluster Kubeconfig: concepts/child-cluster-kubeconfig.md
       - Schedule Configuration: concepts/schedules.md
