@@ -695,7 +695,8 @@ pub const CONDITION_TYPE_HANDBACK_COMPLETE: &str = "HandbackComplete";
 /// Condition: `spec.nodeName` is also the `status.nodeRef` of a
 /// `ScheduledMachine` in this namespace, so one host would be both handed over
 /// and shared (ADR 0011 decision 7). `True` here means the controller is
-/// **refusing to write at all** (fail closed), not that it wrote and warned.
+/// **driving capacity to zero and withholding the active value** (ADR 0014),
+/// not that it wrote the active value and warned.
 pub const CONDITION_TYPE_HOST_GOVERNANCE_CONFLICT: &str = "HostGovernanceConflict";
 
 /// Reason: the active value is written and the schedule says active.

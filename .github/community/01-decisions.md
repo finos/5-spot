@@ -165,4 +165,4 @@ SPDX-License-Identifier: Apache-2.0
 |---|---|---|
 | ~~O-001~~ | ~~Remove `hyper` and `tower` from `Cargo.toml`~~ | **Closed 2026-09-27** — both removed (and `http-body-util` moved to dev-dependencies), full suite green; roadmap [04](04-dependency-internalization-matrix.md) closed with it |
 | O-002 | Conversion webhook shape | Deferred by [ADR 0007](../../docs/adr/0007-crd-multi-version-and-conversion.md) until the first true breaking CRD change |
-| O-003 | Internalizing the "thin" dependency tier | Roadmap [04](04-dependency-internalization-matrix.md) §3 — feasible but mostly bad trades; decide per crate, with an ADR if one is taken |
+| ~~O-003~~ | ~~Internalizing the "thin" dependency tier~~ | **Closed 2026-10-05** by [ADR 0015](../../docs/adr/0015-dependency-internalization-policy.md): internalize when the replacement is <=500 lines, outside the excluded categories, testable, and the crate actually leaves the production graph. Applied in roadmap [04](04-dependency-internalization-matrix.md) §2a: `tokio-stream` internalized (19 LOC), `http` disqualified by the graph test, `kube-lease-manager` and `warp` in bounds but deferred to their own ADRs |

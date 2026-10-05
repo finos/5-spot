@@ -57,25 +57,98 @@ mod tests {
     // Precedence 1: host governance conflict fails closed
     // ========================================================================
 
+    /// ADR-0014 amends ADR-0011 decision 7. A conflict drives capacity to
+    /// ZERO; it does not refuse to write.
+    ///
+    /// "Refuse to write" sounded like failing closed but was not: a value
+    /// written before the conflict appeared simply stood, leaving a node
+    /// drained for handover while the consumer still believed it could size
+    /// guests on it. Observed live, with `HostGovernanceConflict=True` and the
+    /// target still holding the active value.
     #[test]
-    fn test_conflict_refuses_to_write_anything() {
+    fn test_conflict_drives_capacity_to_zero() {
         let verdict = active();
         let decision = decide(&CapacityDecisionInput {
             conflict: true,
+            last_written: Some(ACTIVE_VALUE),
             ..input(&verdict)
         });
         assert_eq!(decision.phase, PHASE_CAPACITY_ERROR);
         assert_eq!(decision.reason, REASON_HOST_GOVERNANCE_CONFLICT);
         assert_eq!(
-            decision.write, None,
-            "a conflicted object must not write at all, not even zero"
+            decision.write,
+            Some(CAPACITY_INACTIVE_VALUE),
+            "zero is the safe direction: it stops replenishment on a node that \
+             is being drained for handover"
         );
         assert!(decision.conflict);
         assert!(!decision.ready);
     }
 
-    /// Conflict outranks everything, including killSwitch: if we do not know
-    /// who governs the host, we do not touch it.
+    /// The "fail closed" intent of decision 7 is preserved exactly where it
+    /// matters: a conflicted object can never concede capacity, whatever the
+    /// schedule says.
+    #[test]
+    fn test_conflict_never_writes_the_active_value() {
+        for verdict in [active(), inactive(), unresolved()] {
+            for last_known in [None, Some(true), Some(false)] {
+                for last in [None, Some(0), Some(ACTIVE_VALUE)] {
+                    let decision = decide(&CapacityDecisionInput {
+                        conflict: true,
+                        last_known_active: last_known,
+                        last_written: last,
+                        ..input(&verdict)
+                    });
+                    assert_ne!(
+                        decision.write,
+                        Some(ACTIVE_VALUE),
+                        "a conflicted object must never write the active value"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Already at zero: nothing to write, but the object stays loudly in
+    /// Error. It must not drift to Inactive, because it is not inactive by
+    /// schedule, it is misconfigured.
+    #[test]
+    fn test_conflict_already_zero_writes_nothing_but_stays_in_error() {
+        let verdict = active();
+        let decision = decide(&CapacityDecisionInput {
+            conflict: true,
+            last_written: Some(CAPACITY_INACTIVE_VALUE),
+            ..input(&verdict)
+        });
+        assert_eq!(decision.phase, PHASE_CAPACITY_ERROR);
+        assert_eq!(decision.write, None, "no redundant patch");
+        assert!(decision.conflict);
+    }
+
+    /// No handback is claimed. A contradiction was stopped; nothing was
+    /// handed back, and the machine controller owns the node's drain and its
+    /// timeout (ADR-0014 decision 3).
+    #[test]
+    fn test_conflict_claims_no_handback_and_runs_no_drain_clock() {
+        let verdict = inactive();
+        let decision = decide(&CapacityDecisionInput {
+            conflict: true,
+            last_written: Some(ACTIVE_VALUE),
+            observed_drained: Some(3),
+            ..input(&verdict)
+        });
+        assert!(
+            !decision.handback_complete,
+            "a conflict is not a completed handback"
+        );
+        assert_eq!(
+            decision.handback_deadline, None,
+            "no second clock against a drain the machine controller owns"
+        );
+    }
+
+    /// Conflict outranks everything, including killSwitch. Only the branch's
+    /// action changed in ADR-0014, not its precedence.
     #[test]
     fn test_conflict_outranks_kill_switch_and_schedule() {
         let verdict = inactive();
@@ -86,7 +159,26 @@ mod tests {
             ..input(&verdict)
         });
         assert_eq!(decision.phase, PHASE_CAPACITY_ERROR);
-        assert_eq!(decision.write, None);
+        assert_eq!(decision.write, Some(CAPACITY_INACTIVE_VALUE));
+        assert_eq!(
+            decision.reason, REASON_HOST_GOVERNANCE_CONFLICT,
+            "the conflict is the reason reported, not the kill switch"
+        );
+    }
+
+    /// Recovery needs no operator action beyond fixing the reference: the
+    /// next reconcile is an ordinary one.
+    #[test]
+    fn test_clearing_the_conflict_restores_capacity() {
+        let verdict = active();
+        let decision = decide(&CapacityDecisionInput {
+            conflict: false,
+            last_written: Some(CAPACITY_INACTIVE_VALUE),
+            ..input(&verdict)
+        });
+        assert_eq!(decision.phase, PHASE_CAPACITY_ACTIVE);
+        assert_eq!(decision.write, Some(ACTIVE_VALUE));
+        assert!(!decision.conflict);
     }
 
     // ========================================================================
@@ -501,9 +593,11 @@ mod tests {
                                                     decision.ready,
                                                     decision.phase == PHASE_CAPACITY_ACTIVE
                                                 );
-                                                // A conflict never writes.
+                                                // A conflict never writes the
+                                                // ACTIVE value (ADR-0014); it
+                                                // may write zero.
                                                 if decision.conflict {
-                                                    assert_eq!(decision.write, None);
+                                                    assert_ne!(decision.write, Some(ACTIVE_VALUE));
                                                 }
                                             }
                                         }

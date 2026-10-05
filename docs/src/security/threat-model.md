@@ -1,9 +1,22 @@
 # Threat Model: 5-Spot ScheduledMachine Controller
 
-**Version:** 1.3  
-**Date:** 2026-10-04  
+**Version:** 1.5  
+**Date:** 2026-10-05  
 **Status:** Active — living document  
-**Covers:** ADR-0001 … ADR-0013 (the 1.3 pass implements ADR-0011, which was
+**Covers:** ADR-0001 … ADR-0015 (the 1.5 pass covers ADR-0015, the dependency
+internalization policy. Every section walked. It is a *process* decision with a
+real posture effect in both directions, so §6 T10 and the §7 supply-chain table
+now state the trade explicitly: each dependency removed is one fewer upstream to
+compromise, and one fewer component the SBOM-driven controls report on. A new LOW
+residual records the current exposure (19 lines). No component, asset, actor or
+boundary changes. The 1.4 pass covers ADR-0014: a host-governance
+conflict now drives capacity to zero instead of refusing to write. Every
+section was walked. Changed: §6.6 C5 from "mitigated with a known gap" to
+mitigated, and §8's MEDIUM residual **removed** rather than reworded, because
+the gap is closed rather than accepted, replaced by a LOW in the other
+direction. No component, asset, actor or boundary changes: the same writer
+writes the same field, only the value chosen in one branch differs.
+The 1.3 pass implements ADR-0011, which was
 Accepted but unimplemented at 1.2: a second controller identity and the first
 boundary where 5-Spot writes an API group it does not own. Every section was
 walked. Changed: §1 scope (a second binary, a second CRD, and the consumer
@@ -302,7 +315,7 @@ namespaces. Everything in §6.5 follows from that.
 | ID | Threat | Likelihood | Impact | Status |
 |---|---|---|---|---|
 | T9 | Memory corruption in unsafe Rust code or via malformed serde input | Very Low | Critical | **Mitigated** — codebase is safe Rust; no `unsafe` blocks; serde handles malformed input with errors |
-| T10 | Supply chain attack via malicious crate version | Low | Critical | **Residual risk** — mitigated by Grype container scan (VEX-aware) in CI; no automated dependency pinning beyond Cargo.lock |
+| T10 | Supply chain attack via malicious crate version | Low | Critical | **Residual risk:** mitigated by Grype container scan (VEX-aware) in CI; no automated dependency pinning beyond Cargo.lock. **ADR 0015 cuts both ways here:** every dependency removed is one fewer upstream that can be compromised, and also one fewer component a scanner reports on, because internalized code leaves the SBOM. The 500-line bound and the test requirement are what keep the second effect small; see the §7 supply-chain note and §8 |
 
 #### Information Disclosure
 | ID | Threat | Likelihood | Impact | Status |
@@ -426,7 +439,7 @@ then writes with its own, broader credential: a confused-deputy shape.
 | C2 | The path is read as a JSON Pointer or JSONPath expression, so `~0`, `/`, `[0]` or a quoted segment escapes the intended field | T, E | Low | **High** | **Mitigated**: the charset is an **allowlist** (`[a-z][a-zA-Z0-9]*` per segment), not a denylist of dangerous characters, so nothing outside camelCase is expressible regardless of how the value is later interpreted. Actuation builds a nested merge patch from the validated segments rather than parsing a path expression (`capacity_path.rs::build_merge_patch`) |
 | C3 | The target is an object in an API group the controller was never meant to write | T, E | Low | High | **Mitigated**: `ALLOWED_CAPACITY_TARGET_API_GROUPS` (`src/constants.rs`) is the third allowlist beside the bootstrap and infrastructure ones, checked in the reconciler so the permitted set lives in one greppable place and cannot be widened by a stale CRD. The ClusterRole grants `patch` on exactly those groups, so RBAC is the second gate |
 | C4 | A capacity write destroys in-flight work: a consumer's pool is zeroed while claims are live | T, D | Medium | High | **Mitigated by construction**: actuation is a field write, never a delete, and the inactive value is a *warm-pool* zero: it stops replenishment while claimed work finishes on its own. The consumer owns claim binding and drain, which 5-Spot has no way to reason about. On deactivation the controller writes zero and then **waits** for `spec.handback.drainedPath` to reach zero, up to `handback.timeout`; on expiry it **holds and reports loudly** rather than escalating (ADR 0011 decision 6), because a missed handover is visible and recoverable while killed work is not |
-| C5 | A host is governed by both a `ScheduledMachine` and a `ScheduledCapacity`, so it is drained for handover while capacity is still being sized on it | T, D | Medium | Medium | **Mitigated, with a known gap.** `spec.nodeName` is compared against every `ScheduledMachine.status.nodeRef.name` in the namespace and a match sets `HostGovernanceConflict=True` and refuses to write (`src/reconcilers/scheduled_capacity.rs`). This is controller-side, not admission: a `ValidatingAdmissionPolicy` evaluates one request against its own object and its `paramRef` and cannot look up other objects at all. **Gap:** a conflict arising *after* a value was written leaves that value in place, because refusing to write also refuses to write zero. §8 |
+| C5 | A host is governed by both a `ScheduledMachine` and a `ScheduledCapacity`, so it is drained for handover while capacity is still being sized on it | T, D | Medium | Medium | **Mitigated (ADR 0014).** `spec.nodeName` is compared against every `ScheduledMachine.status.nodeRef.name` in the namespace, and a match sets `HostGovernanceConflict=True` and **drives capacity to zero** (`src/reconcilers/capacity_decision.rs`). The active value is never written to a conflicted object whatever the schedule says, so the fail-closed intent holds where it matters, while zero removes a contradiction that may already exist rather than freezing it. ADR 0011 originally said "refuse to write", which left a value written *before* the conflict standing: the exact state the invariant forbids, observed live. The check is controller-side, not admission, because a `ValidatingAdmissionPolicy` evaluates one request against its own object and its `paramRef` and cannot look up other objects at all. **Residual, now LOW:** a `spec.nodeName` colliding with an unrelated machine zeroes capacity the operator wanted, until the reference is corrected; `spec.nodeName` is optional for exactly that reason. §8 |
 | C6 | The capacity grant compounds the machine controller's CAPI and bootstrap/infrastructure wildcards | E | Low | **High** | **Mitigated: this is the reason for the separate binary.** A distinct ServiceAccount, Deployment and ClusterRole; the machine controller's ClusterRole is not extended (ADR 0011 decision 3). Verified against a live API server with 26 `SubjectAccessReview` assertions: the capacity identity cannot delete or create a CAPI `Machine`, read a Secret, create or delete the governed object, patch a `ScheduledMachine`, or evict a Pod |
 | C7 | An RBAC gap surfaces as a partial write or an opaque 403 mid-actuation | D | Low | Low | **Mitigated**: a pre-flight `SelfSubjectAccessReview` for `patch` on the resolved target runs before the first write, so a missing grant becomes a `TargetResolved=False` condition naming the resource (ADR 0011 decision 5) |
 | C8 | The controller re-patches its own status every reconcile, re-triggering its own watch and flooding the API server | D | Low | Medium | **Mitigated**: condition `lastTransitionTime` is preserved unless the condition's `status` changes, and the computed status is compared against the stored one so a no-op patch is never sent. Found by running against a real API server, which measured ~50 `resourceVersion` bumps/second before the fix; pinned by a test that derives the expected status key set from the type rather than a hand-written list |
@@ -475,6 +488,7 @@ them run in `.github/workflows/`.
 | Cosign keyless signing, by digest not tag | `.github/workflows/build.yaml` | S3 — image tampering after publication |
 | SBOM generated per image and per release | `.github/workflows/build.yaml` (`sbom: true`, `anchore/sbom-action`) | Unknown component inventory |
 | Auto-VEX presence + reachability gate, byte-exact, fails closed (ADR 0008) | `src/bin/auto_vex_*.rs`, `.vex/`, release workflow | An advisory shipping untriaged |
+| Bounded dependency internalization: <=500 lines, excluded categories, measured on the production target (ADR 0015) | `.claude/rules/dependency-internalization.md`, roadmap 04 §2a | T10 in the reducing direction, by shrinking the set of upstreams that can be compromised at all. **Its limit is the point:** internalized code is not in the SBOM, so the controls above stop covering it, which is why specs, crypto, reference data and proc macros are excluded however thin their surface looks |
 | Base images digest-pinned on the `FROM` line, Dependabot-tracked (ADR 0010) | `Dockerfile`, `Dockerfile.chainguard`, `.github/dependabot.yml` | A stale or substituted base image |
 | Actions SHA-pinned; Dependabot groups and a 7-day cooldown per ecosystem | `.github/workflows/*`, `.github/dependabot.yml` | A compromised action release |
 | Scanning: CodeQL, Trivy (image + IaC), grype, `cargo audit`, `cargo deny`, gitleaks, Semgrep | `.github/workflows/` | Known-vulnerable dependency, leaked credential |
@@ -537,25 +551,43 @@ x-kubernetes-validations:
 
 ---
 
-### MEDIUM: A governance conflict does not retract capacity already written
+### LOW: A mis-set `spec.nodeName` zeroes capacity the operator wanted
 
-`ScheduledCapacity` refuses to write when `spec.nodeName` matches a
-`ScheduledMachine`'s `status.nodeRef.name` (C5), but "refuse to write" also
-refuses to write **zero**. A conflict that arises *after* a value was written
-therefore leaves that value in place: the node can be drained for handover by
-the machine controller while the consumer still believes it may size guests on
-it, which is the half-working state ADR 0011 decision 7 exists to prevent.
-Observed in a live test, which ended with `HostGovernanceConflict=True` and the
-target still holding the active value.
+Closing the former MEDIUM (a conflict leaving written capacity in place) by
+driving to zero (ADR 0014) trades it for a smaller risk in the other
+direction: if `spec.nodeName` names a node an unrelated `ScheduledMachine`
+happens to govern, the consumer loses its warm pool until the reference is
+corrected.
 
-Driving the field to zero on conflict would close it, at the cost of writing
-during a state the ADR declares unwritable, and would destroy legitimate
-capacity when the conflict is a mis-set `spec.nodeName` rather than a real
-overlap.
+Bounded and self-correcting. The gated field is a warm-pool target rather than
+a kill, so claimed work finishes; the condition and message name the
+conflicting `ScheduledMachine` and the node; and the next reconcile after the
+reference is fixed restores the active value, with no operator action beyond
+that. `spec.nodeName` is optional precisely so an operator who cannot name the
+node confidently leaves it unset, in which case no conflict is detected and the
+invariant stays documentation only.
 
-**Revisit when:** the first real deployment governs a host with both kinds, or
-a consumer reports capacity surviving a handover. The decision belongs in a
-superseding ADR, not a CRD field.
+**Revisit when:** a Kubernetes Event is added for the conflict (ADR 0014
+option D, not adopted), which would make this page someone rather than wait to
+be noticed.
+
+### LOW: Internalized code is outside dependency scanning
+
+ADR 0015 internalizes a dependency when its used surface is 500 lines or fewer.
+Each one removes an upstream that could be compromised, and simultaneously
+removes a component that `cargo audit`, `cargo deny` and the Grype scan report
+on: a defect in `src/stream.rs` is found by review, not by a scanner.
+
+Accepted deliberately, and bounded by the policy rather than by a control. The
+500-line ceiling is low, every internalization must be testable at least as
+well as upstream for the surface used, and the categories where a thin surface
+hides a thick moving specification (wire formats, crypto, reference data,
+date/time arithmetic, proc macros) are excluded outright. Current exposure is
+19 lines.
+
+**Revisit when:** the internalized total approaches a few hundred lines, or an
+internalization is proposed that cannot be pinned by tests. Either is a signal
+the ceiling is doing less work than it appears to.
 
 ### LOW: Capacity rows written under the old scheme are not reclaimed
 

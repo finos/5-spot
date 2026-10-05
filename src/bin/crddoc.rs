@@ -559,8 +559,11 @@ fn scheduled_capacity() {
     println!("both: one removes the node, the other keeps it and shares it, and both at once");
     println!("half-works. Setting this lets the controller detect the contradiction, by");
     println!("comparing it against every `ScheduledMachine.status.nodeRef.name` in the");
-    println!("namespace; on a match it sets `HostGovernanceConflict` and refuses to write at");
-    println!("all. Without it the two objects cannot be correlated and the invariant is");
+    println!("namespace; on a match it sets `HostGovernanceConflict` and drives capacity to");
+    println!("**zero** (ADR 0014). The active value is never written to a conflicted object,");
+    println!("so a conflicted host can never be carrying conceded capacity, whichever order");
+    println!("the conflict and the write arrived in. Without `nodeName` the two objects");
+    println!("cannot be correlated and the invariant is");
     println!("documentation only.");
     println!();
     println!("### Status Fields");

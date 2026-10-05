@@ -1192,7 +1192,7 @@
         {
           "sequence-number": 3,
           "relationship-unique-id": "rel-capacity-controller-kube-api",
-          "description": "Guard clauses in precedence order: killSwitch, then spec.enabled, then the provider verdict. If spec.nodeName is also the status.nodeRef of a ScheduledMachine in this namespace, the controller sets HostGovernanceConflict and refuses to write at all, because one host cannot both be handed over and shared."
+          "description": "Guard clauses in precedence order: killSwitch, then spec.enabled, then the provider verdict. If spec.nodeName is also the status.nodeRef of a ScheduledMachine in this namespace, the controller sets HostGovernanceConflict and drives capacity to ZERO (ADR 0014), because one host cannot both be handed over and shared and zero is the safe direction. The active value is never written to a conflicted object."
         },
         {
           "sequence-number": 4,
@@ -1261,6 +1261,7 @@
     "../../adr/0009-unify-schedule-as-provider-reference.md",
     "docs/adr/0012-kata-agent-validates-its-own-input.md",
     "docs/adr/0011-schedule-gated-capacity-separate-controller.md",
+    "docs/adr/0014-zero-capacity-on-governance-conflict.md",
     "docs/adr/0013-kata-config-ref-annotation-admission-policy.md"
   ]
 }

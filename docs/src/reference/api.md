@@ -481,8 +481,11 @@ A host is governed by `ScheduledMachine` **or** by `ScheduledCapacity`, never
 both: one removes the node, the other keeps it and shares it, and both at once
 half-works. Setting this lets the controller detect the contradiction, by
 comparing it against every `ScheduledMachine.status.nodeRef.name` in the
-namespace; on a match it sets `HostGovernanceConflict` and refuses to write at
-all. Without it the two objects cannot be correlated and the invariant is
+namespace; on a match it sets `HostGovernanceConflict` and drives capacity to
+**zero** (ADR 0014). The active value is never written to a conflicted object,
+so a conflicted host can never be carrying conceded capacity, whichever order
+the conflict and the write arrived in. Without `nodeName` the two objects
+cannot be correlated and the invariant is
 documentation only.
 
 ### Status Fields

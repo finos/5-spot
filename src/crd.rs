@@ -1652,11 +1652,15 @@ pub struct ScheduledCapacitySpec {
 
     /// Optional name of the Kubernetes Node this object believes it governs.
     ///
-    /// Supplying it enables the one-host-one-governor check: the controller
-    /// refuses to write capacity if this node is also the `status.nodeRef` of a
-    /// `ScheduledMachine` in this namespace, because a host cannot both be
-    /// handed over and shared. Without it the two objects cannot be correlated
-    /// and the invariant is documentation only.
+    /// Supplying it enables the one-host-one-governor check: if this node is
+    /// also the `status.nodeRef` of a `ScheduledMachine` in this namespace,
+    /// the controller drives capacity to zero and withholds the active value,
+    /// because a host cannot both be handed over and shared.
+    ///
+    /// Leave it unset if you cannot name the node confidently. The two objects
+    /// are then uncorrelated, no conflict is detected, and the invariant is
+    /// documentation only; a node name that collides with an unrelated
+    /// `ScheduledMachine` costs this consumer its capacity until corrected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "node_name_schema")]
     pub node_name: Option<String>,

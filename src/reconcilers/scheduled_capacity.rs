@@ -399,7 +399,7 @@ async fn detect_host_governance_conflict(
             node = %node_name,
             scheduled_machine = %machine.name_any(),
             "node is governed by both a ScheduledMachine and a ScheduledCapacity; \
-             refusing to write capacity"
+             capacity driven to zero"
         );
         return Ok(true);
     }
@@ -780,7 +780,7 @@ fn governance_message(capacity: &ScheduledCapacity, conflict: bool) -> String {
     match (capacity.spec.node_name.as_deref(), conflict) {
         (Some(node), true) => format!(
             "node {node} is also the status.nodeRef of a ScheduledMachine in this \
-             namespace; refusing to write capacity"
+             namespace; capacity driven to zero and the active value withheld"
         ),
         (Some(node), false) => {
             format!("no ScheduledMachine in this namespace claims node {node}")
@@ -898,8 +898,8 @@ pub async fn run(client: Client, is_leader: Arc<AtomicBool>) -> anyhow::Result<(
 
     info!("Starting ScheduledCapacity controller");
     Controller::new(api, watcher::Config::default())
-        .reconcile_on(tokio_stream::wrappers::ReceiverStream::new(schedule_rx))
-        .reconcile_on(tokio_stream::wrappers::ReceiverStream::new(target_rx))
+        .reconcile_on(crate::stream::ReceiverStream::new(schedule_rx))
+        .reconcile_on(crate::stream::ReceiverStream::new(target_rx))
         .shutdown_on_signal()
         .run(reconcile, error_policy, ctx)
         .for_each(|result| async move {

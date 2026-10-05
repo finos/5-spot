@@ -9,6 +9,138 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-10-05 16:59] - ADR-0015: internalize a dependency when its used surface is 500 lines or less
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0015-dependency-internalization-policy.md` and
+  `.claude/rules/dependency-internalization.md`: the policy, its four
+  conditions and its excluded categories. Referenced from `.claude/CLAUDE.md`'s
+  critical patterns and from `rules/rust-style.md`'s dependency section.
+- `src/stream.rs` + `src/stream_tests.rs` (new): `ReceiverStream`, **19 lines**
+  and 5 tests, replacing the one symbol this project used from `tokio-stream`.
+
+### Changed
+- `Cargo.toml`: `tokio-stream` dropped. Direct dependencies 29 to 28, and
+  `cargo tree -e normal --target x86_64-unknown-linux-gnu` goes from 1
+  occurrence to 0, so it is out of the shipped binary and the production SBOM.
+  It survives only as a dev-dependency through `tower-test`.
+- `src/main.rs`, `src/reconcilers/scheduled_capacity.rs`: the four call sites.
+- `.github/community/04-dependency-internalization-matrix.md` §2a: every
+  remaining dependency judged against the test, with measured numbers.
+  `.github/community/01-decisions.md` closes O-003.
+- `docs/src/security/threat-model.md`: **pass to v1.5.** §6 T10 and the §7
+  supply-chain table now state the trade in both directions, and a new LOW
+  residual records the exposure.
+
+### Why
+A one-symbol dependency still obliges the project to track releases, triage
+advisories and wait on a maintainer for a fix it could make itself. Owning
+small, stable, well-understood code is the better trade.
+
+Applied literally, though, a flat line count is wrong in four categories, and
+roadmap 04's matrix is what shows it. A **thin surface over a thick, moving
+specification is not a small dependency**: `serde_yaml`'s used surface is one
+call over a conformant YAML emitter; `chrono-tz` is one symbol that *is* the
+IANA timezone database, whose DST rules change by government decree, inside a
+scheduler; `sha2` is two symbols of cryptography; and `serde`, `schemars`,
+`clap` and `thiserror` present one derive name each over a compiler plugin,
+where there is no 500 lines to bring over at all. The surface measurement
+answers "how coupled are we", not "how much code would we own".
+
+Two things only measuring revealed. `http` is **disqualified by the production
+graph**: `kube` pulls it in 14 times, so our 54 direct uses are irrelevant to
+whether we could drop it, and internalizing would add duplicate code while
+removing nothing. And `cargo tree -e normal` reports the *host* target, so on
+macOS it hides `[target.'cfg(target_os = "linux")'.dependencies]`: `nix` read
+as absent from the production graph and is in fact present (225 crates on
+linux-gnu against 217 on macOS). The rule now requires an explicit `--target`,
+because a measurement taken on the wrong target looks like a finding.
+
+`kube-lease-manager` and `warp` are in bounds and deliberately **deferred**:
+leader election is a correctness-critical distributed protocol, and replacing
+`warp` without re-adding `hyper` is an open question. Each needs its own ADR
+and a test suite that can fail, not an LOC count.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+One dependency removed, behaviour unchanged. `cargo fmt`, `cargo clippy
+--all-targets --all-features -D warnings` and `cargo test` green (851 passed,
+up 5 with the new module). The replacement was written against
+`Receiver::poll_recv` rather than copied, so no MIT notice is carried into this
+Apache-2.0 repository.
+
+
+## [2026-10-05 09:53] - ADR-0014: a governance conflict drives capacity to zero
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/capacity_decision.rs`: the conflict branch writes
+  `CAPACITY_INACTIVE_VALUE` instead of returning a hold. The active value is
+  never written to a conflicted object, the phase stays `Error` with
+  `HostGovernanceConflict=True`, and no drain clock runs.
+- `src/crd.rs`, `src/constants.rs`, `src/bin/crddoc.rs`,
+  `src/reconcilers/scheduled_capacity.rs`: doc comments and status messages
+  that described the refusal. The `crd.rs` one mattered beyond prose: it lands
+  in the generated CRD and in `kubectl explain`.
+- `docs/adr/0011-*.md` decision 7 forward-links the amendment; both ADR indexes
+  gain 0014; `architecture.json` flow transition 3 corrected and 0014
+  registered.
+- `docs/src/security/threat-model.md`: **pass to v1.4.** §6.6 C5 moves from
+  "mitigated with a known gap" to mitigated; §8's MEDIUM residual is
+  **removed** rather than reworded, because the gap is closed rather than
+  accepted, and replaced by a LOW in the other direction.
+- `docs/src/concepts/scheduled-capacity.md`, roadmap 05 and the `ROADMAPS.md`
+  row.
+
+### Added
+- `docs/adr/0014-zero-capacity-on-governance-conflict.md`.
+- Five tests in `capacity_decision_tests.rs`, written before the change: the
+  zero write, that the active value is never written under any combination of
+  verdict/last-known/last-written, the already-zero no-op, that no handback is
+  claimed and no deadline set, and that clearing the conflict restores
+  capacity. The exhaustive sweep's invariant changed from "a conflict never
+  writes" to "a conflict never writes the active value".
+
+### Why
+ADR 0011 decision 7 said a conflicted object "refuses to write capacity at
+all". Implementing it showed that is not failing closed: a live test ended with
+`HostGovernanceConflict=True` **and** the target still holding the active
+value, because the conflict was detected after the write. Refusing stops the
+controller making things worse but also stops it making them better, so the
+contradiction the invariant forbids simply persists.
+
+The two write directions are not symmetrical. The active value concedes
+capacity on a node that is going away; zero stops replenishment while claimed
+work finishes on its own, which is what the machine controller is already doing
+to that node. Zero is the safe direction, so declining to move in it was the
+error. The fail-closed intent is preserved exactly where it matters: a
+conflicted object can never concede capacity.
+
+The trade is explicit and smaller: a `spec.nodeName` colliding with an
+unrelated machine now zeroes capacity until the reference is corrected. That is
+bounded (a warm pool refills), loud (the condition names the machine and node)
+and self-correcting (the next reconcile restores it), which is why
+`spec.nodeName` is optional.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+Behaviour change in the capacity controller; no CRD field changes, so the
+schema move is doc-comment only. `cargo fmt`, `cargo clippy --all-targets
+--all-features -D warnings` and `cargo test` green (846 passed); `make crds`
+idempotent; `make calm-validate` clean.
+
+
 ## [2026-10-04 11:03] - Phase 6: docs and the threat-model pass ADR-0011 owed
 
 **Author:** Erick Bourgeois

@@ -199,9 +199,13 @@ ServiceAccount. It never creates or deletes the object it governs.**
      believes it governs;
    - the reconciler lists `ScheduledMachine`s in the namespace and compares
      `spec.nodeName` against each `status.nodeRef.name`;
-   - on a hit it sets `HostGovernanceConflict=True` and **refuses to write
-     capacity at all** (fail closed), rather than half-applying the
-     contradiction;
+   - on a hit it sets `HostGovernanceConflict=True` and **drives capacity to
+     zero**, rather than half-applying the contradiction. *(Amended by
+     [ADR-0014](./0014-zero-capacity-on-governance-conflict.md): this
+     originally said "refuses to write capacity at all", which left a value
+     written before the conflict standing, i.e. the exact contradiction this
+     decision forbids. Zero is the safe direction, and the active value is
+     still never written to a conflicted object.)*;
    - `status.governedNode` reports the host either way, which is what the
      original wording already prescribed for the uncorrelatable case.
 
@@ -260,6 +264,11 @@ fail-safe this ADR recorded while the question was open is now the decision, for
 the reason it gave: a missed handover is visible and recoverable while a killed
 agent task is neither. Revisit only with a superseding ADR, not with a CRD
 field.
+
+**Amended after implementation (2026-10-05).** Decision 7's conflict behaviour
+is superseded by [ADR-0014](./0014-zero-capacity-on-governance-conflict.md):
+a conflict drives capacity to zero instead of refusing to write. Everything
+else in this ADR stands.
 
 **Amended at acceptance (2026-10-02).** Three things changed between Proposed
 and Accepted, all recorded above rather than silently:

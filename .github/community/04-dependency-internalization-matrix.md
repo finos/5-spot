@@ -113,6 +113,40 @@ own. "Internalize?" is the engineering call, not just feasibility.
 
 ---
 
+## 2a. Applying ADR 0015's 500-line test (2026-10-05)
+
+[ADR 0015](../../docs/adr/0015-dependency-internalization-policy.md) turns §3's
+judgment into a test: internalize when the replacement is 500 lines or fewer,
+the crate is not in an excluded category, we can test it as well as upstream
+for the surface we use, **and** dropping it actually removes the crate from the
+production graph. Measured, not estimated. Production-graph counts are for
+`--target x86_64-unknown-linux-gnu`, because `cargo tree -e normal` on macOS
+hides the Linux-gated entries.
+
+| Crate | Upstream LOC | Our replacement | Excluded? | In prod graph after? | Verdict |
+|---|---:|---|---|---|---|
+| `tokio-stream` | 3,037 | **19 LOC**, 5 tests | no | **0** | ✅ **done**: `src/stream.rs` |
+| `http` | 2,192 | n/a | no | **14** (via `kube`) | ❌ disqualified by the graph test, `kube` pulls it in, so our 54 direct uses are irrelevant |
+| `nix` | 23,779 | ~60 LOC of raw syscalls | no | 1 | ❌ lateral: replacing it means `libc` or hand-rolled `syscall`, which swaps a dependency rather than removing one. Linux-gated, so it is already absent from macOS builds |
+| `kube-lease-manager` | 1,857 | ~150 to 250 LOC + lease-renewal edge cases | no | 1 | ⚠️ **in bounds, deferred.** Plausible, but leader election is a correctness-critical distributed protocol (clock skew, renewal races, fencing). Needs its own ADR and a test suite that can actually fail, not just an LOC count |
+| `warp` | 6,904 | ~120 to 200 LOC for two trivial servers | no | 1 | ⚠️ **in bounds, deferred.** Two endpoints (`/healthz`, `/readyz`, `/metrics`); the replacement cost is the HTTP plumbing underneath, and dropping `warp` without re-adding `hyper` is the open question. Roadmap 04 §4 already sketched this |
+| `anyhow` | 2,508 | ~40 LOC of `Box<dyn Error>` glue | no | 1 | ❌ in bounds but pointless: it buys nothing, and 29 call sites would churn for zero benefit |
+| `serde_yaml` | 8,724 | n/a | **yes**: wire format | 1 | ❌ one call (`to_string`) over a conformant YAML emitter |
+| `toml` | 7,143 | n/a | **yes**: wire format | 1 | ❌ config parser |
+| `sha2` | n/a | n/a | **yes**: crypto | 1 | ❌ never hand-roll |
+| `chrono-tz` | n/a | n/a | **yes**: reference data | 1 | ❌ `Tz` *is* the IANA database, and DST changes by decree |
+| `chrono` | n/a | n/a | **yes**: date/time maths | 1 | ❌ correctness minefield |
+| `serde`, `schemars`, `clap`, `thiserror` | n/a | n/a | **yes**: proc macros | 1 each | ❌ the used surface is a derive name; there is no 500 lines to bring over |
+| `kube`, `k8s-openapi`, `tokio`, `futures`, `tracing`, `serde_json`, `prometheus`, `tracing-subscriber` | n/a | n/a | **yes**: platform / spec | 1 each | ❌ internalizing these means reimplementing Kubernetes, async, or an exposition format |
+
+**Net: 28 direct dependencies, down from 29.** One internalized, two in bounds
+and deferred pending their own ADRs, one disqualified by the graph test, and
+the rest excluded by category. The test is doing real work: it accepted the
+case worth taking and rejected `http` on a ground (the production graph) that
+the surface analysis in §2 could not see.
+
+---
+
 ## 3. Three tiers, plainly
 
 **Core — do not touch (internalizing = rewriting Kubernetes/async):**

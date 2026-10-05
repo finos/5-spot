@@ -49,3 +49,5 @@ refactors) need neither. When unsure, **write the ADR.**
 | [0011](./0011-schedule-gated-capacity-separate-controller.md) | Schedule-gated capacity: a `ScheduledCapacity` CRD and its own controller, scaling a foreign object rather than creating one | Accepted |
 | [0012](./0012-kata-agent-validates-its-own-input.md) | The kata-config agent validates its own Node annotation, and the restart argv terminates systemctl's options | Accepted |
 | [0013](./0013-kata-config-ref-annotation-admission-policy.md) | The `kata-config-ref` Node annotation is writable by the controller only, enforced by a workload-cluster VAP | Accepted |
+| [0014](./0014-zero-capacity-on-governance-conflict.md) | Drive capacity to zero on a host-governance conflict (amends ADR-0011 decision 7) | Accepted |
+| [0015](./0015-dependency-internalization-policy.md) | Internalize a dependency when its used surface is 500 lines or less | Accepted |

@@ -127,10 +127,17 @@ for label keys) for cross-module use. Group related constants with docs.
 
 ## Dependency Management
 
-Before adding a new dependency:
-1. Check if existing deps solve the problem — and check roadmap 04
+**Before adding a new dependency**, apply
+[`dependency-internalization.md`](dependency-internalization.md) (ADR 0015):
+if the surface you need can be written in 500 lines or fewer and is not in an
+excluded category, write it instead. The excluded categories are
+specifications and wire formats, cryptographic primitives, reference data, date
+and time arithmetic, procedural macros, and the platform itself.
+
+Then:
+1. Check if existing deps solve the problem, and check roadmap 04
    (`.github/community/04-dependency-internalization-matrix.md`) for the
-   internalization stance on that tier
+   recorded surface of every current dependency
 2. Verify the crate is actively maintained
 3. Prefer well-known ecosystem crates; trim default features you don't use
    (the `prometheus`-without-`protobuf` and `warp` `server`-only pins are the

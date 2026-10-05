@@ -31,6 +31,7 @@ write and not a create.
 | 4 | Reconciler, `5spot-capacity-controller` binary, metrics | ✅ |
 | 5 | Own ServiceAccount, least-privilege ClusterRole, Deployment, kustomization | ✅ |
 | 6 | API reference, this doc, concepts page, threat-model pass to v1.3 | ✅ |
+| 6a | ADR 0014: conflict drives capacity to zero; threat-model pass to v1.4 | ✅ |
 | 7 | Consumer-side integration | ⛔ consumer-side, see below |
 
 ## Verified against a live cluster
@@ -56,7 +57,9 @@ Not only unit tests. Against a real API server and a real consumer CRD:
   `HandbackTimedOut` object returned to `Active` when the window reopened.
 - **Conflict detection.** With `spec.nodeName` matching a `ScheduledMachine`'s
   `status.nodeRef`, the object went to `Error` with
-  `HostGovernanceConflict=True` and refused to write.
+  `HostGovernanceConflict=True`. This run is what exposed the gap ADR 0014
+  then closed: it ended with the conflict reported **and** the target still
+  holding the active value.
 
 A hot reconcile loop was found this way and only this way: the controller
 re-patched its own status every reconcile, re-triggering its own watch at ~50
@@ -65,10 +68,12 @@ Logged as `bug-005`.
 
 ## Open
 
-- **A governance conflict does not retract capacity already written.** "Refuse
-  to write" also refuses to write zero, so a conflict arising after a value
-  landed leaves it in place. Recorded as a residual risk in the threat model;
-  closing it is a superseding-ADR decision, not a CRD field.
+- ~~A governance conflict does not retract capacity already written.~~
+  **Closed 2026-10-05 by [ADR 0014](../../docs/adr/0014-zero-capacity-on-governance-conflict.md):**
+  a conflict now drives capacity to zero, and the active value is never written
+  to a conflicted object. The threat model's MEDIUM residual was removed rather
+  than reworded, replaced by a LOW in the other direction (a mis-set
+  `spec.nodeName` zeroes capacity until the reference is corrected).
 - **Consumer-side integration is not 5-Spot's to build.** The roadmap entry for
   wiring a real consumer lives with that consumer. 5-Spot carries this row so
   the dependency is visible from both sides, as ADR 0011's follow-up asks.

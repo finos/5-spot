@@ -370,10 +370,8 @@ async fn main() -> Result<()> {
                 machines_snapshot.iter().map(std::convert::AsRef::as_ref),
             )
         })
-        .reconcile_on(tokio_stream::wrappers::ReceiverStream::new(child_node_rx))
-        .reconcile_on(tokio_stream::wrappers::ReceiverStream::new(
-            spot_schedule_rx,
-        ))
+        .reconcile_on(five_spot::stream::ReceiverStream::new(child_node_rx))
+        .reconcile_on(five_spot::stream::ReceiverStream::new(spot_schedule_rx))
         .shutdown_on_signal()
         .run(reconcile_scheduled_machine, error_policy, context)
         .for_each(|res| async move {

@@ -13,7 +13,8 @@
 //! Guard clauses, in this order, each one terminal:
 //!
 //! 1. **Host governance conflict** - one host cannot be both handed over and
-//!    shared, so the controller refuses to write at all (fail closed).
+//!    shared, so capacity is driven to zero and the active value is withheld
+//!    (ADR 0014, amending ADR 0011 decision 7).
 //! 2. **Target unresolved** - nothing to write to; hold and report why.
 //! 3. **`killSwitch`** - immediate, terminal, operator-demanded.
 //! 4. **The composed should-be-active decision** - `spec.enabled` and the
@@ -139,20 +140,40 @@ impl CapacityDecision {
 #[must_use]
 #[allow(clippy::too_many_lines)] // One linear decision table; splitting it would hide the precedence.
 pub fn decide(input: &CapacityDecisionInput<'_>) -> CapacityDecision {
-    // 1. Fail closed on a contradiction. A host governed by both a
-    //    ScheduledMachine and a ScheduledCapacity is drained for handover while
-    //    capacity is still being sized on it; half-applying that is worse than
-    //    refusing, so nothing is written at all (ADR 0011 decision 7).
+    // 1. A contradiction drives capacity to ZERO (ADR 0011 decision 7, as
+    //    amended by ADR 0014). A host governed by both a ScheduledMachine and a
+    //    ScheduledCapacity is drained for handover while capacity is still
+    //    being sized on it.
+    //
+    //    The original rule refused to write anything, which sounded like
+    //    failing closed and was not: a value written before the conflict
+    //    appeared simply stood, which is the contradiction itself. The two
+    //    write directions are not symmetrical here. The active value concedes
+    //    capacity on a node that is going away; zero stops replenishment while
+    //    claimed work finishes on its own, which is what the machine
+    //    controller is already doing to that node. Zero is the safe direction,
+    //    so declining to move in it was the error.
+    //
+    //    "Fail closed" is preserved where it matters: the active value is
+    //    never written to a conflicted object, whatever the schedule says.
+    //    No drain clock runs here, because the machine controller owns the
+    //    node's drain and its timeout; a second clock against the same event
+    //    is the mistake ADR 0011 avoided by leaving drain where the domain
+    //    knowledge is.
     if input.conflict {
         return CapacityDecision {
-            conflict: true,
-            ..CapacityDecision::hold(
-                PHASE_CAPACITY_ERROR,
-                REASON_HOST_GOVERNANCE_CONFLICT,
+            phase: PHASE_CAPACITY_ERROR,
+            write: write_if_changed(input.last_written, CAPACITY_INACTIVE_VALUE),
+            handback_deadline: None,
+            reason: REASON_HOST_GOVERNANCE_CONFLICT,
+            message: format!(
                 "node is also governed by a ScheduledMachine in this namespace; \
-                 refusing to write capacity"
-                    .to_string(),
-            )
+                 capacity driven to {CAPACITY_INACTIVE_VALUE} and the active value \
+                 withheld until the overlap is resolved"
+            ),
+            ready: false,
+            handback_complete: false,
+            conflict: true,
         };
     }
 

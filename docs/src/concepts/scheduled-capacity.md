@@ -125,7 +125,12 @@ capacity gate is still sizing guests on it.
 
 Setting `spec.nodeName` lets the controller detect that. It compares the value
 against every `ScheduledMachine.status.nodeRef.name` in the namespace and, on a
-match, sets `HostGovernanceConflict=True` and **refuses to write at all**.
+match, sets `HostGovernanceConflict=True` and **drives capacity to zero**
+(ADR 0014). The active value is never written to a conflicted object, so a
+conflicted host cannot be carrying conceded capacity whichever order the
+conflict and the write arrived in. Zero is the safe direction: it stops
+replenishment on a node the machine controller is already draining, while work
+already claimed finishes on its own.
 
 This check is deliberately in the controller rather than at admission. A
 `ValidatingAdmissionPolicy` evaluates one request against its own object and its
@@ -135,10 +140,12 @@ any `ScheduledMachine` already governing this node?".
 Without `spec.nodeName` the two objects cannot be correlated and the invariant
 is documentation only.
 
-!!! warning "Known gap"
-    A conflict that arises *after* a value was written leaves that value in
-    place, because refusing to write also refuses to write zero. Recorded in
-    the [threat model](../security/threat-model.md) under residual risks.
+!!! note "Recovery is automatic"
+    When `spec.nodeName` no longer matches any `ScheduledMachine`, the next
+    reconcile is an ordinary one and the active value is written again if the
+    schedule says so. The cost of a mis-set `spec.nodeName` is therefore a
+    warm pool that refills, which is why it is optional: leave it unset if you
+    cannot name the node confidently, and no conflict is ever detected.
 
 ## Status at a glance
 
