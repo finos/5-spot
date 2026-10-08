@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo '{\"systemMessage\": \"⚠️  MANDATORY: Run the sync-docs skill to verify docs match the code before considering this task complete.\"}'"
+            "command": "echo '{\"systemMessage\": \"Task completion gates: run cargo-quality (if any .rs changed) and sync-docs (always) before reporting this task complete. See .claude/rules/task-completion.md\"}'"
           }
         ]
       }
