@@ -714,23 +714,43 @@ pub const REASON_HANDBACK_TIMED_OUT: &str = "HandbackTimedOut";
 /// Reason: `spec.handback` is absent, so handback completed on the zero write.
 pub const REASON_HANDBACK_NOT_OBSERVED: &str = "NoDrainSignalConfigured";
 
-/// Reason: `spec.targetRef` resolved and is writable.
+/// Reason: `spec.target` resolved and the owned object is actuable.
 pub const REASON_TARGET_RESOLVED: &str = "Resolved";
 
-/// Reason: no CRD for `spec.targetRef`'s group/kind is installed.
+/// Reason: no CRD for `spec.target`'s group/kind is installed, so there is
+/// nothing to create the owned object as.
 pub const REASON_TARGET_CRD_NOT_INSTALLED: &str = "TargetCRDNotInstalled";
 
-/// Reason: the CRD exists but the named object does not. Not an error and
-/// never a create (ADR 0011 decision 2).
-pub const REASON_TARGET_NOT_FOUND: &str = "TargetNotFound";
+/// Reason: an object of the target kind already exists under this
+/// `ScheduledCapacity`'s name but is **not owned by it**.
+///
+/// This is the one check RBAC cannot express. The capacity ServiceAccount holds
+/// `create` and `patch` on the whole allowlisted group, so nothing at the
+/// authorization layer distinguishes "the object 5-Spot made" from "a
+/// consumer's object that happens to share the name". Refusing to write an
+/// object that carries no `ownerReference` back to this resource is what keeps
+/// ADR 0016's widened grant from becoming a takeover primitive, and it is why
+/// the reconciler may safely use `force` on its own applies: by the time it
+/// applies, the object is known to be its own.
+pub const REASON_TARGET_NOT_OWNED: &str = "TargetNotOwned";
 
-/// Reason: `spec.targetRef.apiVersion`'s group is not in
+/// Reason: `spec.target.apiVersion`'s group is not in
 /// [`ALLOWED_CAPACITY_TARGET_API_GROUPS`].
 pub const REASON_TARGET_GROUP_NOT_ALLOWED: &str = "TargetGroupNotAllowed";
 
 /// Reason: the pre-flight `SelfSubjectAccessReview` says this ServiceAccount
-/// may not `patch` the resolved target resource.
+/// may not `create` **and** `patch` the resolved target resource. Both are
+/// needed: server-side apply creates the owned object when it is absent and
+/// patches it when it is present.
 pub const REASON_TARGET_NOT_WRITABLE: &str = "TargetNotWritable";
+
+/// Reason the decision layer holds without writing: the target could not be
+/// made actuable at all.
+///
+/// Deliberately generic. Which of the four specific failures occurred is
+/// already on the `TargetResolved` condition, and duplicating it into the
+/// `Ready` reason only creates two places that can disagree.
+pub const REASON_TARGET_NOT_ACTUABLE: &str = "TargetNotActuable";
 
 /// Reason: a host is governed by both `ScheduledMachine` and
 /// `ScheduledCapacity`.
@@ -757,16 +777,13 @@ pub const CAPACITY_INACTIVE_VALUE: i64 = 0;
 /// path but no timeout, so the cooperative wait can never be unbounded.
 pub const DEFAULT_HANDBACK_TIMEOUT: &str = "10m";
 
-/// Charset pattern for `spec.capacity.path` and `spec.handback.drainedPath`:
-/// dot-separated camelCase segments and nothing else.
+/// Charset pattern for `spec.handback.drainedPath`: dot-separated camelCase
+/// segments and nothing else.
 ///
-/// **This is a security control, not a convenience.** The path names a field on
-/// an object 5-Spot does not own, so the pattern excludes array indices,
-/// wildcards, `..`, quotes and `/`: there is no way to express a JSON Pointer
-/// escape or traverse upward. The prefix pins (`spec.` for the write path,
-/// `status.` for the drain path) are separate CEL rules, and both are
-/// re-checked in the reconciler because the schema only holds if the deployed
-/// CRD is current.
+/// The pattern excludes array indices, wildcards, `..`, quotes and `/`, so
+/// there is no way to express a JSON Pointer escape or traverse upward. The
+/// `status.` prefix pin is a separate CEL rule, and both are re-checked in the
+/// reconciler because the schema only holds if the deployed CRD is current.
 ///
 /// The segment cap is encoded **in the pattern** (`{0,7}` after the first
 /// segment, so [`CAPACITY_PATH_MAX_SEGMENTS`] total) rather than as a
@@ -776,30 +793,53 @@ pub const DEFAULT_HANDBACK_TIMEOUT: &str = "10m";
 /// cheaper guarantee is the stronger one here.
 pub const CAPACITY_PATH_PATTERN: &str = r"^[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9]*){0,7}$";
 
-/// Required prefix for `spec.capacity.path`.
+/// Charset pattern for `spec.capacity.field`: the same camelCase segments, one
+/// fewer, because the path is **relative to the owned object's `spec`** and the
+/// implicit root takes the first position (ADR 0016 decision 3).
 ///
-/// `metadata.` is excluded because a CR author able to write
-/// `ownerReferences`, `finalizers` or labels on a foreign object would hold an
-/// elevation primitive; `status.` is excluded because a status is a
-/// controller's own report, not a knob.
-pub const CAPACITY_WRITE_PATH_PREFIX: &str = "spec.";
+/// Rooting the path rather than validating its prefix is what makes this schema
+/// hygiene instead of a security control. `metadata.` and `status.` are not
+/// rejected here; they are **unexpressible**, because whatever this names is
+/// nested under `spec` before it is ever sent. ADR 0011's
+/// `startsWith('spec.')` CEL rule existed to keep a user-supplied path out of
+/// `metadata` on a stranger's object, and has nothing left to defend.
+pub const CAPACITY_FIELD_PATTERN: &str = r"^[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9]*){0,6}$";
 
 /// Required prefix for `spec.handback.drainedPath`, a consumer's own report of
 /// how much of the slice is still in use.
 pub const CAPACITY_DRAINED_PATH_PREFIX: &str = "status.";
 
 /// Maximum number of dot-separated segments in a capacity path. Bounds the
-/// nesting the controller will construct in a merge patch.
+/// nesting the controller will construct.
 pub const CAPACITY_PATH_MAX_SEGMENTS: usize = 8;
 
-/// Allowed API groups for `ScheduledCapacity.spec.targetRef`: the third
-/// allowlist beside [`ALLOWED_BOOTSTRAP_API_GROUPS`] and
-/// [`ALLOWED_INFRASTRUCTURE_API_GROUPS`] (ADR 0011 decision 5).
+/// Maximum segments in `spec.capacity.field`, one fewer than
+/// [`CAPACITY_PATH_MAX_SEGMENTS`] because the owned object's `spec` is the
+/// implicit first segment. The effective depth of the constructed object is the
+/// same either way.
+pub const CAPACITY_FIELD_MAX_SEGMENTS: usize = CAPACITY_PATH_MAX_SEGMENTS - 1;
+
+/// Server-side-apply field manager for the object a `ScheduledCapacity` owns
+/// (ADR 0016 decision 4).
+///
+/// SSA is correct here precisely because there is no second writer: 5-Spot
+/// created the object and owns the whole of its `spec`, and the consumer's
+/// reconciler writes only `status`. A writer that applies the **complete** set
+/// its manager owns is idempotent, which is the condition ADR 0011 could not
+/// meet against a consumer's own GitOps manager and chose merge patch to avoid.
+/// Applying the complete set also brings pruning: a field removed from
+/// `spec.template` is removed from the owned object.
+pub const CAPACITY_FIELD_MANAGER: &str = "5spot-capacity-controller";
+
+/// Allowed API groups for `ScheduledCapacity.spec.target`: the third allowlist
+/// beside [`ALLOWED_BOOTSTRAP_API_GROUPS`] and
+/// [`ALLOWED_INFRASTRUCTURE_API_GROUPS`] (ADR 0011 decision 5, verbs widened by
+/// ADR 0016 decision 7).
 ///
 /// Deliberately narrow: this is the only API family outside CAPI that 5-Spot
-/// writes at all, the capacity ServiceAccount holds `patch` on exactly these
-/// groups, and widening it is an ADR-level decision, not a configuration
-/// change.
+/// writes at all, the capacity ServiceAccount holds `create` and `patch` on
+/// exactly these groups and **no `delete` anywhere**, and widening it is an
+/// ADR-level decision, not a configuration change.
 pub const ALLOWED_CAPACITY_TARGET_API_GROUPS: &[&str] = &["banlieue.io"];
 
 /// RBAC verb used for the pre-flight `SelfSubjectAccessReview` the capacity

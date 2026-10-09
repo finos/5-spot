@@ -287,12 +287,12 @@ mod tests {
                 "kind": schedule.0,
                 "name": schedule.1,
             },
-            "targetRef": {
+            "target": {
                 "apiVersion": "banlieue.io/v1alpha1",
                 "kind": target.0,
-                "name": target.1,
             },
-            "capacity": { "path": "spec.warmReplicas", "activeValue": 10 },
+            "capacity": { "field": "warmReplicas", "activeValue": 10 },
+            "template": { "maxReplicas": 20 },
         }))
         .expect("valid ScheduledCapacitySpec");
         ScheduledCapacity {
@@ -334,7 +334,12 @@ mod tests {
             GroupVersionKind::gvk("banlieue.io", "v1alpha1", "VirtualMachinePool")
         );
         assert_eq!(key.namespace, "sandboxes");
-        assert_eq!(key.name, "pool-a");
+        // ADR 0016 decision 1: the owned object's name is the
+        // ScheduledCapacity's own, not a reference the spec carries, so the
+        // watch and the write can never aim at different objects. The
+        // `pool-a` argument is now only the fixture's old target name and is
+        // deliberately NOT what the key resolves to.
+        assert_eq!(key.name, "scap-a");
     }
 
     /// The two extractors must disagree on the same object, or the capacity

@@ -193,7 +193,7 @@ mod tests {
             ..input(&verdict)
         });
         assert_eq!(decision.phase, PHASE_CAPACITY_PENDING);
-        assert_eq!(decision.reason, REASON_TARGET_NOT_FOUND);
+        assert_eq!(decision.reason, REASON_TARGET_NOT_ACTUABLE);
         assert_eq!(decision.write, None, "never a create (ADR 0011 decision 2)");
     }
 

@@ -3,8 +3,8 @@
 # The ScheduledCapacity CRD itself ships under deploy/crds/: apply that first
 # (or let the top-level deploy pull it in). This kustomization installs the
 # controller: its own ServiceAccount, its own least-privilege ClusterRole +
-# binding (patch on one allowlisted target group, no create, no delete, no
-# secrets, no CAPI), and the Deployment.
+# binding (create and patch on one allowlisted target group, NO DELETE anywhere,
+# no secrets, no CAPI), and the Deployment.
 #
 # Installing this is opt-in. A cluster with no capacity consumer needs none of
 # it, which is what keeps the consumer dependency optional.

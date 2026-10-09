@@ -897,6 +897,45 @@ kind-status: ## Show kind cluster, controller, and ScheduledMachine status
 	@echo "=== ScheduledMachines (all namespaces) ==="
 	@kubectl --context kind-$(KIND_CLUSTER_NAME) get scheduledmachines -A 2>/dev/null || echo "(cluster unreachable)"
 
+kind-deploy-capacity: ## Apply the ScheduledCapacity controller + its stub target CRD to kind
+	@# Separate from kind-deploy on purpose: installing the capacity controller is
+	@# opt-in, and a cluster with no capacity consumer needs none of it (ADR 0011
+	@# decision 3). That property is only real if the default deploy does not
+	@# include it.
+	@kind get clusters 2>/dev/null | grep -qx $(KIND_CLUSTER_NAME) || { \
+	  echo "ERROR: kind cluster '$(KIND_CLUSTER_NAME)' does not exist. Run: make kind-create"; \
+	  exit 1; \
+	}
+	@echo "Applying the stub capacity-target CRD (banlieue.io VirtualMachinePool)..."
+	@kubectl --context kind-$(KIND_CLUSTER_NAME) apply -f .github/scripts/fixtures/capacity-target-crd.yaml
+	@echo "Applying the capacity controller (serviceaccount, clusterrole, binding, deployment)..."
+	@kubectl --context kind-$(KIND_CLUSTER_NAME) apply -k deploy/capacity-controller/
+	@echo "Overriding the capacity controller image to $(KIND_IMAGE) (locally built)..."
+	@kubectl --context kind-$(KIND_CLUSTER_NAME) -n 5spot-system set image \
+	  deployment/5spot-capacity-controller controller=$(KIND_IMAGE)
+	@echo "Waiting for the capacity controller Deployment to become available..."
+	@kubectl --context kind-$(KIND_CLUSTER_NAME) -n 5spot-system rollout status \
+	  deployment/5spot-capacity-controller --timeout=180s
+	@echo "✓ capacity controller deployed"
+
+kind-verify-capacity: ## End-to-end ScheduledCapacity behaviour against kind (bats)
+	@# The seams the lower tiers cannot reach: that the CRD installs, that the
+	@# ClusterRole is actually sufficient, that server-side apply with our field
+	@# manager is accepted, and that ownerReference garbage collection removes the
+	@# owned object without the controller holding a delete verb.
+	@#
+	@# Needs the capacity controller running: make kind-setup && make kind-deploy-capacity
+	@command -v bats >/dev/null || { \
+	  echo "bats not found. Install bats-core: apt-get install bats | brew install bats-core"; \
+	  exit 1; \
+	}
+	@kind get clusters 2>/dev/null | grep -qx $(KIND_CLUSTER_NAME) || { \
+	  echo "kind cluster '$(KIND_CLUSTER_NAME)' does not exist. Run: make kind-create"; \
+	  exit 1; \
+	}
+	@echo "Verifying ScheduledCapacity end to end against kind-$(KIND_CLUSTER_NAME)..."
+	@KUBECTL_CONTEXT=kind-$(KIND_CLUSTER_NAME) bats .github/scripts/capacity-e2e.bats
+
 kind-verify-admission: kind-install ## Verify the admission policies actually DENY (bats, needs a kind cluster)
 	@# Every control in the threat model's TB-1 and §6.5 K5 is a
 	@# ValidatingAdmissionPolicy whose guarantee is one CEL expression, and a

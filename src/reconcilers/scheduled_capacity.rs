@@ -52,30 +52,32 @@ use futures::StreamExt;
 use k8s_openapi::api::authorization::v1::{
     ResourceAttributes, SelfSubjectAccessReview, SelfSubjectAccessReviewSpec,
 };
-use kube::api::{Api, Patch, PatchParams, PostParams};
+use kube::api::{Api, ApiResource, Patch, PatchParams, PostParams};
 use kube::core::{DynamicObject, GroupVersionKind};
 use kube::discovery::pinned_kind;
 use kube::runtime::controller::Action;
 use kube::runtime::{watcher, Controller};
-use kube::{Client, ResourceExt};
+use kube::{Client, Resource, ResourceExt};
 use serde_json::{json, Value};
 use tracing::{debug, info, warn};
 
 use crate::constants::{
-    ALLOWED_CAPACITY_TARGET_API_GROUPS, CAPACITY_HANDBACK_DEADLINE_CHECK_SECS,
-    CONDITION_STATUS_FALSE, CONDITION_STATUS_TRUE, CONDITION_TYPE_CAPACITY_WRITTEN,
-    CONDITION_TYPE_HANDBACK_COMPLETE, CONDITION_TYPE_HOST_GOVERNANCE_CONFLICT,
-    CONDITION_TYPE_READY, CONDITION_TYPE_SPOT_SCHEDULE_RESOLVED, CONDITION_TYPE_TARGET_RESOLVED,
-    DEFAULT_REQUEUE_SECS, ERROR_REQUEUE_SECS, PHASE_CAPACITY_ACTIVE,
-    PHASE_CAPACITY_HANDBACK_TIMED_OUT, PHASE_CAPACITY_HANDING_BACK, RBAC_VERB_PATCH,
+    ALLOWED_CAPACITY_TARGET_API_GROUPS, CAPACITY_FIELD_MANAGER,
+    CAPACITY_HANDBACK_DEADLINE_CHECK_SECS, CONDITION_STATUS_FALSE, CONDITION_STATUS_TRUE,
+    CONDITION_TYPE_CAPACITY_WRITTEN, CONDITION_TYPE_HANDBACK_COMPLETE,
+    CONDITION_TYPE_HOST_GOVERNANCE_CONFLICT, CONDITION_TYPE_READY,
+    CONDITION_TYPE_SPOT_SCHEDULE_RESOLVED, CONDITION_TYPE_TARGET_RESOLVED, DEFAULT_REQUEUE_SECS,
+    ERROR_REQUEUE_SECS, PHASE_CAPACITY_ACTIVE, PHASE_CAPACITY_HANDBACK_TIMED_OUT,
+    PHASE_CAPACITY_HANDING_BACK, RBAC_VERB_CREATE, RBAC_VERB_PATCH,
     REASON_HOST_GOVERNANCE_CONFLICT, REASON_NO_HOST_GOVERNANCE_CONFLICT,
-    REASON_TARGET_CRD_NOT_INSTALLED, REASON_TARGET_GROUP_NOT_ALLOWED, REASON_TARGET_NOT_FOUND,
+    REASON_TARGET_CRD_NOT_INSTALLED, REASON_TARGET_GROUP_NOT_ALLOWED, REASON_TARGET_NOT_OWNED,
     REASON_TARGET_NOT_WRITABLE, REASON_TARGET_RESOLVED,
 };
 use crate::crd::{Condition, ScheduledCapacity, ScheduledMachine};
 use crate::reconcilers::capacity_decision::{decide, CapacityDecision, CapacityDecisionInput};
 use crate::reconcilers::capacity_path::{
-    build_merge_patch, read_i64_at, validate_drained_path, validate_write_path, CapacityPathError,
+    inject_capacity_field, read_i64_at, validate_capacity_field, validate_drained_path,
+    CapacityPathError,
 };
 use crate::reconcilers::spot_schedule::{resolve_spot_schedule, SpotScheduleVerdict};
 
@@ -93,15 +95,22 @@ pub enum CapacityError {
     #[error("Kubernetes API error: {0}")]
     Kube(#[from] kube::Error),
 
-    /// `spec.capacity.path` or `spec.handback.drainedPath` is not a legal
-    /// capacity path. Admission should have caught this; reaching here means
-    /// the deployed CRD is older than this controller.
+    /// `spec.capacity.field` or `spec.handback.drainedPath` is not legal, or
+    /// `spec.template` already sets the capacity field. Admission should have
+    /// caught the first two; reaching here means the deployed CRD is older than
+    /// this controller.
     #[error("invalid capacity path: {0}")]
     Path(#[from] CapacityPathError),
 
     /// `spec.handback.timeout` is not a parseable duration.
     #[error("invalid handback timeout: {0}")]
     Timeout(String),
+
+    /// The `ScheduledCapacity` has no `uid`, so no `ownerReference` can be built
+    /// and the owned object would never be garbage-collected. Only reachable for
+    /// an object the API server has not issued.
+    #[error("ScheduledCapacity has no uid to own the capacity object with")]
+    Unowned,
 }
 
 /// Controller context: the client plus the leader flag.
@@ -114,16 +123,36 @@ pub struct CapacityContext {
     pub is_leader: Arc<AtomicBool>,
 }
 
-/// How `spec.targetRef` resolved, and what to report if it did not.
+/// How `spec.target` resolved, and what to report if it did not.
 struct TargetResolution {
-    /// The resolved object, when it exists.
+    /// The owned object as it currently exists. `None` is the **normal**
+    /// pre-create state, not a failure: 5-Spot creates it on the first write.
     object: Option<DynamicObject>,
-    /// `true` when the object exists and this ServiceAccount may patch it.
+    /// Discovered resource for the target kind, carried so the write path does
+    /// not repeat discovery.
+    api_resource: Option<ApiResource>,
+    /// `true` when the owned object can be created or applied: the group is
+    /// allowed, the CRD is installed, any existing object is ours, and RBAC
+    /// permits both verbs.
     writable: bool,
     /// Condition reason.
     reason: &'static str,
     /// Condition message.
     message: String,
+}
+
+impl TargetResolution {
+    /// A terminal "cannot actuate" outcome, reported as a condition rather than
+    /// raised as an error so the object holds instead of erroring in a loop.
+    fn blocked(reason: &'static str, message: String) -> Self {
+        Self {
+            object: None,
+            api_resource: None,
+            writable: false,
+            reason,
+            message,
+        }
+    }
 }
 
 /// Reconcile one `ScheduledCapacity`.
@@ -149,7 +178,7 @@ pub async fn reconcile(
     // Re-validate both paths here, not only at admission. The schema guarantee
     // holds exactly as long as the deployed CRD matches this binary, which is
     // precisely the case a schema cannot defend against.
-    validate_write_path(&capacity.spec.capacity.path)?;
+    validate_capacity_field(&capacity.spec.capacity.field)?;
     let drained_path = match capacity
         .spec
         .handback
@@ -216,14 +245,14 @@ pub async fn reconcile(
     // written is the one lie this controller must never tell.
     let written = match decision.write {
         Some(value) => {
-            write_capacity(&ctx.client, &namespace, &capacity, value).await?;
+            apply_owned_object(&ctx.client, &namespace, &capacity, &target, value).await?;
             info!(
                 capacity = %name,
                 namespace = %namespace,
-                path = %capacity.spec.capacity.path,
+                field = %capacity.spec.capacity.field,
                 value,
                 phase = decision.phase,
-                "wrote capacity to target"
+                "applied capacity to the owned object"
             );
             crate::metrics::set_capacity_written_value(&namespace, &name, value);
             Some(value)
@@ -250,101 +279,140 @@ pub async fn reconcile(
     Ok(requeue_for(&decision))
 }
 
-/// Resolve `spec.targetRef`: allowlist the group, discover the kind, fetch the
-/// object, and pre-flight the `patch` permission.
+/// Resolve `spec.target`: allowlist the group, discover the kind, fetch any
+/// existing object, verify 5-Spot owns it, and pre-flight both write verbs.
 ///
-/// Returns a [`TargetResolution`] rather than an error for every "cannot write"
-/// outcome, so each becomes a condition instead of a failed reconcile.
+/// Returns a [`TargetResolution`] rather than an error for every "cannot
+/// actuate" outcome, so each becomes a condition instead of a failed reconcile.
+/// An **absent** object is not one of those outcomes: under ADR 0016 it is the
+/// ordinary state before the first window, and the write path creates it.
 async fn resolve_target(
     client: &Client,
     namespace: &str,
     capacity: &ScheduledCapacity,
 ) -> Result<TargetResolution, CapacityError> {
-    let reference = &capacity.spec.target_ref;
-    let (group, version) = reference
+    let target = &capacity.spec.target;
+    let (group, version) = target
         .api_version
         .split_once('/')
-        .unwrap_or(("", reference.api_version.as_str()));
+        .unwrap_or(("", target.api_version.as_str()));
 
     // The allowlist is checked here rather than in the CRD schema so the set of
-    // API groups 5-Spot will write lives in exactly one greppable place
-    // (src/constants.rs) and cannot be loosened by a stale CRD.
+    // API groups 5-Spot will construct an object in lives in exactly one
+    // greppable place (src/constants.rs) and cannot be loosened by a stale CRD.
     if !ALLOWED_CAPACITY_TARGET_API_GROUPS.contains(&group) {
-        return Ok(TargetResolution {
-            object: None,
-            writable: false,
-            reason: REASON_TARGET_GROUP_NOT_ALLOWED,
-            message: format!(
+        return Ok(TargetResolution::blocked(
+            REASON_TARGET_GROUP_NOT_ALLOWED,
+            format!(
                 "target API group '{group}' is not allowed; permitted groups: \
                  {ALLOWED_CAPACITY_TARGET_API_GROUPS:?}"
             ),
-        });
+        ));
     }
 
-    let gvk = GroupVersionKind::gvk(group, version, &reference.kind);
+    let gvk = GroupVersionKind::gvk(group, version, &target.kind);
     let Ok((api_resource, _capabilities)) = pinned_kind(client, &gvk).await else {
-        return Ok(TargetResolution {
-            object: None,
-            writable: false,
-            reason: REASON_TARGET_CRD_NOT_INSTALLED,
-            message: format!(
+        return Ok(TargetResolution::blocked(
+            REASON_TARGET_CRD_NOT_INSTALLED,
+            format!(
                 "no CRD for {group}/{version} kind {} is installed",
-                reference.kind
+                target.kind
             ),
-        });
+        ));
     };
 
-    let api: Api<DynamicObject> = Api::namespaced_with(client.clone(), namespace, &api_resource);
-    let Some(object) = api.get_opt(&reference.name).await? else {
-        return Ok(TargetResolution {
-            object: None,
-            writable: false,
-            reason: REASON_TARGET_NOT_FOUND,
-            message: format!(
-                "target {} {namespace}/{} not found",
-                reference.kind, reference.name
-            ),
-        });
-    };
-
-    // Pre-flight the permission so an RBAC gap is a clear condition rather than
-    // an opaque 403 partway through actuation (ADR 0011 decision 5).
-    if !can_patch(client, namespace, group, &api_resource.plural).await? {
-        return Ok(TargetResolution {
-            object: Some(object),
-            writable: false,
-            reason: REASON_TARGET_NOT_WRITABLE,
-            message: format!(
-                "capacity controller service account may not patch '{}' in API group \
-                 '{group}' (namespace '{namespace}')",
-                api_resource.plural
-            ),
-        });
+    // Pre-flight both verbs so an RBAC gap is a clear condition rather than an
+    // opaque 403 partway through actuation (ADR 0011 decision 5, ADR 0016
+    // decision 7). Server-side apply needs `create` while the object is absent
+    // and `patch` once it exists, so a controller holding one and not the other
+    // would work until the first window and then stop.
+    for verb in [RBAC_VERB_CREATE, RBAC_VERB_PATCH] {
+        if !can_write(client, namespace, group, &api_resource.plural, verb).await? {
+            return Ok(TargetResolution::blocked(
+                REASON_TARGET_NOT_WRITABLE,
+                format!(
+                    "capacity controller service account may not {verb} '{}' in API group \
+                     '{group}' (namespace '{namespace}')",
+                    api_resource.plural
+                ),
+            ));
+        }
     }
 
+    let name = capacity.name_any();
+    let api: Api<DynamicObject> = Api::namespaced_with(client.clone(), namespace, &api_resource);
+    let existing = api.get_opt(&name).await?;
+
+    // The ownership check RBAC cannot express. `create` and `patch` are granted
+    // on the whole allowlisted group, so authorization alone cannot tell the
+    // object 5-Spot made from a consumer's object that happens to share this
+    // name. Refusing to touch an object that does not point back here is what
+    // keeps the widened grant from being a takeover primitive.
+    if let Some(object) = existing.as_ref() {
+        if !is_owned_by(object, capacity) {
+            return Ok(TargetResolution::blocked(
+                REASON_TARGET_NOT_OWNED,
+                format!(
+                    "{} '{namespace}/{name}' already exists and is not owned by this \
+                     ScheduledCapacity; 5-Spot will not write an object it did not create",
+                    target.kind
+                ),
+            ));
+        }
+    }
+
+    let message = match existing.as_ref() {
+        Some(_) => format!("owned {} {name}", target.kind),
+        None => format!("{} {name} will be created on the first write", target.kind),
+    };
     Ok(TargetResolution {
-        object: Some(object),
+        object: existing,
+        api_resource: Some(api_resource),
         writable: true,
         reason: REASON_TARGET_RESOLVED,
-        message: format!("target {} {}", reference.kind, reference.name),
+        message,
     })
 }
 
-/// `true` if this ServiceAccount may `patch` `plural` in `group`/`namespace`,
-/// per a [`SelfSubjectAccessReview`].
+/// `true` when `object` carries a **controller** `ownerReference` whose `uid` is
+/// this `ScheduledCapacity`'s.
+///
+/// The `uid` is what makes this sound rather than cosmetic: a name and kind can
+/// be forged by anyone who can write the object's metadata, while a `uid`
+/// belongs to one specific resource instance that the API server issued. Garbage
+/// collection keys off the same field, so this check and the cascade agree by
+/// construction.
+fn is_owned_by(object: &DynamicObject, capacity: &ScheduledCapacity) -> bool {
+    let Some(uid) = capacity.uid() else {
+        return false;
+    };
+    object
+        .metadata
+        .owner_references
+        .as_ref()
+        .is_some_and(|owners| {
+            owners
+                .iter()
+                .any(|owner| owner.uid == uid && owner.controller.unwrap_or(false))
+        })
+}
+
+/// `true` if this ServiceAccount may `verb` `plural` in `group`/`namespace`, per
+/// a [`SelfSubjectAccessReview`].
 ///
 /// # Errors
 /// [`CapacityError::Kube`] if the review call itself fails.
-async fn can_patch(
+async fn can_write(
     client: &Client,
     namespace: &str,
     group: &str,
     plural: &str,
+    verb: &str,
 ) -> Result<bool, CapacityError> {
     let review = SelfSubjectAccessReview {
         spec: SelfSubjectAccessReviewSpec {
             resource_attributes: Some(ResourceAttributes {
-                verb: Some(RBAC_VERB_PATCH.to_string()),
+                verb: Some(verb.to_string()),
                 group: Some(group.to_string()),
                 resource: Some(plural.to_string()),
                 namespace: Some(namespace.to_string()),
@@ -406,31 +474,99 @@ async fn detect_host_governance_conflict(
     Ok(false)
 }
 
-/// Merge-patch the single field named by `spec.capacity.path` on the target.
+/// Build the complete object 5-Spot applies: identity, ownership, labels, and
+/// `spec.template` with `value` injected at `spec.capacity.field`.
+///
+/// Pure, so the whole shape is testable without a cluster. That matters most for
+/// the two fields that are not obviously load-bearing:
+///
+/// - The **`ownerReference`** is the entire removal mechanism. Without it the
+///   owned object would outlive its `ScheduledCapacity`, and the controller
+///   holds no `delete` verb to clean up with (ADR 0016 decision 6).
+/// - The **name** is the `ScheduledCapacity`'s own, which is what makes the
+///   watch, the write and the ownership check agree by construction rather than
+///   by validation (decision 1).
 ///
 /// # Errors
-/// [`CapacityError::Path`] if the path is invalid (already checked by the
-/// caller, re-checked by the builder), [`CapacityError::Kube`] on API failure.
-async fn write_capacity(
+/// [`CapacityError::Path`] if `spec.capacity.field` is invalid or
+/// `spec.template` already sets it. [`CapacityError::Unowned`] if the
+/// `ScheduledCapacity` has no `uid` to own with, which only happens for an
+/// object the API server has not issued.
+fn build_owned_object(
+    capacity: &ScheduledCapacity,
+    namespace: &str,
+    value: i64,
+) -> Result<Value, CapacityError> {
+    let spec = inject_capacity_field(
+        &capacity.spec.template.0,
+        &capacity.spec.capacity.field,
+        value,
+    )?;
+
+    let mut owner = capacity
+        .controller_owner_ref(&())
+        .ok_or(CapacityError::Unowned)?;
+    // Hold the ScheduledCapacity's own deletion open until the owned object has
+    // actually been collected, so `kubectl delete` does not return while the
+    // capacity is still live.
+    owner.block_owner_deletion = Some(true);
+
+    Ok(json!({
+        "apiVersion": capacity.spec.target.api_version,
+        "kind": capacity.spec.target.kind,
+        "metadata": {
+            "name": capacity.name_any(),
+            "namespace": namespace,
+            "labels": crate::labels::common_labels(),
+            "ownerReferences": [owner],
+        },
+        "spec": spec,
+    }))
+}
+
+/// Create or update the object 5-Spot owns, with `value` injected at
+/// `spec.capacity.field` into `spec.template`, by **server-side apply**.
+///
+/// SSA rather than a merge patch (ADR 0016 decision 4): 5-Spot is the sole owner
+/// of this object's `spec`, and the consumer's reconciler writes only `status`,
+/// so applying the complete set this field manager owns is idempotent and brings
+/// pruning with it. A field removed from `spec.template` is removed from the
+/// owned object, which a merge patch could never do.
+///
+/// `force` is safe here only because [`resolve_target`] has already refused to
+/// proceed against an object this `ScheduledCapacity` does not own. The pair is
+/// the control: without the ownership check, force-applying would be a takeover.
+///
+/// The `ownerReference` is what makes removal possible without a `delete` verb:
+/// deleting the `ScheduledCapacity` garbage-collects this object, and garbage
+/// collection only ever removes objects that actually carry the reference.
+///
+/// # Errors
+/// Anything [`build_owned_object`] returns (the field is re-validated there, so
+/// this cannot become a second way past the gate), or
+/// [`CapacityError::Kube`] on API failure.
+async fn apply_owned_object(
     client: &Client,
     namespace: &str,
     capacity: &ScheduledCapacity,
+    target: &TargetResolution,
     value: i64,
 ) -> Result<(), CapacityError> {
-    let reference = &capacity.spec.target_ref;
-    let (group, version) = reference
-        .api_version
-        .split_once('/')
-        .unwrap_or(("", reference.api_version.as_str()));
-    let gvk = GroupVersionKind::gvk(group, version, &reference.kind);
-    let (api_resource, _capabilities) = pinned_kind(client, &gvk).await?;
-    let api: Api<DynamicObject> = Api::namespaced_with(client.clone(), namespace, &api_resource);
+    let Some(api_resource) = target.api_resource.as_ref() else {
+        // Unreachable: the caller only writes when the decision says the target
+        // is actuable, which requires discovery to have succeeded.
+        debug!("no discovered resource for the capacity target; nothing applied");
+        return Ok(());
+    };
 
-    let patch = build_merge_patch(&capacity.spec.capacity.path, value)?;
+    let name = capacity.name_any();
+    let desired = build_owned_object(capacity, namespace, value)?;
+
+    let api: Api<DynamicObject> = Api::namespaced_with(client.clone(), namespace, api_resource);
     api.patch(
-        &reference.name,
-        &PatchParams::default(),
-        &Patch::Merge(&patch),
+        &name,
+        &PatchParams::apply(CAPACITY_FIELD_MANAGER).force(),
+        &Patch::Apply(&desired),
     )
     .await?;
     Ok(())
@@ -626,9 +762,9 @@ fn target_ref_value(
 ) -> Value {
     match target.object.as_ref() {
         Some(object) => json!({
-            "apiVersion": capacity.spec.target_ref.api_version,
-            "kind": capacity.spec.target_ref.kind,
-            "name": capacity.spec.target_ref.name,
+            "apiVersion": capacity.spec.target.api_version,
+            "kind": capacity.spec.target.kind,
+            "name": capacity.name_any(),
             "namespace": namespace,
             "uid": object.metadata.uid,
         }),
@@ -688,8 +824,11 @@ async fn patch_status(
             bool_status(written.is_some()),
             decision.reason,
             &match written {
-                Some(value) => format!("{} is {value}", capacity.spec.capacity.path),
-                None => "nothing has been written to the target".to_string(),
+                Some(value) => format!(
+                    "spec.{} is {value} on the owned {}",
+                    capacity.spec.capacity.field, capacity.spec.target.kind
+                ),
+                None => "nothing has been written to the owned object".to_string(),
             },
         ),
         Condition::new(

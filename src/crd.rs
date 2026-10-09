@@ -1577,16 +1577,25 @@ fn iso_date_list_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
 // ScheduledCapacity CRD (ADR 0011)
 // ============================================================================
 
-/// Schedule-gated capacity on a foreign object (ADR 0011).
+/// Schedule-gated capacity (ADR 0011, actuation per ADR 0016).
 ///
 /// The **non-handover** pattern. A [`ScheduledMachine`] answers "this metal
 /// leaves the cluster when the schedule closes"; a `ScheduledCapacity` answers
 /// "this metal stays, and a bounded slice of it is conceded while the schedule
-/// is open". It gates exactly one numeric field on an object 5-Spot does not
-/// own, and it **never creates or deletes that object**: writing a capacity
-/// field is reversible and bounded, while deleting a consumer's pool with live
-/// claims would destroy in-flight work using knowledge this controller does not
-/// have.
+/// is open".
+///
+/// 5-Spot **creates and owns** the object that carries that slice, in this
+/// resource's own namespace and under this resource's own name, and scales one
+/// numeric field on it. That is symmetric with [`ScheduledMachine`], which
+/// creates the CAPI `Machine` the schedule is the reason for, rather than
+/// reaching into an object somebody else made.
+///
+/// Window close scales the owned object to **zero** and never deletes it, so
+/// its identity and the consumer's warm state survive to the next window.
+/// Removal happens only when this resource is deleted, by Kubernetes
+/// owner-reference garbage collection: the controller holds no `delete` verb at
+/// all, because RBAC cannot express "only objects you created" and garbage
+/// collection does not need it to.
 ///
 /// Reconciled by the separate `5spot-capacity-controller` binary under its own
 /// ServiceAccount, so compromising it cannot delete a CAPI `Machine` and
@@ -1601,7 +1610,7 @@ fn iso_date_list_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     status = "ScheduledCapacityStatus",
     printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#,
     printcolumn = r#"{"name":"Written","type":"integer","jsonPath":".status.writtenValue"}"#,
-    printcolumn = r#"{"name":"Target","type":"string","jsonPath":".spec.targetRef.kind"}"#,
+    printcolumn = r#"{"name":"Target","type":"string","jsonPath":".spec.target.kind"}"#,
     printcolumn = r#"{"name":"Schedule","type":"string","jsonPath":".spec.schedule.kind"}"#,
     printcolumn = r#"{"name":"Enabled","type":"boolean","jsonPath":".spec.enabled"}"#,
     printcolumn = r#"{"name":"KillSwitch","type":"boolean","jsonPath":".spec.killSwitch"}"#,
@@ -1631,18 +1640,44 @@ pub struct ScheduledCapacitySpec {
     #[serde(default)]
     pub kill_switch: bool,
 
-    /// **Required** reference to the object whose capacity field this schedule
-    /// gates. Must live in **this `ScheduledCapacity`'s namespace**, and its
-    /// API group must be in `ALLOWED_CAPACITY_TARGET_API_GROUPS`.
+    /// **Required, immutable** kind of the object 5-Spot creates and owns to
+    /// carry this capacity. Its API group must be in
+    /// `ALLOWED_CAPACITY_TARGET_API_GROUPS`.
     ///
-    /// 5-Spot patches one field on it and nothing else: no `ownerReference` is
-    /// set, no other field is touched, and the object is never created or
-    /// deleted.
-    pub target_ref: CapacityTargetRef,
+    /// There is deliberately **no name**: the owned object takes this
+    /// `ScheduledCapacity`'s own name, in its own namespace, so the two can
+    /// never diverge and an edit can never orphan a previously owned object.
+    /// For the same reason the whole field is immutable (ADR 0016 decision 1):
+    /// changing the kind would leave the object of the old kind behind,
+    /// unmanaged, still holding an `ownerReference`.
+    #[schemars(schema_with = "capacity_target_schema")]
+    pub target: CapacityTarget,
 
-    /// **Required** description of the single field to write and the value to
+    /// **Required** name of the single numeric field to scale, and the value to
     /// write while the schedule is active.
     pub capacity: CapacityWrite,
+
+    /// **Required** template forwarded verbatim as the owned object's `spec`,
+    /// with [`capacity.field`](CapacityWrite::field) injected into it.
+    ///
+    /// Opaque by design (ADR 0016 decision 2), the same pass-through that
+    /// [`ScheduledMachineSpec::bootstrap_spec`] uses. 5-Spot does not and will
+    /// not model a consumer's schema: the reference consumer's pool needs
+    /// `maxReplicas`, `readiness` and a nested VM template, none of which is
+    /// 5-Spot's business.
+    ///
+    /// # Security
+    ///
+    /// Whatever the consumer's CRD admits can be written here, and 5-Spot's
+    /// ServiceAccount creates it. This carries the same residual as an embedded
+    /// bootstrap spec, bounded the same two ways: the API-group allowlist, and
+    /// the consumer's own admission policies on whatever the owned object goes
+    /// on to create.
+    ///
+    /// It must **not** itself set `capacity.field`: one source of truth, or the
+    /// template and the schedule fight on every reconcile.
+    #[schemars(schema_with = "capacity_template_schema")]
+    pub template: EmbeddedResource,
 
     /// Optional cooperative handback policy. Absent means handback completes as
     /// soon as the zero write lands, which is the honest answer for a consumer
@@ -1666,15 +1701,20 @@ pub struct ScheduledCapacitySpec {
     pub node_name: Option<String>,
 }
 
-/// Reference to the foreign object a [`ScheduledCapacity`] governs.
+/// Kind of the object a [`ScheduledCapacity`] creates and owns.
 ///
-/// Deliberately **not** [`ObjectReference`]: that type is the controller's own
-/// record of resources it created, while this is user input naming an object in
-/// an API group 5-Spot does not own, so its fields are schema-constrained.
+/// Deliberately **not** [`ObjectReference`], and deliberately **nameless**.
+/// `ObjectReference` is the controller's own record of a resource it created;
+/// this is user input choosing what to create, so its fields are
+/// schema-constrained. The name is absent because it is derived: the owned
+/// object takes the `ScheduledCapacity`'s own name and namespace, which is what
+/// makes orphaning structurally impossible rather than a validation problem
+/// (ADR 0016 decision 1). `status.targetRef` is where the resulting object is
+/// reported.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CapacityTargetRef {
-    /// API version of the target, `group/version` (e.g.
+pub struct CapacityTarget {
+    /// API version of the owned object, `group/version` (e.g.
     /// `banlieue.io/v1alpha1`). The group must be in
     /// `ALLOWED_CAPACITY_TARGET_API_GROUPS`, enforced in the reconciler.
     ///
@@ -1686,42 +1726,39 @@ pub struct CapacityTargetRef {
     #[schemars(schema_with = "capacity_target_api_version_schema")]
     pub api_version: String,
 
-    /// Kind of the target resource, e.g. `VirtualMachinePool`.
+    /// Kind of the owned resource, e.g. `VirtualMachinePool`.
     #[schemars(schema_with = "spot_schedule_kind_schema")]
     pub kind: String,
-
-    /// Name of the target object in **this `ScheduledCapacity`'s namespace**.
-    #[schemars(schema_with = "spot_schedule_name_schema")]
-    pub name: String,
 }
 
 /// The single field to write, and the value to write while active.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CapacityWrite {
-    /// Dot-separated path of the numeric field to write on the target, e.g.
-    /// `spec.warmReplicas`.
+    /// Name of the numeric field to scale, **relative to the owned object's
+    /// `spec`**: `warmReplicas`, not `spec.warmReplicas`. Dots are allowed for
+    /// a nested knob (`scale.warm`).
     ///
     /// # Security
     ///
-    /// **This field is a control.** It names a field on an object 5-Spot does
-    /// not own, so it is restricted to dot-separated camelCase segments and
-    /// pinned to the `spec.` prefix by a CEL rule. `metadata.` is unreachable
-    /// (a CR author who could write `ownerReferences`, `finalizers` or labels
-    /// on a foreign object would hold an elevation primitive) and so is
-    /// `status.` (a controller's own report is not a knob). Array indices,
-    /// wildcards, `..`, quotes and `/` are all unexpressible, so the value can
-    /// never be abused as a JSON Pointer escape. The reconciler re-validates
-    /// it, because the schema only holds while the deployed CRD is current.
-    #[schemars(schema_with = "capacity_write_path_schema")]
-    pub path: String,
+    /// Rooting this at `spec` rather than validating its prefix is why it is no
+    /// longer a control (ADR 0016 decision 3). `metadata.` and `status.` are
+    /// not rejected, they are **unexpressible**: whatever this names is nested
+    /// under the `spec` of an object 5-Spot built before anything is sent, so
+    /// there is no reachable `ownerReferences`, `finalizers` or label to write
+    /// and no JSON Pointer escape to attempt. What the schema still enforces is
+    /// charset and depth, and the reconciler re-validates both because the
+    /// schema only holds while the deployed CRD is current.
+    #[schemars(schema_with = "capacity_field_schema")]
+    pub field: String,
 
-    /// Value written to [`path`](Self::path) while the schedule is active.
+    /// Value written to [`field`](Self::field) while the schedule is active.
     ///
     /// At least `1`. The **inactive** value is fixed at
     /// `CAPACITY_INACTIVE_VALUE` and is not configurable: a schedule that
     /// hands nothing back is not a schedule, which also makes an active value
-    /// of zero meaningless.
+    /// of zero meaningless. Window close writes that zero and leaves the object
+    /// standing; it is never a delete.
     #[schemars(schema_with = "capacity_active_value_schema")]
     pub active_value: i64,
 }
@@ -1826,24 +1863,57 @@ fn default_handback_timeout() -> String {
     crate::constants::DEFAULT_HANDBACK_TIMEOUT.to_string()
 }
 
-/// Schema for `CapacityWrite.path`: the charset pattern from
-/// `CAPACITY_PATH_PATTERN` plus a CEL rule pinning the `spec.` prefix.
+/// Schema for `CapacityWrite.field`: the charset pattern from
+/// `CAPACITY_FIELD_PATTERN`, and no prefix rule.
 ///
-/// Both halves matter. The pattern stops a JSON Pointer escape or an array
-/// index; the prefix rule stops `metadata.ownerReferences`.
-fn capacity_write_path_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-    let pattern = crate::constants::CAPACITY_PATH_PATTERN;
+/// ADR 0011's `startsWith('spec.')` CEL rule is **deliberately absent**, not
+/// forgotten. The value is a path relative to the owned object's `spec`, so a
+/// `spec.` prefix would now be wrong rather than required, and the prefixes that
+/// rule defended against are unreachable by construction (ADR 0016 decision 3).
+/// What remains is charset and depth, which the pattern carries on its own.
+fn capacity_field_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    let pattern = crate::constants::CAPACITY_FIELD_PATTERN;
     schemars::json_schema!({
         "type": "string",
-        "minLength": 6,
+        "minLength": 1,
         "maxLength": 253,
-        "pattern": pattern,
-        "x-kubernetes-validations": [
+        "pattern": pattern
+    })
+}
+
+/// Schema for `ScheduledCapacitySpec.target`: immutable after creation.
+///
+/// Changing the kind would leave the object of the old kind behind, still
+/// holding an `ownerReference` to this resource and therefore surviving, but
+/// with nothing reconciling it. Pinning the field is the ADR 0007 answer: a
+/// field that must not change is made immutable, not removed in a later version.
+fn capacity_target_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    let mut schema = CapacityTarget::json_schema(generator);
+    schema.insert(
+        "x-kubernetes-validations".to_string(),
+        serde_json::json!([
             {
-                "rule": "self.startsWith('spec.')",
-                "message": "spec.capacity.path must start with 'spec.'; metadata. and status. paths are not writable"
+                "rule": "self == oldSelf",
+                "message": "spec.target is immutable; delete and recreate the ScheduledCapacity to change the owned object's kind"
             }
-        ]
+        ]),
+    );
+    schema
+}
+
+/// Schema for `ScheduledCapacitySpec.template`: an opaque object forwarded as
+/// the owned object's `spec`.
+///
+/// `x-kubernetes-preserve-unknown-fields` is the whole point. A typed schema
+/// here would silently **prune** whatever the consumer's CRD grew since 5-Spot
+/// last shipped, so a correct template would be quietly truncated into an
+/// incorrect object. This is the same pass-through reasoning as
+/// `embedded_resource_schema`, applied to a consumer's spec instead of a CAPI
+/// provider's.
+fn capacity_template_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "object",
+        "x-kubernetes-preserve-unknown-fields": true
     })
 }
 

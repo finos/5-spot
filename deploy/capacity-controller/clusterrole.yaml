@@ -1,21 +1,36 @@
 # Least-privilege ClusterRole for the schedule-gated capacity controller
-# (ADR 0011).
+# (ADR 0011, verbs per ADR 0016).
 #
 # This is the security deliverable of ADR 0011, so read it as a claim:
 #
-#   * NO create and NO delete anywhere. The controller's only mutation of a
-#     foreign object is `patch` on one field. A ScheduledCapacity can therefore
-#     never cause an object to come into existence or cease to exist, which is
-#     what makes the design safe for a consumer's pool with live claims.
+#   * NO DELETE anywhere, including on the objects this controller creates. The
+#     owned capacity object is removed by Kubernetes owner-reference garbage
+#     collection when the ScheduledCapacity is deleted, under
+#     kube-controller-manager's identity. That is not a convenience: RBAC cannot
+#     express "only objects you created", and garbage collection does not need it
+#     to, because it only ever removes objects that actually carry the reference.
+#     A compromised capacity controller therefore cannot destroy a consumer's own
+#     object of the same kind (ADR 0016 decision 6).
+#   * `create` and `patch` on exactly the allowlisted target API groups, which
+#     must stay in step with ALLOWED_CAPACITY_TARGET_API_GROUPS in
+#     src/constants.rs. Both verbs are needed because server-side apply creates
+#     the owned object when it is absent and patches it when it is present.
+#     Widening either the groups or the verbs is an ADR-level decision, not a
+#     configuration change.
+#
+#     `create` IS A WIDER GRANT THAN ADR 0011's `patch`, and that is stated
+#     plainly rather than buried: a compromised capacity controller can now
+#     construct an arbitrary object of an allowlisted kind instead of moving one
+#     integer. What bounds it is the group allowlist, the separate identity
+#     below, and the reconciler's ownership check (REASON_TARGET_NOT_OWNED in
+#     src/constants.rs), which refuses to write any object that does not carry an
+#     ownerReference back to its own ScheduledCapacity.
 #   * NO secrets. Unlike the machine controller it reads no kubeconfig and no
 #     bootstrap payload, so it holds no credential path at all.
 #   * NO CAPI verbs. It cannot touch Machine, bootstrap or infrastructure
 #     resources. The machine controller's broad grants (recorded as HIGH
 #     residuals in docs/src/security/threat-model.md) are NOT extended here, and
 #     the whole point of the separate identity is to stop them compounding.
-#   * `patch` on exactly the allowlisted target API groups, which must stay in
-#     step with ALLOWED_CAPACITY_TARGET_API_GROUPS in src/constants.rs. Widening
-#     either is an ADR-level decision, not a configuration change.
 #
 # A cluster with no capacity consumer installs none of this.
 apiVersion: rbac.authorization.k8s.io/v1
@@ -49,14 +64,17 @@ rules:
     resources: ["scheduledmachines"]
     verbs: ["get", "list", "watch"]
 
-  # The governed foreign objects. `patch` is the ONLY write verb, and the group
-  # list mirrors ALLOWED_CAPACITY_TARGET_API_GROUPS exactly.
+  # The owned capacity objects. `create` and `patch` are the only write verbs,
+  # there is deliberately NO `delete`, and the group list mirrors
+  # ALLOWED_CAPACITY_TARGET_API_GROUPS exactly.
   - apiGroups: ["banlieue.io"]
     resources: ["virtualmachinepools"]
-    verbs: ["get", "list", "watch", "patch"]
+    verbs: ["get", "list", "watch", "create", "patch"]
 
-  # Pre-flight permission check, so an RBAC gap surfaces as a TargetResolved
-  # condition rather than an opaque 403 partway through actuation.
+  # Pre-flight permission check for BOTH write verbs, so an RBAC gap surfaces as
+  # a TargetResolved condition rather than an opaque 403 partway through
+  # actuation. Checking only one verb would let the controller work until the
+  # first window and then stop.
   - apiGroups: ["authorization.k8s.io"]
     resources: ["selfsubjectaccessreviews"]
     verbs: ["create"]

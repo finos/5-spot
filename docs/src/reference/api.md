@@ -374,13 +374,18 @@ spec:
     apiVersion: spotschedules.5spot.finos.org/v1alpha1
     kind: CapitalMarketsSchedule
     name: nyse-trading-day
-  targetRef:
+  target:
     apiVersion: banlieue.io/v1alpha1
     kind: VirtualMachinePool
-    name: agent-sandboxes
   capacity:
-    path: spec.warmReplicas
+    field: warmReplicas
     activeValue: 10
+  template:
+    maxReplicas: 20
+    readiness: GuestReady
+    template:
+      classRef:
+        name: small
   handback:
     drainedPath: status.claimed
     timeout: 10m
@@ -412,49 +417,90 @@ precedence over `enabled` **and** the provider verdict, and is the one path
 that does not wait for a drain, because the operator has explicitly asked for
 the slice back now. It is still only a field write; nothing is deleted.
 
-#### targetRef
+#### target
 
-(required, object) The foreign object whose capacity field this schedule
-gates. Must live in **this object's namespace**.
+(required, object, **immutable**) The kind of object 5-Spot creates and owns
+to carry this capacity.
 
-- **apiVersion** (required, string): `group/version` of the target. The group
-  must be in the controller's allowlist, checked at reconcile time so the
+- **apiVersion** (required, string): `group/version` of the owned object. The
+  group must be in the controller's allowlist, checked at reconcile time so the
   permitted set lives in one place and cannot be widened by a stale CRD
-- **kind** (required, string): Kind of the target resource
-- **name** (required, string): Name of the target object
+- **kind** (required, string): Kind of the owned resource
 
-5-Spot sets no `ownerReference` on the target and touches no other field.
+There is deliberately **no `name`**. The owned object takes this object's own
+name, in this object's own namespace, so the watch, the write and the ownership
+check cannot aim at different objects and no edit can orphan a previously owned
+one. The object actually created is reported on `status.targetRef`.
+
+The whole field is immutable for the same reason: changing the kind would leave
+the object of the old kind behind, still owned but with nothing reconciling it.
+
+5-Spot sets a blocking controller `ownerReference` on the owned object, which is
+the entire removal mechanism: the controller holds **no `delete` verb**, and
+deleting this `ScheduledCapacity` garbage-collects the object instead.
 
 #### capacity
 
-(required, object) The single field to write and the value to write while the
-schedule is active.
+(required, object) The single numeric field to scale and the value to write
+while the schedule is active.
 
-- **path** (required, string): dot-separated path of the numeric field, e.g.
-  `spec.warmReplicas`
+- **field** (required, string): name of the numeric field **relative to the
+  owned object's `spec`**: `warmReplicas`, not `spec.warmReplicas`. Dots are
+  allowed for a nested knob (`scale.warm`)
 - **activeValue** (required, integer, 1..=1000000): value written while active
 
-**`path` is a security control, not a convenience.** It names a field on an
-object 5-Spot does not own, so it is restricted to dot-separated camelCase
-segments (at most 8) and must start with `spec.`:
+Rooting the path at `spec` rather than validating its prefix is why `field` is
+**not** a security control, where ADR 0011's `capacity.path` was one. Whatever
+it names is nested under the `spec` of an object 5-Spot built before anything is
+sent, so `metadata.` and `status.` are not rejected, they are unexpressible:
+there is no reachable `ownerReferences`, `finalizers` or label, and no JSON
+Pointer escape to attempt. What the schema still enforces is hygiene:
 
-- `metadata.` is rejected: a path reaching `ownerReferences`, `finalizers` or
-  labels on a foreign object would let a CR author use the controller's
-  credential as an elevation primitive
-- `status.` is rejected: a status is a controller's own report, not a knob
-- array indices, wildcards, `..`, quotes and `/` are all inexpressible, so the
-  value can never be read as a JSON Pointer or JSONPath expression
+- camelCase segments only, at most 7 (one below the 8 a constructed path allows,
+  because `spec` occupies the first position)
+- `spec`, `metadata` and `status` in first position are refused as **mistakes**:
+  `spec.warmReplicas` here would construct `spec.spec.warmReplicas`
+- array indices, wildcards, `..`, quotes and `/` are inexpressible, an allowlist
+  rather than a denylist of characters someone thought of
+
+`spec.template` must not set this field itself: one source of truth, or the
+template and the schedule fight on every reconcile.
 
 The **inactive** value is fixed at `0` and is deliberately not configurable: a
-schedule that hands nothing back is not a schedule.
+schedule that hands nothing back is not a schedule. Window close writes that
+zero and leaves the object standing; it is never a delete.
+
+#### template
+
+(required, object) Forwarded **verbatim** as the owned object's `spec`, with
+`capacity.field` injected into it.
+
+Opaque by design, the same pass-through `ScheduledMachine.spec.bootstrapSpec`
+uses. 5-Spot does not and will not model a consumer's schema: the reference
+consumer's pool needs `maxReplicas`, `readiness` and a nested VM template, none
+of which is 5-Spot's business. A typed schema here would silently **prune**
+fields the consumer's CRD grew since 5-Spot last shipped, turning a correct
+template into an incorrect object with no error anywhere.
+
+**Security.** Whatever the consumer's CRD admits can be written here, and
+5-Spot's ServiceAccount creates it. That carries the same residual risk as an
+embedded bootstrap spec, bounded the same two ways: the API-group allowlist, and
+the consumer's own admission policies on whatever the owned object goes on to
+create. Restrict `create` on `scheduledcapacities` accordingly.
+
+Writes are **server-side applies** under field manager
+`5spot-capacity-controller`, applying the complete spec 5-Spot owns. That brings
+pruning: a field removed from `template` is removed from the owned object.
 
 #### handback
 
 (optional, object) The cooperative, bounded handback.
 
-- **drainedPath** (optional, string): a numeric field on the target's
+- **drainedPath** (optional, string): a numeric field on the owned object's
   **status** reporting how much of the slice is still in use, e.g.
-  `status.claimed`. Must start with `status.`
+  `status.claimed`. Must start with `status.`, because it reads the consumer's
+  own report: reading back the `spec` value 5-Spot just wrote would complete a
+  handback instantly and falsely
 - **timeout** (optional, string, default: `10m`): how long to wait for
   `drainedPath` to reach zero
 
