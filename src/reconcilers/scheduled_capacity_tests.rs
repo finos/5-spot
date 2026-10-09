@@ -4,8 +4,9 @@
 #[allow(clippy::module_inception)]
 mod tests {
     use super::super::*;
+    use crate::constants::CAPACITY_INACTIVE_VALUE;
     use crate::crd::{ScheduledCapacity, ScheduledCapacitySpec, ScheduledCapacityStatus};
-    use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
     use serde_json::json;
     use std::sync::atomic::AtomicBool;
 
@@ -31,13 +32,348 @@ mod tests {
                 "kind": "CapitalMarketsSchedule",
                 "name": "nyse"
             },
-            "targetRef": {
+            "target": {
                 "apiVersion": "banlieue.io/v1alpha1",
-                "kind": "VirtualMachinePool",
-                "name": "pool-a"
+                "kind": "VirtualMachinePool"
             },
-            "capacity": { "path": "spec.warmReplicas", "activeValue": 10 }
+            "capacity": { "field": "warmReplicas", "activeValue": 10 },
+            // Mirrors the reference consumer's full required set
+            // (maxReplicas, readiness, template), so the fixture is not more
+            // permissive than the kind a real API server would validate
+            // against. test_build_owned_object_satisfies_the_consumer_schemas_required_set
+            // is what holds this honest.
+            "template": {
+                "maxReplicas": 20,
+                "readiness": "GuestReady",
+                "template": { "classRef": { "name": "small" } }
+            }
         })
+    }
+
+    /// A `ScheduledCapacity` with a `uid`, so an `ownerReference` can be built.
+    /// `capacity_with` deliberately leaves the uid unset, because the API server
+    /// is what issues one and several tests depend on its absence.
+    fn capacity_with_uid(spec_json: serde_json::Value, uid: &str) -> ScheduledCapacity {
+        let mut capacity = capacity_with(spec_json);
+        capacity.metadata.uid = Some(uid.to_string());
+        capacity
+    }
+
+    /// A `DynamicObject` carrying `owners` as its `ownerReferences`.
+    fn owned_object(owners: Option<Vec<OwnerReference>>) -> DynamicObject {
+        let api_resource = ApiResource::from_gvk(&GroupVersionKind::gvk(
+            "banlieue.io",
+            "v1alpha1",
+            "VirtualMachinePool",
+        ));
+        let mut object = DynamicObject::new("scap-a", &api_resource);
+        object.metadata.owner_references = owners;
+        object
+    }
+
+    /// An `ownerReference` as the API server would record one.
+    fn owner_ref(uid: &str, controller: Option<bool>) -> OwnerReference {
+        OwnerReference {
+            api_version: "5spot.finos.org/v1alpha1".to_string(),
+            kind: "ScheduledCapacity".to_string(),
+            name: "scap-a".to_string(),
+            uid: uid.to_string(),
+            controller,
+            block_owner_deletion: Some(true),
+        }
+    }
+
+    // ========================================================================
+    // is_owned_by - the check RBAC cannot express (ADR 0016)
+    // ========================================================================
+
+    #[test]
+    fn test_is_owned_by_accepts_our_own_controller_reference() {
+        let capacity = capacity_with_uid(base_spec(), "uid-1");
+        let object = owned_object(Some(vec![owner_ref("uid-1", Some(true))]));
+        assert!(is_owned_by(&object, &capacity));
+    }
+
+    /// The consumer's own pool, or any object that merely shares the name. This
+    /// is the case the whole check exists for: RBAC grants `create` and `patch`
+    /// on the entire group, so nothing below this function distinguishes it.
+    #[test]
+    fn test_is_owned_by_rejects_an_object_with_no_owner_references() {
+        let capacity = capacity_with_uid(base_spec(), "uid-1");
+        assert!(!is_owned_by(&owned_object(None), &capacity));
+        assert!(!is_owned_by(&owned_object(Some(vec![])), &capacity));
+    }
+
+    /// A different `ScheduledCapacity`'s object. Same kind, same name shape,
+    /// different instance.
+    #[test]
+    fn test_is_owned_by_rejects_another_owners_uid() {
+        let capacity = capacity_with_uid(base_spec(), "uid-1");
+        let object = owned_object(Some(vec![owner_ref("uid-2", Some(true))]));
+        assert!(!is_owned_by(&object, &capacity));
+    }
+
+    /// A non-controller reference is a weaker relationship than ownership and
+    /// does not authorise a force-apply: anyone who can write the object's
+    /// metadata could add one.
+    #[test]
+    fn test_is_owned_by_rejects_a_non_controller_reference() {
+        let capacity = capacity_with_uid(base_spec(), "uid-1");
+        for controller in [None, Some(false)] {
+            let object = owned_object(Some(vec![owner_ref("uid-1", controller)]));
+            assert!(
+                !is_owned_by(&object, &capacity),
+                "controller={controller:?} must not count as ownership"
+            );
+        }
+    }
+
+    /// Matching is by `uid`, not by name or kind: those are forgeable by anyone
+    /// who can write metadata, while a `uid` names one instance the API server
+    /// issued. Garbage collection keys off the same field, so the check and the
+    /// cascade agree by construction.
+    #[test]
+    fn test_is_owned_by_ignores_a_name_matching_reference_with_the_wrong_uid() {
+        let capacity = capacity_with_uid(base_spec(), "uid-1");
+        let mut forged = owner_ref("not-our-uid", Some(true));
+        forged.name = "scap-a".to_string();
+        assert!(!is_owned_by(&owned_object(Some(vec![forged])), &capacity));
+    }
+
+    /// Fail closed with no uid: there is nothing to compare against, so no
+    /// object can be proven ours.
+    #[test]
+    fn test_is_owned_by_is_false_without_a_uid_on_the_capacity() {
+        let capacity = capacity_with(base_spec());
+        assert!(capacity.uid().is_none(), "fixture must have no uid");
+        let object = owned_object(Some(vec![owner_ref("uid-1", Some(true))]));
+        assert!(!is_owned_by(&object, &capacity));
+    }
+
+    /// A pool owned by something else entirely, plus our reference alongside it.
+    /// Ownership is "ours is present and is the controller", not "ours is the
+    /// only one".
+    #[test]
+    fn test_is_owned_by_finds_our_reference_among_several() {
+        let capacity = capacity_with_uid(base_spec(), "uid-1");
+        let object = owned_object(Some(vec![
+            owner_ref("uid-other", Some(false)),
+            owner_ref("uid-1", Some(true)),
+        ]));
+        assert!(is_owned_by(&object, &capacity));
+    }
+
+    // ========================================================================
+    // build_owned_object
+    // ========================================================================
+
+    #[test]
+    fn test_build_owned_object_carries_identity_and_the_injected_field() {
+        let capacity = capacity_with_uid(base_spec(), "uid-1");
+        let object = build_owned_object(&capacity, "sandboxes", 10).expect("builds");
+
+        assert_eq!(
+            object.pointer("/apiVersion").and_then(Value::as_str),
+            Some("banlieue.io/v1alpha1")
+        );
+        assert_eq!(
+            object.pointer("/kind").and_then(Value::as_str),
+            Some("VirtualMachinePool")
+        );
+        // ADR 0016 decision 1: the owned object's name is the
+        // ScheduledCapacity's own, never a value from the spec.
+        assert_eq!(
+            object.pointer("/metadata/name").and_then(Value::as_str),
+            Some("scap-a")
+        );
+        assert_eq!(
+            object
+                .pointer("/metadata/namespace")
+                .and_then(Value::as_str),
+            Some("sandboxes")
+        );
+        assert_eq!(
+            object.pointer("/spec/warmReplicas").and_then(Value::as_i64),
+            Some(10)
+        );
+        // The operator's template survives alongside the injected knob.
+        assert_eq!(
+            object.pointer("/spec/maxReplicas").and_then(Value::as_i64),
+            Some(20)
+        );
+        assert_eq!(
+            object.pointer("/spec/readiness").and_then(Value::as_str),
+            Some("GuestReady")
+        );
+    }
+
+    /// The `ownerReference` is the entire removal mechanism (ADR 0016 decision
+    /// 6). The controller holds no `delete` verb, so an object built without one
+    /// would outlive its `ScheduledCapacity` with nothing able to clean it up.
+    #[test]
+    fn test_build_owned_object_sets_a_blocking_controller_owner_reference() {
+        let capacity = capacity_with_uid(base_spec(), "uid-1");
+        let object = build_owned_object(&capacity, "sandboxes", 10).expect("builds");
+
+        let owners = object
+            .pointer("/metadata/ownerReferences")
+            .and_then(Value::as_array)
+            .expect("ownerReferences present");
+        assert_eq!(owners.len(), 1, "exactly one owner: {owners:?}");
+        let owner = &owners[0];
+        assert_eq!(owner.get("uid").and_then(Value::as_str), Some("uid-1"));
+        assert_eq!(
+            owner.get("kind").and_then(Value::as_str),
+            Some("ScheduledCapacity")
+        );
+        assert_eq!(
+            owner.get("controller").and_then(Value::as_bool),
+            Some(true),
+            "must be the CONTROLLER reference, or garbage collection and \
+             is_owned_by disagree"
+        );
+        assert_eq!(
+            owner.get("blockOwnerDeletion").and_then(Value::as_bool),
+            Some(true),
+            "kubectl delete must not return while the capacity is still live"
+        );
+    }
+
+    /// Window close writes an explicit zero and leaves the object standing: it
+    /// is never a delete (ADR 0016 decision 5).
+    #[test]
+    fn test_build_owned_object_writes_an_explicit_zero_at_window_close() {
+        let capacity = capacity_with_uid(base_spec(), "uid-1");
+        let object =
+            build_owned_object(&capacity, "sandboxes", CAPACITY_INACTIVE_VALUE).expect("builds");
+        assert_eq!(
+            object.pointer("/spec/warmReplicas").and_then(Value::as_i64),
+            Some(0),
+            "zero must be present, not elided"
+        );
+    }
+
+    #[test]
+    fn test_build_owned_object_refuses_without_a_uid() {
+        let capacity = capacity_with(base_spec());
+        assert!(matches!(
+            build_owned_object(&capacity, "sandboxes", 10).expect_err("no uid"),
+            CapacityError::Unowned
+        ));
+    }
+
+    /// One source of truth. A template that sets the knob itself must fail
+    /// loudly rather than have the schedule silently overwrite it, or the value
+    /// depends on which writer went last.
+    #[test]
+    fn test_build_owned_object_refuses_a_template_that_sets_the_knob() {
+        let mut spec = base_spec();
+        spec["template"]["warmReplicas"] = json!(99);
+        let capacity = capacity_with_uid(spec, "uid-1");
+        assert!(matches!(
+            build_owned_object(&capacity, "sandboxes", 10).expect_err("collision"),
+            CapacityError::Path(_)
+        ));
+    }
+
+    #[test]
+    fn test_build_owned_object_refuses_an_invalid_capacity_field() {
+        let mut spec = base_spec();
+        spec["capacity"]["field"] = json!("spec.warmReplicas");
+        let capacity = capacity_with_uid(spec, "uid-1");
+        assert!(matches!(
+            build_owned_object(&capacity, "sandboxes", 10).expect_err("reserved root"),
+            CapacityError::Path(_)
+        ));
+    }
+
+    /// Labels identify the object as 5-Spot's to a human reading `kubectl get`,
+    /// which is the only signal available before anyone inspects ownerReferences.
+    #[test]
+    fn test_build_owned_object_labels_it_as_ours() {
+        let capacity = capacity_with_uid(base_spec(), "uid-1");
+        let object = build_owned_object(&capacity, "sandboxes", 10).expect("builds");
+        let labels = object
+            .pointer("/metadata/labels")
+            .and_then(Value::as_object)
+            .expect("labels present");
+        assert!(!labels.is_empty(), "labels must not be empty");
+        assert_eq!(
+            serde_json::to_value(crate::labels::common_labels()).unwrap(),
+            Value::Object(labels.clone()),
+            "the owned object carries the project's standard labels"
+        );
+    }
+
+    /// The owned object must never carry a `status`: that half belongs to the
+    /// consumer's reconciler, and applying one would fight it on every window.
+    #[test]
+    fn test_build_owned_object_writes_no_status() {
+        let capacity = capacity_with_uid(base_spec(), "uid-1");
+        let object = build_owned_object(&capacity, "sandboxes", 10).expect("builds");
+        assert!(
+            object.get("status").is_none(),
+            "5-Spot owns the spec, the consumer owns the status: {object}"
+        );
+    }
+
+    /// The object 5-Spot constructs must satisfy the consumer schema's **required
+    /// set**, read from the e2e fixture rather than restated here.
+    ///
+    /// This is the "a fake that is more permissive than the real thing hides
+    /// bugs" check from `rules/testing.md`, applied in the one direction a unit
+    /// test can reach. The failure it catches is real and silent at this tier: if
+    /// the reference consumer adds a required field, or an operator's
+    /// `spec.template` omits one, 5-Spot builds an object the API server will
+    /// reject with a 422 that nothing below the kind e2e would have seen.
+    ///
+    /// The fixture is the right source because it is generated from the real
+    /// kind's CRD and is what `make kind-verify-capacity` installs, so this test
+    /// and the e2e cannot disagree about what the consumer demands.
+    #[test]
+    fn test_build_owned_object_satisfies_the_consumer_schemas_required_set() {
+        const FIXTURE: &str = "../.github/scripts/fixtures/capacity-target-crd.yaml";
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(".github/scripts/fixtures/capacity-target-crd.yaml");
+        // Fail loudly rather than skip. A test that returns early when its
+        // fixture is missing reports success while proving nothing.
+        let yaml = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("capacity-target fixture {FIXTURE} is required: {e}"));
+        let crd: serde_json::Value = serde_yaml::from_str(&yaml).expect("fixture parses as YAML");
+
+        let required = crd
+            .pointer("/spec/versions/0/schema/openAPIV3Schema/properties/spec/required")
+            .and_then(Value::as_array)
+            .expect("the fixture declares a required set");
+        assert!(
+            required.len() >= 4,
+            "the fixture must mirror the real kind's required set, got {required:?}"
+        );
+
+        let capacity = capacity_with_uid(base_spec(), "uid-1");
+        let object = build_owned_object(&capacity, "sandboxes", 10).expect("builds");
+        let spec = object
+            .pointer("/spec")
+            .and_then(Value::as_object)
+            .expect("the built object has a spec");
+
+        for field in required {
+            let field = field.as_str().expect("required entries are strings");
+            assert!(
+                spec.contains_key(field),
+                "the built spec omits '{field}', which the consumer requires; the API \
+                 server would reject this object with a 422. Built spec: {spec:?}"
+            );
+        }
+
+        // And the knob is one of them, which is what makes 5-Spot's injection
+        // part of satisfying the contract rather than an addition to it.
+        assert!(
+            required
+                .iter()
+                .any(|f| f.as_str() == Some(capacity.spec.capacity.field.as_str())),
+            "the gated field must be one the consumer requires, got {required:?}"
+        );
     }
 
     // ========================================================================
@@ -263,19 +599,23 @@ mod tests {
     /// let them through. The reconciler is the check that still holds, so it
     /// must refuse before any API call is made.
     #[tokio::test]
-    async fn test_reconcile_rejects_an_illegal_write_path_before_any_api_call() {
+    async fn test_reconcile_rejects_an_illegal_capacity_field_before_any_api_call() {
         use http::{Request, Response};
         use kube::client::Body;
         use tower_test::mock;
 
-        for bad_path in [
+        for bad_field in [
+            // Reserved roots: already implicit, so these would construct
+            // `spec.spec.warmReplicas` or an unreachable `spec.metadata.*`.
+            "spec.warmReplicas",
             "metadata.ownerReferences",
-            "metadata.finalizers",
             "status.claimed",
-            "spec.items[0].count",
+            // Charset: still rejected, because an allowlist is cheaper to
+            // reason about than an argument about which shapes are harmless.
+            "items[0].count",
         ] {
             let mut spec = base_spec();
-            spec["capacity"]["path"] = json!(bad_path);
+            spec["capacity"]["field"] = json!(bad_field);
             // Deserialising the spec itself is fine: the CRD schema is the
             // admission gate, and this test is about what happens when that
             // gate was an older schema.
@@ -288,10 +628,10 @@ mod tests {
             });
             let error = reconcile(Arc::new(capacity), ctx)
                 .await
-                .expect_err(bad_path);
+                .expect_err(bad_field);
             assert!(
                 matches!(error, CapacityError::Path(_)),
-                "{bad_path} must be refused as a path error, got {error:?}"
+                "{bad_field} must be refused as a path error, got {error:?}"
             );
         }
     }

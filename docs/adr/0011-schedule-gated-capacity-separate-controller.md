@@ -4,11 +4,19 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0011 — Schedule-gated capacity: a `ScheduledCapacity` CRD and its own controller
 
-- **Status:** Accepted
+- **Status:** Accepted, with decisions 1, 2 and 5 superseded by ADR-0016
 - **Date:** 2026-09-27 (proposed), 2026-10-02 (accepted, field names and the
-  handback decision settled)
+  handback decision settled), 2026-10-08 (actuation superseded by ADR-0016)
 - **Deciders:** Erick Bourgeois
 - **Supersedes:** —
+- **Superseded in part by:** ADR
+  [0016](./0016-own-the-capacity-object.md). 5-Spot **creates and owns** the
+  capacity object rather than patching a consumer's: decision 1's `targetRef`
+  and `capacity.path` fields, decision 2's "a field write, never a create", and
+  decision 5's `patch` verb are withdrawn. The premise decision 2 rested on,
+  that deleting a pool would pull the rug on claim holders, was checked against
+  the consumer's code and is false: it re-parents claimed members to their
+  claim. Decisions 3, 4, 6, 7 and 8 stand, 7 as amended by ADR-0014.
 - **Related:** ADR [0006](./0006-pluggable-spot-schedule-provider-contract.md)
   (provider contract), ADR [0009](./0009-unify-schedule-as-provider-reference.md)
   (`spec.schedule` as a provider reference), ADR

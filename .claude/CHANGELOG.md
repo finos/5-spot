@@ -9,6 +9,108 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-10-08 14:30] - ADR-0016: 5-Spot creates and owns the capacity object it scales
+
+**Author:** Erick Bourgeois
+
+### Changed
+
+- `docs/adr/0016-own-the-capacity-object.md`: **new.** Supersedes ADR-0011
+  decisions 1, 2 and 5. 5-Spot creates and owns the capacity object instead of
+  patching a consumer's, which is symmetric with `ScheduledMachine` creating the
+  CAPI `Machine` the schedule is the reason for.
+- `docs/adr/0011-schedule-gated-capacity-separate-controller.md`: header records
+  the partial supersession and which decisions survive (3, 4, 6, 7, 8).
+- `docs/adr/README.md`, `docs/src/development/index.md`: both ADR indexes.
+- `docs/architecture/calm/architecture.json`: the capacity target becomes a
+  5-Spot-owned resource rather than a foreign one, the write relationship and its
+  trust-boundary control are reshaped, the pre-flight checks both verbs, and the
+  flow gains a ninth step for garbage-collected removal. `calm-validate` and
+  `calm-diagrams` both clean.
+- `src/crd.rs`: `spec.targetRef` + `spec.capacity.path` withdrawn for
+  `spec.target` (apiVersion + kind only, **immutable** by CEL, no name because
+  the owned object takes the `ScheduledCapacity`'s own), `spec.capacity.field`
+  (relative to the owned object's `spec`), and `spec.template` (opaque
+  pass-through, the `bootstrapSpec` pattern). `Target` print column follows
+  `.spec.target.kind`.
+- `src/constants.rs`: `CAPACITY_FIELD_PATTERN`, `CAPACITY_FIELD_MAX_SEGMENTS`,
+  `CAPACITY_FIELD_MANAGER`, `REASON_TARGET_NOT_OWNED`,
+  `REASON_TARGET_NOT_ACTUABLE`. `CAPACITY_WRITE_PATH_PREFIX` and
+  `REASON_TARGET_NOT_FOUND` removed.
+- `src/reconcilers/capacity_path.rs`: `validate_write_path` /
+  `build_merge_patch` replaced by `validate_capacity_field` /
+  `inject_capacity_field`. The module stops being a security control and says so:
+  the dangerous prefixes are now unreachable by construction rather than
+  string-rejected, and the reserved-root rejections are about mistakes
+  (`spec.warmReplicas` would build `spec.spec.warmReplicas`) rather than threats.
+- `src/reconcilers/scheduled_capacity.rs`: `resolve_target` treats an absent
+  object as the normal pre-create state, pre-flights **both** `create` and
+  `patch` (server-side apply needs each at different times), and adds
+  `is_owned_by` + `build_owned_object` + `apply_owned_object`. Writes are
+  server-side applies under field manager `5spot-capacity-controller`.
+- `src/reconcilers/dynamic_ref_watch.rs`: the owned object's watch key is derived
+  from the `ScheduledCapacity`'s own name, not from a spec reference.
+- `src/reconcilers/capacity_decision.rs`: the hold reason for an unusable target
+  is generic, because which of the four failures occurred is already on the
+  `TargetResolved` condition.
+- `deploy/capacity-controller/clusterrole.yaml`: `create` added, **no `delete`
+  anywhere**, pre-flight covers both verbs, and the comment states the widening
+  plainly rather than burying it.
+- `deploy/crds/scheduledcapacity.yaml`: regenerated (`make crds`).
+- `examples/scheduledcapacity.yaml`: both examples rewritten; validated against
+  the generated schema.
+- `.github/scripts/fixtures/capacity-target-crd.yaml`: the e2e stub moves to the
+  **real** group and kind (`banlieue.io/v1alpha1 VirtualMachinePool`), with the
+  required set generated from the real kind's CRD.
+- `.github/scripts/capacity-e2e.bats`: **new**, 16 tests.
+- `Makefile`: `kind-deploy-capacity`, `kind-verify-capacity`.
+- `docs/src/concepts/scheduled-capacity.md`, `.github/community/05-schedule-gated-capacity.md`,
+  `ROADMAPS.md`: updated, including the requirement ADR 0016 places on consumers.
+- Tests: 852 pass (up from 836). `capacity_path_tests.rs` rewritten (29),
+  15 new tests in `scheduled_capacity_tests.rs` covering `is_owned_by` and
+  `build_owned_object`, 4 new CRD schema tests.
+
+### Why
+
+Implementing ADR 0011 as far as a `kind` e2e made the shape visible: 5-Spot was
+reaching into a stranger's object to turn a dial, and most of the design was
+apparatus for making that reach safe (a validated field path treated as a
+security control, a confused-deputy trust boundary, a merge patch forced by
+co-ownership). None of the rest of the project works that way.
+
+ADR 0011's argument against creating was explicit and rested on a premise that
+turned out to be false: that deleting a consumer's pool with live claims would
+destroy in-flight work. Checked against the reference consumer's code, a bound
+member's `ownerReferences` are re-parented from the pool to the claim at bind
+time, by decision, with the pool reconciler's own module doc stating the
+invariant. Deleting a pool takes the idle members, which is exactly the capacity
+being reclaimed, and leaves the claimed ones. The consumer also writes only the
+pool's `status`, never its `spec`, and nothing reads the pool's own
+`ownerReferences`, so an owner set by 5-Spot is safe.
+
+### Impact
+
+- [x] **Breaking change.** `spec.targetRef` is **required** in
+      `5spot.finos.org/v1alpha1` as shipped in **v0.3.2**, so this is a removal
+      from a released API. `ScheduledCapacity` serves exactly one version, so
+      there is nothing to convert between and ADR 0007's conversion-webhook
+      trigger does not fire; serving `v1alpha2` alongside is the case ADR 0007
+      forbids without a webhook, because the two shapes cannot round-trip.
+      **Existing `ScheduledCapacity` objects must be deleted and recreated**:
+      `targetRef` is pruned on the next write and the controller finds no
+      `spec.target`, leaving the object inert rather than converted.
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+### Not done
+
+The `kind` e2e is **written but not run**: it needs a locally built controller
+image, which is the maintainer's step. `make kind-setup && make kind-deploy-capacity
+&& make kind-verify-capacity`.
+
+---
+
 ## [2026-10-05 16:59] - ADR-0015: internalize a dependency when its used surface is 500 lines or less
 
 **Author:** Erick Bourgeois

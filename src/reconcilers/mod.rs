@@ -27,7 +27,8 @@ pub mod spot_schedule;
 // Re-export main types and functions
 pub use capacity_decision::{decide, CapacityDecision, CapacityDecisionInput};
 pub use capacity_path::{
-    build_merge_patch, read_i64_at, validate_drained_path, validate_write_path, CapacityPathError,
+    inject_capacity_field, read_i64_at, validate_capacity_field, validate_drained_path,
+    CapacityPathError,
 };
 pub use child_client::{
     CacheKey, ChildClientCache, ChildWatchHook, ResolvedClient, DEFAULT_KUBECONFIG_SECRET_KEY,

@@ -50,7 +50,7 @@ use crate::constants::{
     PHASE_CAPACITY_HANDBACK_TIMED_OUT, PHASE_CAPACITY_HANDING_BACK, PHASE_CAPACITY_INACTIVE,
     PHASE_CAPACITY_PENDING, PHASE_CAPACITY_TERMINATED, REASON_CAPACITY_ACTIVE,
     REASON_CAPACITY_INACTIVE, REASON_HANDBACK_NOT_OBSERVED, REASON_HANDBACK_TIMED_OUT,
-    REASON_HANDBACK_WAITING, REASON_HOST_GOVERNANCE_CONFLICT, REASON_TARGET_NOT_FOUND,
+    REASON_HANDBACK_WAITING, REASON_HOST_GOVERNANCE_CONFLICT, REASON_TARGET_NOT_ACTUABLE,
 };
 use crate::reconcilers::helpers::compose_should_be_active;
 use crate::reconcilers::spot_schedule::SpotScheduleVerdict;
@@ -177,12 +177,15 @@ pub fn decide(input: &CapacityDecisionInput<'_>) -> CapacityDecision {
         };
     }
 
-    // 2. Nothing to write to. Not an error and never a create (decision 2).
+    // 2. The owned object cannot be created or written: the CRD is absent, the
+    //    group is not allowed, the name is taken by an object 5-Spot does not
+    //    own, or RBAC says no. Hold without writing and let the
+    //    TargetResolved condition say which.
     if !input.target_resolved {
         return CapacityDecision::hold(
             PHASE_CAPACITY_PENDING,
-            REASON_TARGET_NOT_FOUND,
-            "spec.targetRef did not resolve; holding without writing".to_string(),
+            REASON_TARGET_NOT_ACTUABLE,
+            "spec.target is not actuable; holding without writing".to_string(),
         );
     }
 

@@ -1,9 +1,31 @@
 # Threat Model: 5-Spot ScheduledMachine Controller
 
-**Version:** 1.5  
-**Date:** 2026-10-05  
+**Version:** 1.6  
+**Date:** 2026-10-08  
 **Status:** Active — living document  
-**Covers:** ADR-0001 … ADR-0015 (the 1.5 pass covers ADR-0015, the dependency
+**Covers:** ADR-0001 … ADR-0016 (the 1.6 pass covers ADR-0016, which reshapes how
+the capacity controller actuates: 5-Spot now **creates and owns** the capacity
+object instead of patching a consumer's. Every section walked, and this is the
+largest change to TB7 since it was introduced, in **both** directions. Removed:
+the confused-deputy surface, because there is no longer a user-chosen field path
+into an object someone else owns. C1 is retained as a superseded row rather than
+deleted, so a reader can check the surface was designed away rather than quietly
+dropped, and C2's impact drops from High to Low. Added: `create` on the
+allowlisted group, which is a strictly wider grant than ADR 0011's `patch` and is
+recorded as such rather than buried, plus three new threats, C10 (the opaque
+`spec.template` instantiated by 5-Spot's credential), C11 (adopting a same-named
+object 5-Spot does not own) and C12 (`force`-apply, sound only in pairing with
+C11). Still **no `delete` verb anywhere**: removal is owner-reference garbage
+collection, which is how the "only objects you created" constraint is obtained
+without a grant RBAC could not scope. Changed: §1 scope, §2 overview diagram and
+flows F8/F9, §3 two assets, §4 TB7 diagram and all four of its defining
+properties, §5 one actor reworded and one added, §6.6 header plus C1-C4, C6, C7
+and three new rows, §7 seven control rows, §8 four residuals (two new, one HIGH:
+the opaque template is a second instance of the `bootstrapSpec` residual, not a
+new class), §9 assumption 8 reworded and assumptions 9 and 10 added. §10
+unchanged.
+
+The 1.5 pass covers ADR-0015, the dependency
 internalization policy. Every section walked. It is a *process* decision with a
 real posture effect in both directions, so §6 T10 and the §7 supply-chain table
 now state the trade explicitly: each dependency removed is one fewer upstream to
@@ -41,12 +63,12 @@ It identifies assets, trust boundaries, threat actors, per-component STRIDE thre
 - The controller process (`five_spot` binary) and its Kubernetes RBAC surface
 - The `5spot-capacity-controller` process and its **separate** RBAC surface (ADR 0011)
 - The `ScheduledMachine` and `ScheduledCapacity` Custom Resource Definitions and their admission paths
-- All Kubernetes API interactions (CAPI Machine, Bootstrap, Infrastructure, Nodes, Pods), and the single-field `patch` into an allowlisted foreign API group
+- All Kubernetes API interactions (CAPI Machine, Bootstrap, Infrastructure, Nodes, Pods), and the `create` plus single-field scale of a 5-Spot-owned object in an allowlisted API group (ADR 0016)
 - The metrics (`/metrics`) and health (`/healthz`, `/readyz`) HTTP endpoints of both controllers
 
 **Out of scope:**
 - The underlying k0smotron / CAPI infrastructure providers
-- **The capacity consumer**: the object 5-Spot patches, and everything it does with the capacity it is granted. 5-Spot writes a number and waits; claim binding, guest isolation and drain belong to the consumer (ADR 0011, §9 assumption 7)
+- **The capacity consumer**: everything done with the capacity 5-Spot declares, and the consumer's reconciliation of the object 5-Spot owns. 5-Spot creates the object, writes a number into it and waits; claim binding, guest isolation, drain and the re-parenting of in-use resources belong to the consumer (ADR 0011, ADR 0016, §9 assumptions 7 and 9)
 - The physical machines being managed
 - The Kubernetes API server itself
 - Network-level threats (CNI, firewall policy)
@@ -89,7 +111,7 @@ flowchart TB
     C -->|"F3 · create / delete"| CAPI
     C -->|"F4 · cordon / evict"| NP
     SM -.->|ownerRef| CAPI
-    CC -->|"F9 · patch one field\n(foreign API group)"| api
+    CC -->|"F9 · create + scale an owned object\n(allowlisted group)"| api
     Prom -->|"F5 · HTTP scrape"| M
     Probes -->|"F6 · HTTP"| H
 ```
@@ -105,8 +127,8 @@ flowchart TB
 | F5 | Prometheus → Controller: scrape metrics | HTTP (no TLS) | None (cluster-internal) |
 | F6 | Kubernetes probes → Controller: health checks | HTTP (no TLS) | None (cluster-internal) |
 | F7 | Controller → Node: stamp the `kata-config-ref` annotation naming the workload-cluster source object | HTTPS | Service account JWT |
-| F8 | Capacity Controller → API Server: watch `ScheduledCapacity`, its spot-schedule provider and its target object | HTTPS/Watch | Capacity service account JWT (separate identity) |
-| F9 | Capacity Controller → API Server: `patch` one numeric field on an object in an allowlisted foreign API group. **Never create or delete** | HTTPS | Capacity service account JWT (separate identity) |
+| F8 | Capacity Controller → API Server: watch `ScheduledCapacity`, its spot-schedule provider and the object it owns | HTTPS/Watch | Capacity service account JWT (separate identity) |
+| F9 | Capacity Controller → API Server: `create`, then server-side `apply`, an object it owns in an allowlisted API group, scaling one numeric field in it. **Never `delete`**: removal is owner-reference garbage collection, under kube-controller-manager's identity (ADR 0016) | HTTPS | Capacity service account JWT (separate identity) |
 | F8 | Kata-config agent → workload API: `get` the named ConfigMap/Secret, then write `/etc/k0s/containerd.d/kata.toml` on the host and restart a systemd unit through `nsenter` | HTTPS, then host namespaces | Per-pod service account JWT, then host PID 1 |
 | F9 | Reclaim agent → Node: write the three reclaim annotations | HTTPS | Per-pod service account JWT |
 
@@ -123,9 +145,9 @@ flowchart TB
 | **ScheduledMachine spec data** | Medium | Contains infrastructure topology (addresses, ports, SSH config) |
 | **Kubernetes RBAC posture** | High | Overly broad permissions on the service account expand blast radius of compromise |
 | **Cluster-wide node state** | High | Cordon/drain operations affect all workloads on targeted nodes |
-| **`ScheduledCapacity` spec data** | Medium | Names a foreign object and a field path on it. The path is user-controlled input that the capacity controller writes with its own credential, which makes it a confused-deputy surface rather than inert configuration (§6.6 C1) |
+| **`ScheduledCapacity` spec data** | Medium | Declares the kind of object 5-Spot creates and the whole of its `spec`, through the opaque `spec.template` pass-through. ADR 0011's confused-deputy surface (a user-chosen field path into a stranger's object) is **gone**; what replaces it is a user-supplied spec that 5-Spot's credential instantiates, the same shape as `bootstrapSpec.spec` and carrying the same residual (§6.6 C10, §8) |
 | **Conceded host capacity** | High | The slice of a host handed to a consumer while it stays in the cluster. Over-provisioning starves the incumbent workload the host exists to run; under-provisioning or a missed handback silently wastes it |
-| **Capacity controller service account credentials** | Medium | JWT granting `patch` on one allowlisted API group and its own CRD's status. Deliberately **lower** sensitivity than the machine controller's: no Secret access, no CAPI verbs, no create or delete anywhere (§6.6 C6) |
+| **Capacity controller service account credentials** | Medium | JWT granting `create` and `patch` on one allowlisted API group and its own CRD's status. Still deliberately **lower** sensitivity than the machine controller's: no Secret access, no CAPI verbs, and **no `delete` anywhere**. ADR 0016 widened it from `patch` to `create` plus `patch`, which is a real widening and is treated as one (§6.6 C6, C10, C11) |
 
 ---
 
@@ -182,8 +204,8 @@ flowchart LR
     subgraph TB7["TB7 · Foreign API Group Write"]
         direction TB
         CapCtl["5spot-capacity-controller\n(opt-in Deployment)"]
-        CapSA["Own ServiceAccount\n(patch on allowlisted group only\nno create/delete · no secrets · no CAPI)"]
-        Target["F9 · Consumer object\n(one numeric field, merge patch)"]
+        CapSA["Own ServiceAccount\n(create + patch on allowlisted group\nNO delete anywhere · no secrets · no CAPI)"]
+        Target["F9 · 5-Spot-owned object\n(created, then scaled by SSA)"]
         CapCtl --- CapSA
         CapCtl --> Target
     end
@@ -198,13 +220,23 @@ flowchart LR
     TB1 -->|"F8 · watch ScheduledCapacity"| TB7
 ```
 
-**TB7 is the only place 5-Spot writes an API group it does not own** (ADR 0011).
-The capacity controller patches one numeric field on a consumer's object so a
-spot schedule can gate a bounded slice of a host that **stays in the cluster**,
-which is the opposite of every other flow here: TB3 creates and deletes CAPI
-resources, TB7 only ever scales a field on an object someone else owns.
+**TB7 is the only place 5-Spot writes outside the CAPI API family** (ADR 0011,
+reshaped by ADR 0016). The capacity controller **creates and owns** an object in
+an allowlisted group and scales one numeric field on it, so a spot schedule can
+gate a bounded slice of a host that **stays in the cluster**.
 
-Three properties define the boundary, and each is a deliberate narrowing rather
+ADR 0016 changed this boundary in both directions, and both halves matter.
+**Removed:** there is no longer a shared object at all. ADR 0011's boundary
+reached into an object a stranger owned, with a user-supplied field path aimed at
+it, which is what made C1 and C2 the headline threats here. Owning the object
+deletes that surface rather than bounding it. **Added:** the ability to
+*construct* an object of an allowlisted kind, which is strictly more than moving
+one integer. TB7 is therefore now the same *kind* of boundary as TB3, where
+5-Spot creates and owns a resource on a schedule, differing in two ways: the
+group is a consumer's rather than CAPI's, and nothing here is ever deleted by
+5-Spot.
+
+Four properties define the boundary, and each is a deliberate narrowing rather
 than an accident of implementation:
 
 - **A separate identity.** Its own binary, Deployment and ServiceAccount, so the
@@ -213,15 +245,28 @@ than an accident of implementation:
   controller cannot write capacity. This is the whole reason ADR 0011 chose a
   new binary over a second reconciler in the existing one, and it is why the
   two HIGH residuals in §8 do not grow.
-- **`patch` is the only write verb**, on an allowlisted API group, with no
-  `create`, no `delete`, no Secret access and no CAPI verbs
-  (`deploy/capacity-controller/clusterrole.yaml`). A compromised capacity
-  controller cannot bring a consumer's object into existence or destroy it,
-  which is what makes the design safe against a pool holding live claims.
-- **The field path is user input and is treated as such.** `spec.capacity.path`
-  names a field on a foreign object and comes from whoever can create a
-  `ScheduledCapacity`, so it is constrained at admission and again in the
-  reconciler. See §6.6.
+- **`create` and `patch` are the only write verbs**, on an allowlisted API
+  group, with **no `delete` anywhere**, no Secret access and no CAPI verbs
+  (`deploy/capacity-controller/clusterrole.yaml`). The absence of `delete` is
+  the load-bearing part: RBAC cannot express "only objects you created", so a
+  `delete` grant on the group would also let a compromised controller destroy a
+  consumer's own object of the same kind. Owner-reference garbage collection
+  achieves the removal instead, under kube-controller-manager's identity, and
+  only ever removes objects that actually carry 5-Spot's reference (ADR 0016
+  decision 6).
+- **Nothing is written that 5-Spot did not create.** Before any write the
+  reconciler requires an existing object to carry a controller `ownerReference`
+  whose `uid` is this `ScheduledCapacity`'s, and refuses otherwise with
+  `TargetNotOwned` (`src/reconcilers/scheduled_capacity.rs::is_owned_by`). This
+  is the write-side half of the constraint RBAC cannot express, and it is what
+  makes the force-apply safe: by the time the controller applies, the object is
+  known to be its own. See §6.6 C11.
+- **The capacity field is no longer user input into a stranger's object.**
+  `spec.capacity.field` is a path relative to the `spec` of an object 5-Spot
+  built, so `metadata.` and `status.` are unexpressible rather than rejected. The
+  user-supplied surface that remains is `spec.template`, the whole of the owned
+  object's spec, treated as the `bootstrapSpec` pass-through it mirrors. See
+  §6.6 C10.
 
 A cluster with no capacity consumer installs none of TB7.
 
@@ -244,8 +289,9 @@ namespaces. Everything in §6.5 follows from that.
 | **Rogue operator** | Internal user with broad kubectl access | Misuse kill switch, drain nodes during business hours |
 | **Supply chain attacker** | Can inject into upstream crates (kube-rs, serde, etc.) | RCE inside controller, credential theft |
 | **Spot-schedule provider (untrusted CRD)** | Owns `status.active` of a `spotschedules.5spot.finos.org` object referenced by a ScheduledMachine | Flap the referenced machines on/off — effectively the same control surface as `spec.enabled` |
-| **Compromised capacity controller pod** | Has the capacity controller's service account: `patch` on the allowlisted target group and on its own CRD's status, read-only elsewhere | Starve or over-provision a consumer's capacity. Cannot delete a CAPI `Machine`, read a Secret, or create/delete the governed object: the separation from the machine controller is the control |
-| **`ScheduledCapacity` author** | Can create a `ScheduledCapacity` in their namespace, naming a target object and a field path on it | Reach a field the author should not be able to write (`metadata.ownerReferences`, `finalizers`, labels) on an object in an API group 5-Spot holds `patch` on, i.e. use the controller as a confused deputy |
+| **Compromised capacity controller pod** | Has the capacity controller's service account: `create` and `patch` on the allowlisted target group and `patch` on its own CRD's status, read-only elsewhere | Starve or over-provision the conceded capacity, or **construct an arbitrary object of an allowlisted kind** (new with ADR 0016, C10). Cannot delete a CAPI `Machine`, read a Secret, or **delete anything at all**: the separation from the machine controller and the absent `delete` verb are the controls |
+| **`ScheduledCapacity` author** | Can create a `ScheduledCapacity` in their namespace, choosing the kind of object 5-Spot creates and supplying the whole of its `spec` via `spec.template` | **Changed by ADR 0016.** The confused-deputy motive is gone: there is no longer a user-chosen path into an object the author cannot reach. What remains is having 5-Spot's credential instantiate a spec the author wrote, in an allowlisted group, which is the `bootstrapSpec` shape (C10) |
+| **Owner of a same-named object in the target group** | Can create an object in the capacity controller's namespace under the name a `ScheduledCapacity` will derive | Have 5-Spot adopt and overwrite it, or block the capacity from ever being declared. Mitigated by the `uid`-matched ownership check (C11), which makes the second outcome the only one available |
 
 ---
 
@@ -418,32 +464,46 @@ Its per-pod `ServiceAccount` grants `nodes: get,patch` cluster-wide and
 
 ### 6.6 Capacity Controller (Trust Boundary: TB7)
 
-The `5spot-capacity-controller` Deployment reconciles `ScheduledCapacity` and
-patches **one numeric field** on an object in an API group 5-Spot does not own,
-so a spot schedule can gate a bounded slice of a host that stays in the cluster
-(ADR 0011). It never creates or deletes that object and never sets an
-`ownerReference` on it.
+The `5spot-capacity-controller` Deployment reconciles `ScheduledCapacity`. It
+**creates and owns** an object in an allowlisted API group, under the
+`ScheduledCapacity`'s own name and namespace, and scales **one numeric field** on
+it so a spot schedule can gate a bounded slice of a host that stays in the
+cluster (ADR 0011, actuation per ADR 0016). It sets a controller
+`ownerReference` back to the `ScheduledCapacity`, and never deletes anything.
 
-Its own `ServiceAccount` grants `patch` on the allowlisted target group and on
-its own CRD's `/status`, read-only on the spot-schedule group and on
-`scheduledmachines`, plus `create` on `selfsubjectaccessreviews`. It holds **no**
-Secret access, **no** CAPI verbs, and `create`/`delete` nowhere.
+Its own `ServiceAccount` grants `create` and `patch` on the allowlisted target
+group and `patch` on its own CRD's `/status`, read-only on the spot-schedule
+group and on `scheduledmachines`, plus `create` on `selfsubjectaccessreviews`. It
+holds **no** Secret access, **no** CAPI verbs, and **no `delete` anywhere**.
 
-The interesting attacker here is not the compromised pod but the
-**`ScheduledCapacity` author**, who supplies a field path that the controller
-then writes with its own, broader credential: a confused-deputy shape.
+The attacker set changed with ADR 0016, in both directions. ADR 0011's most
+interesting attacker was the **`ScheduledCapacity` author**, who supplied a field
+path that the controller wrote with its own broader credential: a confused-deputy
+shape, and the reason C1 and C2 existed. That shape is gone, because there is no
+longer an object someone else owns to aim at. What takes its place is narrower
+but real: an author who supplies the whole spec of an object 5-Spot's credential
+then instantiates (C10), and anyone who can pre-create an object under the name
+5-Spot will derive (C11).
+
+**C1 and C2 are retained as superseded rows** rather than deleted. A threat that
+was mitigated and then designed away is more useful to a future reader than a
+gap in the numbering, and keeping them makes it checkable that the surface was
+removed rather than quietly dropped.
 
 | ID | Threat | STRIDE | Likelihood | Impact | Status |
 |---|---|---|---|---|---|
-| C1 | `spec.capacity.path` names `metadata.ownerReferences`, `finalizers` or labels, so a CR author uses the controller's credential to take ownership of, block deletion of, or re-label an object in the target group | T, E | Medium | **High** | **Mitigated, twice over**: the path must match `CAPACITY_PATH_PATTERN` (dot-separated camelCase, so no indices, wildcards, `..`, quotes or `/`) **and** a CEL rule pins it to the `spec.` prefix, so `metadata.` and `status.` are inadmissible (`src/crd.rs`). The reconciler re-validates before any API call (`src/reconcilers/capacity_path.rs`), which is the check that still holds when the deployed CRD is older than the binary, precisely the case a schema cannot defend. Verified against a live API server: `metadata.ownerReferences`, `metadata.finalizers`, `metadata.labels` and `status.claimed` are all rejected at admission |
-| C2 | The path is read as a JSON Pointer or JSONPath expression, so `~0`, `/`, `[0]` or a quoted segment escapes the intended field | T, E | Low | **High** | **Mitigated**: the charset is an **allowlist** (`[a-z][a-zA-Z0-9]*` per segment), not a denylist of dangerous characters, so nothing outside camelCase is expressible regardless of how the value is later interpreted. Actuation builds a nested merge patch from the validated segments rather than parsing a path expression (`capacity_path.rs::build_merge_patch`) |
-| C3 | The target is an object in an API group the controller was never meant to write | T, E | Low | High | **Mitigated**: `ALLOWED_CAPACITY_TARGET_API_GROUPS` (`src/constants.rs`) is the third allowlist beside the bootstrap and infrastructure ones, checked in the reconciler so the permitted set lives in one greppable place and cannot be widened by a stale CRD. The ClusterRole grants `patch` on exactly those groups, so RBAC is the second gate |
-| C4 | A capacity write destroys in-flight work: a consumer's pool is zeroed while claims are live | T, D | Medium | High | **Mitigated by construction**: actuation is a field write, never a delete, and the inactive value is a *warm-pool* zero: it stops replenishment while claimed work finishes on its own. The consumer owns claim binding and drain, which 5-Spot has no way to reason about. On deactivation the controller writes zero and then **waits** for `spec.handback.drainedPath` to reach zero, up to `handback.timeout`; on expiry it **holds and reports loudly** rather than escalating (ADR 0011 decision 6), because a missed handover is visible and recoverable while killed work is not |
+| C1 | ~~`spec.capacity.path` names `metadata.ownerReferences`, `finalizers` or labels, so a CR author uses the controller's credential to take ownership of, block deletion of, or re-label an object in the target group~~ | T, E | n/a | n/a | **Superseded by ADR 0016: the surface no longer exists.** `spec.capacity.field` is a path *relative to the `spec` of an object 5-Spot built*, so `metadata.` is not rejected, it is unreachable: there is no `metadata` in scope for the path to name. `spec`, `metadata` and `status` in first position are still refused (`capacity_path.rs::validate_capacity_field`), but as *mistakes* rather than threats, because `spec.warmReplicas` here would construct `spec.spec.warmReplicas`. **Historical mitigation, for the record:** the path must match `CAPACITY_PATH_PATTERN` (dot-separated camelCase, so no indices, wildcards, `..`, quotes or `/`) **and** a CEL rule pins it to the `spec.` prefix, so `metadata.` and `status.` are inadmissible (`src/crd.rs`). The reconciler re-validates before any API call (`src/reconcilers/capacity_path.rs`), which is the check that still holds when the deployed CRD is older than the binary, precisely the case a schema cannot defend. Verified against a live API server: `metadata.ownerReferences`, `metadata.finalizers`, `metadata.labels` and `status.claimed` are all rejected at admission |
+| C2 | The path is read as a JSON Pointer or JSONPath expression, so `~0`, `/`, `[0]` or a quoted segment escapes the intended field | T, E | Low | Low | **Mitigated, and its impact downgraded by ADR 0016.** The charset remains an **allowlist** (`[a-z][a-zA-Z0-9]*` per segment), not a denylist of characters someone thought of, so nothing outside camelCase is expressible however the value is later interpreted, and injection walks the validated segments rather than parsing a path expression (`capacity_path.rs::inject_capacity_field`). Impact falls from High to Low because an escape would now reach another field of an object 5-Spot owns and is about to overwrite anyway, not a field of a stranger's |
+| C3 | The controller creates an object in an API group it was never meant to write | T, E | Low | High | **Mitigated**: `ALLOWED_CAPACITY_TARGET_API_GROUPS` (`src/constants.rs`) is the third allowlist beside the bootstrap and infrastructure ones, checked in the reconciler so the permitted set lives in one greppable place and cannot be widened by a stale CRD. The ClusterRole grants `create` and `patch` on exactly those groups, so RBAC is the second gate. The check now gates a **create** rather than a patch, which raises what it is protecting and is why the `kind` e2e installs its stub consumer CRD under the real group rather than widening the allowlist for the test |
+| C4 | A capacity change destroys in-flight work: the capacity object is zeroed, or removed, while claims are live | T, D | Medium | High | **Mitigated by construction, in two parts.** *On a schedule:* actuation is a field write, never a delete, and the inactive value is a *warm-pool* zero: it stops replenishment while claimed work finishes on its own. The consumer owns claim binding and drain, which 5-Spot has no way to reason about. On deactivation the controller writes zero and then **waits** for `spec.handback.drainedPath` to reach zero, up to `handback.timeout`; on expiry it **holds and reports loudly** rather than escalating (ADR 0011 decision 6), because a missed handover is visible and recoverable while killed work is not. *On deletion of the `ScheduledCapacity`:* garbage collection removes the owned object, which cascades to whatever it owns. That is safe only because the consumer re-parents in-use resources away from the capacity object when they are claimed, so the cascade takes the idle capacity and leaves the work. Verified in the reference consumer's code, where a bound member's `ownerReferences` move from the pool to the claim at bind time by recorded decision. It is **not** a property 5-Spot can enforce, so it is §9 assumption 9 and a LOW residual in §8, not a control |
 | C5 | A host is governed by both a `ScheduledMachine` and a `ScheduledCapacity`, so it is drained for handover while capacity is still being sized on it | T, D | Medium | Medium | **Mitigated (ADR 0014).** `spec.nodeName` is compared against every `ScheduledMachine.status.nodeRef.name` in the namespace, and a match sets `HostGovernanceConflict=True` and **drives capacity to zero** (`src/reconcilers/capacity_decision.rs`). The active value is never written to a conflicted object whatever the schedule says, so the fail-closed intent holds where it matters, while zero removes a contradiction that may already exist rather than freezing it. ADR 0011 originally said "refuse to write", which left a value written *before* the conflict standing: the exact state the invariant forbids, observed live. The check is controller-side, not admission, because a `ValidatingAdmissionPolicy` evaluates one request against its own object and its `paramRef` and cannot look up other objects at all. **Residual, now LOW:** a `spec.nodeName` colliding with an unrelated machine zeroes capacity the operator wanted, until the reference is corrected; `spec.nodeName` is optional for exactly that reason. §8 |
-| C6 | The capacity grant compounds the machine controller's CAPI and bootstrap/infrastructure wildcards | E | Low | **High** | **Mitigated: this is the reason for the separate binary.** A distinct ServiceAccount, Deployment and ClusterRole; the machine controller's ClusterRole is not extended (ADR 0011 decision 3). Verified against a live API server with 26 `SubjectAccessReview` assertions: the capacity identity cannot delete or create a CAPI `Machine`, read a Secret, create or delete the governed object, patch a `ScheduledMachine`, or evict a Pod |
-| C7 | An RBAC gap surfaces as a partial write or an opaque 403 mid-actuation | D | Low | Low | **Mitigated**: a pre-flight `SelfSubjectAccessReview` for `patch` on the resolved target runs before the first write, so a missing grant becomes a `TargetResolved=False` condition naming the resource (ADR 0011 decision 5) |
+| C6 | The capacity grant compounds the machine controller's CAPI and bootstrap/infrastructure wildcards | E | Low | **High** | **Mitigated: this is the reason for the separate binary**, and the reason ADR 0016's widened grant does not make the two HIGH residuals in §8 grow. A distinct ServiceAccount, Deployment and ClusterRole; the machine controller's ClusterRole is not extended (ADR 0011 decision 3). Verified against a live API server with 26 `SubjectAccessReview` assertions, and re-asserted in the `kind` e2e in both directions: the capacity identity cannot delete or create a CAPI `Machine`, read a Secret, `delete` the object it owns, patch a `ScheduledMachine` or evict a Pod, and the machine controller cannot `create`, `patch` or `delete` the capacity target group |
+| C7 | An RBAC gap surfaces as a partial write or an opaque 403 mid-actuation | D | Low | Low | **Mitigated**: a pre-flight `SelfSubjectAccessReview` for **both** `create` and `patch` on the resolved target runs before the first write, so a missing grant becomes a `TargetResolved=False` condition naming the resource and the verb (ADR 0011 decision 5, ADR 0016 decision 7). Both verbs are checked because server-side apply needs `create` while the object is absent and `patch` once it exists: checking one would let the controller work until the first window and then stop |
 | C8 | The controller re-patches its own status every reconcile, re-triggering its own watch and flooding the API server | D | Low | Medium | **Mitigated**: condition `lastTransitionTime` is preserved unless the condition's `status` changes, and the computed status is compared against the stored one so a no-op patch is never sent. Found by running against a real API server, which measured ~50 `resourceVersion` bumps/second before the fix; pinned by a test that derives the expected status key set from the type rather than a hand-written list |
 | C9 | A missing or unparseable drain counter is read as "drained", completing a handback that never happened | T, D | Low | Medium | **Mitigated**: `Some(0)` and `None` are deliberately different answers: an unread or non-numeric counter keeps the object in `HandingBack` and says so in the status message, rather than being collapsed to zero (`capacity_path.rs::read_i64_at`) |
+| C10 | **New with ADR 0016.** `spec.template` is an opaque pass-through forwarded as the owned object's whole `spec`, so a `ScheduledCapacity` author has 5-Spot's credential instantiate a spec they wrote: an oversized pool, a privileged guest template, an image from a registry they choose | T, E | Medium | **High** | **Partially mitigated; a recorded residual.** Bounded three ways: the API-group allowlist (C3) fixes *which* kinds can be created at all; the separate identity (C6) means the created object cannot be a CAPI `Machine` or anything with cluster-level reach; and the consumer's own admission policies validate whatever the owned object goes on to create, which is where a guest's privilege is actually decided. 5-Spot itself does **not** inspect the template, by design: typing it would silently prune fields the consumer's CRD grew since 5-Spot last shipped. This is the **same residual as `bootstrapSpec.spec`** (§8), now in a second instance, and §9 assumption 8 applies unchanged: `create` on `scheduledcapacities` must be restricted like `create` on `scheduledmachines` |
+| C11 | **New with ADR 0016.** An object already exists under the name a `ScheduledCapacity` derives, owned by the consumer or by another party, and 5-Spot adopts and overwrites it. Conversely, pre-creating such an object blocks the capacity from ever being declared | T, D, E | Medium | **High** | **Mitigated**: before any write the reconciler requires the existing object to carry a **controller** `ownerReference` whose **`uid`** is this `ScheduledCapacity`'s, and otherwise refuses with `TargetResolved=False` / `TargetNotOwned` (`scheduled_capacity.rs::is_owned_by`). Matching on `uid` rather than name or kind is what makes it sound: a name and kind can be written by anyone who can write the object's metadata, while a `uid` identifies one instance the API server issued, and garbage collection keys off the same field so the check and the cascade agree by construction. A non-controller reference does not count. This check is the write-side half of the "only objects you created" constraint RBAC cannot express, and it is the precondition that makes the force-apply safe. The denial-of-service direction (pre-create to block) is the **only** outcome left available, and it is visible on the condition rather than silent |
+| C12 | **New with ADR 0016.** Server-side apply with `force` silently takes ownership of fields another manager owns | T | Low | Medium | **Mitigated by the pairing with C11, not by `force` being safe in itself.** `force` is used, which on a contested object would steal field ownership from whoever held it. It is sound here only because C11 has already established that the object carries 5-Spot's own controller `ownerReference`, so there is no legitimate other manager of its `spec`; the consumer's reconciler writes only `status`, verified in its code. If C11 were ever weakened, `force` would become a takeover primitive, so the two must be read as one control (`scheduled_capacity.rs::apply_owned_object`) |
 
 ---
 
@@ -470,11 +530,13 @@ then writes with its own, broader credential: a confused-deputy shape.
 | Opt-in `5spot.finos.org/reclaim-agent: enabled` nodeSelector | `deploy/node-agent/daemonset.yaml` | T13 — `CAP_NET_ADMIN` scope-bounding |
 | Loop-protection (`RapidReReclaim` warning + counter) | `src/loop_protection.rs` + `src/reconcilers/helpers.rs::handle_emergency_remove` | D8 — re-enable loop |
 | Agent pod-security exception boundary (`5spot-agent-pod-security` VAP, deny-by-default in `5spot-system`) | `deploy/admission/agent-pod-security-policy.yaml` + binding (ADR 0004) | E5 — abuse of the namespace-wide PSA/OPA/Kyverno exemption the privileged agents require |
-| Capacity write path constrained to `spec.` camelCase segments (CRD pattern + CEL rule, re-checked in the reconciler) | `src/crd.rs`, `src/reconcilers/capacity_path.rs` | C1, C2: confused-deputy write to `metadata.`/`status.`, pointer-escape |
-| Capacity target API group allowlist, checked in the reconciler and mirrored in RBAC | `src/constants.rs` (`ALLOWED_CAPACITY_TARGET_API_GROUPS`), `deploy/capacity-controller/clusterrole.yaml` | C3: write to an unintended API group |
-| Separate capacity identity: own binary, Deployment, ServiceAccount and ClusterRole; `patch` only, no create/delete/secrets/CAPI | `deploy/capacity-controller/` (ADR 0011) | C6: compounding the machine controller's CAPI and bootstrap wildcards |
-| Pre-flight `SelfSubjectAccessReview` for `patch` before the first capacity write | `src/reconcilers/scheduled_capacity.rs` | C7: opaque 403 or partial write on an RBAC gap |
-| Cooperative bounded handback: write zero, wait on `drainedPath`, hold and report on timeout; never delete or force | `src/reconcilers/capacity_decision.rs` (ADR 0011 decision 6) | C4: destroying a consumer's in-flight work |
+| Capacity field rooted at the owned object's `spec`, constrained to camelCase segments with reserved roots refused (CRD pattern, re-checked in the reconciler) | `src/crd.rs`, `src/reconcilers/capacity_path.rs` | C2: pointer-escape. **C1 no longer applies**: `metadata.` is unreachable rather than rejected (ADR 0016) |
+| Capacity target API group allowlist, checked in the reconciler and mirrored in RBAC; now gates a **create** | `src/constants.rs` (`ALLOWED_CAPACITY_TARGET_API_GROUPS`), `deploy/capacity-controller/clusterrole.yaml` | C3, C10: creating an object in an unintended API group |
+| Separate capacity identity: own binary, Deployment, ServiceAccount and ClusterRole; `create` + `patch` on one group, **no `delete` anywhere**, no secrets, no CAPI | `deploy/capacity-controller/` (ADR 0011, ADR 0016) | C6, C10: compounding the machine controller's CAPI and bootstrap wildcards |
+| Pre-flight `SelfSubjectAccessReview` for **both** `create` and `patch` before the first capacity write | `src/reconcilers/scheduled_capacity.rs` | C7: opaque 403, partial write, or working until the first window and then stopping |
+| Cooperative bounded handback: write zero, wait on `drainedPath`, hold and report on timeout; never delete on a schedule | `src/reconcilers/capacity_decision.rs` (ADR 0011 decision 6) | C4: destroying in-flight work |
+| `uid`-matched controller-ownership check before any write to the capacity object | `src/reconcilers/scheduled_capacity.rs` (`is_owned_by`) | C11, C12: adopting a same-named object someone else owns; making a `force` apply safe |
+| Removal by owner-reference garbage collection, with **no `delete` verb granted** | `deploy/capacity-controller/clusterrole.yaml`, `src/reconcilers/scheduled_capacity.rs` (`build_owned_object`) | C11: a `delete` grant on the group could not be scoped to objects 5-Spot created |
 | No-op status patch guard and preserved condition timestamps | `src/reconcilers/scheduled_capacity.rs` | C8: self-triggering reconcile loop against the API server |
 
 ### Supply Chain (TB0 — contributor / CI to published artifact)
@@ -551,6 +613,49 @@ x-kubernetes-validations:
 
 ---
 
+### HIGH: An opaque `spec.template` is instantiated by 5-Spot's credential
+
+**New with ADR 0016**, and the second instance of the residual already recorded
+for `bootstrapSpec.spec` rather than a new class of risk. `ScheduledCapacity.spec.template`
+is forwarded verbatim as the owned object's `spec`, so whatever the consumer's CRD
+admits, a `ScheduledCapacity` author can write and 5-Spot's ServiceAccount will
+create: an oversized pool, a guest template with privileges the author should not
+have, an image from a registry they chose.
+
+It is not typed on purpose. A typed schema would silently **prune** fields the
+consumer's CRD grew since 5-Spot last shipped, turning a correct template into an
+incorrect object with no error anywhere, which is a worse failure than the one it
+would prevent.
+
+**Bounded by:** the API-group allowlist (C3), which fixes which kinds can be
+created at all; the separate identity (C6), so the created object can never be a
+CAPI `Machine` or anything with cluster-level reach; and the consumer's own
+admission policies, which are where a guest's privilege is actually decided.
+
+**Revisit when:** a consumer publishes a stable, versioned subset of its pool spec
+that 5-Spot could reasonably pin, or when an admission policy on
+`scheduledcapacities` becomes worth writing against a concrete deployment's
+template shape.
+
+### LOW: Deleting a `ScheduledCapacity` relies on the consumer re-parenting claimed work
+
+**New with ADR 0016.** Garbage collection removes the owned capacity object, which
+cascades to whatever that object owns. Only idle capacity should go with it, and
+that is true because the consumer moves an in-use resource's `ownerReferences`
+from the capacity object to the claim at bind time. Verified in the reference
+consumer's code, as a recorded decision rather than an accident.
+
+It is not a control 5-Spot holds, and it is not stated as a requirement in the
+published spot-schedule contract, so a different consumer that keeps owning its
+in-use resources from the capacity object would lose work when a
+`ScheduledCapacity` is deleted. The window is narrow (it needs an operator to
+delete the `ScheduledCapacity`, not merely to close the schedule, since window
+close only writes zero) which is why this is LOW rather than higher.
+
+**Revisit when:** a second capacity consumer appears, or when the requirement is
+written into `docs/src/reference/` as a published expectation on consumers rather
+than an observation about one of them.
+
 ### LOW: A mis-set `spec.nodeName` zeroes capacity the operator wanted
 
 Closing the former MEDIUM (a conflict leaving written capacity in place) by
@@ -597,6 +702,23 @@ changes are not taken over by the new identity and persist until the consumer
 prunes them. 5-Spot neither writes nor reads those rows.
 
 **Revisit when:** a consumer asks 5-Spot to participate in pruning.
+
+### LOW: Objects written under ADR 0011's patch-only scheme are left behind
+
+**New with ADR 0016**, and operational rather than adversarial. A deployment
+running `v0.3.2` patched `spec.warmReplicas` on a consumer-owned object named by
+`spec.targetRef`. After the upgrade that object is no longer referenced by
+anything: 5-Spot creates its own, and the ownership check (C11) means it will
+never touch the old one again. The last value 5-Spot wrote therefore stands on it
+until its owner reconciles it away.
+
+Nothing can be automated here without the `delete` verb this design deliberately
+does not hold, and the object was never 5-Spot's to remove. The upgrade note in
+`.claude/CHANGELOG.md` says to delete and recreate affected `ScheduledCapacity`
+objects, which leaves the consumer's object to its owner.
+
+**Revisit when:** never, for 5-Spot. It closes when operators have completed the
+`v0.3.2` migration.
 
 ### MEDIUM — Node-side agents hold cluster-wide `nodes: patch`
 
@@ -660,7 +782,9 @@ The following conditions are assumed to be true for this threat model to hold:
 5. **Cluster network is trusted** — the metrics and health endpoints are not accessible from outside the cluster.
 6. **Node-level isolation** — physical machines managed by 5-Spot do not share sensitive workloads with other tenants.
 7. **The capacity consumer enforces its own drain semantics**: 5-Spot writes a capacity field and waits; it has no way to evict, reclaim or account for work already running inside the slice. A consumer that reports drained while work continues, or that never reports at all, is outside 5-Spot's control (C4, C9). This is the deliberate division of labour in ADR 0011: the consumer owns claim binding and drain, 5-Spot owns only the calendar.
-8. **`create` on `scheduledcapacities` is restricted**: the field path in a `ScheduledCapacity` is written by the controller with its own credential, so the grant is a confused-deputy surface. The path is constrained (C1, C2) and the target group is allowlisted (C3), but whoever may create one still chooses which allowlisted object gets scaled and by how much. Treat it with the same care as `create` on `scheduledmachines`.
+8. **`create` on `scheduledcapacities` is restricted**: a `ScheduledCapacity` supplies the whole `spec` of an object the controller then creates with its own credential (`spec.template`, C10). The target group is allowlisted (C3) and the kind is fixed per object, but whoever may create one still chooses what gets created and how large it is. ADR 0016 changed the *reason* this assumption is needed, not whether it is: the confused-deputy path is gone, and an author-supplied spec instantiated by a privileged credential has taken its place. Treat it with the same care as `create` on `scheduledmachines`, which carries the identical `bootstrapSpec.spec` shape.
+9. **The capacity consumer re-parents in-use resources away from the capacity object.** Deleting a `ScheduledCapacity` garbage-collects the object 5-Spot owns, and the cascade reaches whatever that object owns. The reference consumer moves a claimed member's `ownerReferences` to its claim at bind time, so only idle capacity goes with the cascade. A consumer that does not do this loses in-flight work on a `ScheduledCapacity` deletion. 5-Spot cannot verify or enforce this, and the published contract does not yet require it (§8).
+10. **No other writer owns the capacity object's `spec`.** 5-Spot applies the complete spec it owns with `force`, which is sound only while the object is genuinely its own: the `uid`-matched ownership check (C11) establishes that, and the reference consumer's reconciler writes only `status`. A consumer that began writing the pool's `spec` would be in a field-manager fight that `force` would win silently and wrongly.
 
 ---
 

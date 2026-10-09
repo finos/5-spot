@@ -46,8 +46,9 @@ refactors) need neither. When unsure, **write the ADR.**
 | [0008](./0008-autovex-presubmission-gate.md) | Auto-VEX generated and signed off before submission, enforced by a byte-exact CI gate | Accepted |
 | [0009](./0009-unify-schedule-as-provider-reference.md) | Unify activation under `spec.schedule` as a provider reference; ship `TimeBasedSpotSchedule` as the core provider | Accepted |
 | [0010](./0010-base-image-pins-on-from-line.md) | Base-image digests are pinned on the `FROM` line so Dependabot re-pins them | Accepted |
-| [0011](./0011-schedule-gated-capacity-separate-controller.md) | Schedule-gated capacity: a `ScheduledCapacity` CRD and its own controller, scaling a foreign object rather than creating one | Accepted |
+| [0011](./0011-schedule-gated-capacity-separate-controller.md) | Schedule-gated capacity: a `ScheduledCapacity` CRD and its own controller, scaling a foreign object rather than creating one | Accepted (decisions 1, 2, 5 superseded by 0016) |
 | [0012](./0012-kata-agent-validates-its-own-input.md) | The kata-config agent validates its own Node annotation, and the restart argv terminates systemctl's options | Accepted |
 | [0013](./0013-kata-config-ref-annotation-admission-policy.md) | The `kata-config-ref` Node annotation is writable by the controller only, enforced by a workload-cluster VAP | Accepted |
 | [0014](./0014-zero-capacity-on-governance-conflict.md) | Drive capacity to zero on a host-governance conflict (amends ADR-0011 decision 7) | Accepted |
 | [0015](./0015-dependency-internalization-policy.md) | Internalize a dependency when its used surface is 500 lines or less | Accepted |
+| [0016](./0016-own-the-capacity-object.md) | 5-Spot creates and owns the capacity object it scales (supersedes ADR-0011 decisions 1, 2, 5) | Accepted |

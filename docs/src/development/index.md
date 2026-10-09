@@ -76,11 +76,12 @@ the table below is a convenience copy.
 | [0008](https://github.com/finos/5-spot/blob/main/docs/adr/0008-autovex-presubmission-gate.md) | Auto-VEX signed off before submission, enforced in CI | Accepted |
 | [0009](https://github.com/finos/5-spot/blob/main/docs/adr/0009-unify-schedule-as-provider-reference.md) | Unify activation under `spec.schedule` as a provider reference | Accepted |
 | [0010](https://github.com/finos/5-spot/blob/main/docs/adr/0010-base-image-pins-on-from-line.md) | Base-image digests pinned on the `FROM` line | Accepted |
-| [0011](https://github.com/finos/5-spot/blob/main/docs/adr/0011-schedule-gated-capacity-separate-controller.md) | Schedule-gated capacity in its own controller, scaling rather than creating | Accepted |
+| [0011](https://github.com/finos/5-spot/blob/main/docs/adr/0011-schedule-gated-capacity-separate-controller.md) | Schedule-gated capacity in its own controller, scaling rather than creating | Accepted (decisions 1, 2, 5 superseded by 0016) |
 | [0012](https://github.com/finos/5-spot/blob/main/docs/adr/0012-kata-agent-validates-its-own-input.md) | The kata-config agent validates its own Node annotation; the restart argv terminates options | Accepted |
 | [0013](https://github.com/finos/5-spot/blob/main/docs/adr/0013-kata-config-ref-annotation-admission-policy.md) | The `kata-config-ref` Node annotation is controller-writable only, enforced at admission | Accepted |
 | [0014](https://github.com/finos/5-spot/blob/main/docs/adr/0014-zero-capacity-on-governance-conflict.md) | Drive capacity to zero on a host-governance conflict | Accepted |
 | [0015](https://github.com/finos/5-spot/blob/main/docs/adr/0015-dependency-internalization-policy.md) | Internalize a dependency when its used surface is 500 lines or less | Accepted |
+| [0016](https://github.com/finos/5-spot/blob/main/docs/adr/0016-own-the-capacity-object.md) | 5-Spot creates and owns the capacity object it scales | Accepted |
 
 Start with **0001** for the methodology, **0006** and **0009** for how
 activation works, **0007** before touching a CRD, and **0004** before deploying

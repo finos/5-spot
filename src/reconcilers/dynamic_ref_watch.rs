@@ -222,24 +222,29 @@ pub fn capacity_schedule_key_for(capacity: &ScheduledCapacity) -> Option<Provide
 }
 
 /// The [`ProviderKey`] a `ScheduledCapacity`'s `spec.targetRef` references:
-/// the **foreign object whose capacity field is gated** (ADR 0011).
+/// the **object whose capacity field 5-Spot owns and scales** (ADR 0011,
+/// reshaped by ADR 0016).
 ///
 /// Watching it is what makes handback event-driven. The controller writes zero
 /// and then waits for the consumer's `spec.handback.drainedPath` to reach zero;
-/// without this watch it would have to poll the target to notice, which the
-/// event-driven rule forbids. The periodic requeue that remains
+/// without this watch it would have to poll to notice, which the event-driven
+/// rule forbids. The periodic requeue that remains
 /// ([`CAPACITY_HANDBACK_DEADLINE_CHECK_SECS`](crate::constants::CAPACITY_HANDBACK_DEADLINE_CHECK_SECS))
-/// exists only to notice an expired deadline when no further target event
-/// arrives at all.
+/// exists only to notice an expired deadline when no further event arrives at
+/// all.
+///
+/// The object's name is **derived**, not referenced: it is the
+/// `ScheduledCapacity`'s own name in its own namespace, which is what makes the
+/// two impossible to point at different things (ADR 0016 decision 1).
 #[must_use]
 pub fn capacity_target_key_for(capacity: &ScheduledCapacity) -> Option<ProviderKey> {
-    let reference = &capacity.spec.target_ref;
+    let target = &capacity.spec.target;
     let namespace = ResourceExt::namespace(capacity)?;
-    let (group, version) = reference.api_version.split_once('/')?;
+    let (group, version) = target.api_version.split_once('/')?;
     Some(ProviderKey {
-        gvk: GroupVersionKind::gvk(group, version, &reference.kind),
+        gvk: GroupVersionKind::gvk(group, version, &target.kind),
         namespace,
-        name: reference.name.clone(),
+        name: ResourceExt::name_any(capacity),
     })
 }
 

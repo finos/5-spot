@@ -19,7 +19,7 @@ spec:
     - jsonPath: .status.writtenValue
       name: Written
       type: integer
-    - jsonPath: .spec.targetRef.kind
+    - jsonPath: .spec.target.kind
       name: Target
       type: string
     - jsonPath: .spec.schedule.kind
@@ -44,16 +44,25 @@ spec:
         properties:
           spec:
             description: |-
-              Schedule-gated capacity on a foreign object (ADR 0011).
+              Schedule-gated capacity (ADR 0011, actuation per ADR 0016).
 
               The **non-handover** pattern. A [`ScheduledMachine`] answers "this metal
               leaves the cluster when the schedule closes"; a `ScheduledCapacity` answers
               "this metal stays, and a bounded slice of it is conceded while the schedule
-              is open". It gates exactly one numeric field on an object 5-Spot does not
-              own, and it **never creates or deletes that object**: writing a capacity
-              field is reversible and bounded, while deleting a consumer's pool with live
-              claims would destroy in-flight work using knowledge this controller does not
-              have.
+              is open".
+
+              5-Spot **creates and owns** the object that carries that slice, in this
+              resource's own namespace and under this resource's own name, and scales one
+              numeric field on it. That is symmetric with [`ScheduledMachine`], which
+              creates the CAPI `Machine` the schedule is the reason for, rather than
+              reaching into an object somebody else made.
+
+              Window close scales the owned object to **zero** and never deletes it, so
+              its identity and the consumer's warm state survive to the next window.
+              Removal happens only when this resource is deleted, by Kubernetes
+              owner-reference garbage collection: the controller holds no `delete` verb at
+              all, because RBAC cannot express "only objects you created" and garbage
+              collection does not need it to.
 
               Reconciled by the separate `5spot-capacity-controller` binary under its own
               ServiceAccount, so compromising it cannot delete a CAPI `Machine` and
@@ -61,47 +70,45 @@ spec:
             properties:
               capacity:
                 description: |-
-                  **Required** description of the single field to write and the value to
+                  **Required** name of the single numeric field to scale, and the value to
                   write while the schedule is active.
                 properties:
                   activeValue:
                     description: |-
-                      Value written to [`path`](Self::path) while the schedule is active.
+                      Value written to [`field`](Self::field) while the schedule is active.
 
                       At least `1`. The **inactive** value is fixed at
                       `CAPACITY_INACTIVE_VALUE` and is not configurable: a schedule that
                       hands nothing back is not a schedule, which also makes an active value
-                      of zero meaningless.
+                      of zero meaningless. Window close writes that zero and leaves the object
+                      standing; it is never a delete.
                     format: int64
                     maximum: 1000000.0
                     minimum: 1.0
                     type: integer
-                  path:
+                  field:
                     description: |-
-                      Dot-separated path of the numeric field to write on the target, e.g.
-                      `spec.warmReplicas`.
+                      Name of the numeric field to scale, **relative to the owned object's
+                      `spec`**: `warmReplicas`, not `spec.warmReplicas`. Dots are allowed for
+                      a nested knob (`scale.warm`).
 
                       # Security
 
-                      **This field is a control.** It names a field on an object 5-Spot does
-                      not own, so it is restricted to dot-separated camelCase segments and
-                      pinned to the `spec.` prefix by a CEL rule. `metadata.` is unreachable
-                      (a CR author who could write `ownerReferences`, `finalizers` or labels
-                      on a foreign object would hold an elevation primitive) and so is
-                      `status.` (a controller's own report is not a knob). Array indices,
-                      wildcards, `..`, quotes and `/` are all unexpressible, so the value can
-                      never be abused as a JSON Pointer escape. The reconciler re-validates
-                      it, because the schema only holds while the deployed CRD is current.
+                      Rooting this at `spec` rather than validating its prefix is why it is no
+                      longer a control (ADR 0016 decision 3). `metadata.` and `status.` are
+                      not rejected, they are **unexpressible**: whatever this names is nested
+                      under the `spec` of an object 5-Spot built before anything is sent, so
+                      there is no reachable `ownerReferences`, `finalizers` or label to write
+                      and no JSON Pointer escape to attempt. What the schema still enforces is
+                      charset and depth, and the reconciler re-validates both because the
+                      schema only holds while the deployed CRD is current.
                     maxLength: 253
-                    minLength: 6
-                    pattern: ^[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9]*){0,7}$
+                    minLength: 1
+                    pattern: ^[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9]*){0,6}$
                     type: string
-                    x-kubernetes-validations:
-                    - message: spec.capacity.path must start with 'spec.'; metadata. and status. paths are not writable
-                      rule: self.startsWith('spec.')
                 required:
                 - activeValue
-                - path
+                - field
                 type: object
               enabled:
                 default: true
@@ -209,19 +216,22 @@ spec:
                 - kind
                 - name
                 type: object
-              targetRef:
+              target:
                 description: |-
-                  **Required** reference to the object whose capacity field this schedule
-                  gates. Must live in **this `ScheduledCapacity`'s namespace**, and its
-                  API group must be in `ALLOWED_CAPACITY_TARGET_API_GROUPS`.
+                  **Required, immutable** kind of the object 5-Spot creates and owns to
+                  carry this capacity. Its API group must be in
+                  `ALLOWED_CAPACITY_TARGET_API_GROUPS`.
 
-                  5-Spot patches one field on it and nothing else: no `ownerReference` is
-                  set, no other field is touched, and the object is never created or
-                  deleted.
+                  There is deliberately **no name**: the owned object takes this
+                  `ScheduledCapacity`'s own name, in its own namespace, so the two can
+                  never diverge and an edit can never orphan a previously owned object.
+                  For the same reason the whole field is immutable (ADR 0016 decision 1):
+                  changing the kind would leave the object of the old kind behind,
+                  unmanaged, still holding an `ownerReference`.
                 properties:
                   apiVersion:
                     description: |-
-                      API version of the target, `group/version` (e.g.
+                      API version of the owned object, `group/version` (e.g.
                       `banlieue.io/v1alpha1`). The group must be in
                       `ALLOWED_CAPACITY_TARGET_API_GROUPS`, enforced in the reconciler.
 
@@ -235,26 +245,46 @@ spec:
                     pattern: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?/[A-Za-z0-9][A-Za-z0-9.-]*$
                     type: string
                   kind:
-                    description: Kind of the target resource, e.g. `VirtualMachinePool`.
+                    description: Kind of the owned resource, e.g. `VirtualMachinePool`.
                     maxLength: 63
                     minLength: 1
                     pattern: ^[A-Z][A-Za-z0-9]*$
                     type: string
-                  name:
-                    description: Name of the target object in **this `ScheduledCapacity`'s namespace**.
-                    maxLength: 253
-                    minLength: 1
-                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
-                    type: string
                 required:
                 - apiVersion
                 - kind
-                - name
                 type: object
+                x-kubernetes-validations:
+                - message: spec.target is immutable; delete and recreate the ScheduledCapacity to change the owned object's kind
+                  rule: self == oldSelf
+              template:
+                description: |-
+                  **Required** template forwarded verbatim as the owned object's `spec`,
+                  with [`capacity.field`](CapacityWrite::field) injected into it.
+
+                  Opaque by design (ADR 0016 decision 2), the same pass-through that
+                  [`ScheduledMachineSpec::bootstrap_spec`] uses. 5-Spot does not and will
+                  not model a consumer's schema: the reference consumer's pool needs
+                  `maxReplicas`, `readiness` and a nested VM template, none of which is
+                  5-Spot's business.
+
+                  # Security
+
+                  Whatever the consumer's CRD admits can be written here, and 5-Spot's
+                  ServiceAccount creates it. This carries the same residual as an embedded
+                  bootstrap spec, bounded the same two ways: the API-group allowlist, and
+                  the consumer's own admission policies on whatever the owned object goes
+                  on to create.
+
+                  It must **not** itself set `capacity.field`: one source of truth, or the
+                  template and the schedule fight on every reconcile.
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
             required:
             - capacity
             - schedule
-            - targetRef
+            - target
+            - template
             type: object
           status:
             description: |-

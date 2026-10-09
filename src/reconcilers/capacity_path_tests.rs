@@ -4,144 +4,130 @@
 #[allow(clippy::module_inception)]
 mod tests {
     use super::super::*;
-    use crate::constants::{CAPACITY_INACTIVE_VALUE, CAPACITY_PATH_MAX_SEGMENTS};
-    use serde_json::json;
+    use crate::constants::{
+        CAPACITY_FIELD_MAX_SEGMENTS, CAPACITY_INACTIVE_VALUE, CAPACITY_PATH_MAX_SEGMENTS,
+    };
+    use serde_json::{json, Value};
 
     // ========================================================================
-    // validate_write_path - the happy path
+    // validate_capacity_field - the happy path
     // ========================================================================
 
     #[test]
-    fn test_write_path_accepts_the_canonical_consumer_field() {
-        let segments = validate_write_path("spec.warmReplicas").expect("valid");
-        assert_eq!(segments, vec!["spec", "warmReplicas"]);
+    fn test_capacity_field_accepts_the_canonical_consumer_knob() {
+        let segments = validate_capacity_field("warmReplicas").expect("valid");
+        assert_eq!(segments, vec!["warmReplicas"]);
     }
 
     #[test]
-    fn test_write_path_accepts_deep_nesting_up_to_the_cap() {
-        let path = "spec.a.b.c.d.e.f.g";
-        let segments = validate_write_path(path).expect("8 segments is the cap");
-        assert_eq!(segments.len(), CAPACITY_PATH_MAX_SEGMENTS);
+    fn test_capacity_field_accepts_a_nested_knob_up_to_the_cap() {
+        let path = "a.b.c.d.e.f.g";
+        let segments = validate_capacity_field(path).expect("7 segments is the cap");
+        assert_eq!(segments.len(), CAPACITY_FIELD_MAX_SEGMENTS);
     }
 
     #[test]
-    fn test_write_path_accepts_digits_inside_a_segment() {
-        assert!(validate_write_path("spec.pool2Replicas").is_ok());
+    fn test_capacity_field_accepts_digits_inside_a_segment() {
+        assert!(validate_capacity_field("pool2Replicas").is_ok());
     }
 
     // ========================================================================
-    // validate_write_path - the rejections that make this a control
+    // validate_capacity_field - the rejections
     // ========================================================================
 
-    /// The single most important rejection: `metadata.` would let a CR author
-    /// write `ownerReferences`, `finalizers` or labels on an object 5-Spot does
-    /// not own, which is an elevation primitive, not a capacity knob.
+    /// ADR 0016 decision 3: the field is relative to the owned object's `spec`,
+    /// so a `spec.` prefix is a caller mistake that would produce
+    /// `spec.spec.warmReplicas`. It is rejected as an ordinary charset-valid
+    /// path with a reserved first segment, not as a security control: there is
+    /// nothing dangerous left for it to reach.
     #[test]
-    fn test_write_path_rejects_metadata_prefix() {
-        for path in [
-            "metadata.ownerReferences",
-            "metadata.finalizers",
-            "metadata.labels",
-            "metadata.annotations",
-            "metadata.name",
-        ] {
-            let error = validate_write_path(path).expect_err(path);
+    fn test_capacity_field_rejects_a_root_segment_that_is_already_implicit() {
+        for path in ["spec.warmReplicas", "metadata.labels", "status.claimed"] {
+            let error = validate_capacity_field(path).expect_err(path);
             assert!(
-                matches!(error, CapacityPathError::WrongPrefix { .. }),
-                "{path} must be rejected as a wrong prefix, got {error:?}"
-            );
-        }
-    }
-
-    /// A status is a controller's own report, not a knob.
-    #[test]
-    fn test_write_path_rejects_status_prefix() {
-        let error = validate_write_path("status.claimed").expect_err("status is not writable");
-        assert!(matches!(error, CapacityPathError::WrongPrefix { .. }));
-    }
-
-    /// `spec` alone has no field to write, and a bare prefix match must not be
-    /// mistaken for one.
-    #[test]
-    fn test_write_path_rejects_bare_prefix_and_trailing_dot() {
-        for path in ["spec", "spec.", "spec..", ".spec.x"] {
-            assert!(
-                validate_write_path(path).is_err(),
-                "{path} must be rejected"
+                matches!(error, CapacityPathError::ReservedRootSegment { .. }),
+                "{path} must be rejected as a reserved root segment, got {error:?}"
             );
         }
     }
 
     #[test]
-    fn test_write_path_rejects_empty() {
-        assert!(matches!(
-            validate_write_path("").expect_err("empty"),
-            CapacityPathError::Empty
-        ));
-    }
-
-    /// No JSON Pointer escape, no array index, no traversal, no quoting. These
-    /// are the shapes that would turn a field name into an expression.
-    #[test]
-    fn test_write_path_rejects_pointer_index_and_traversal_syntax() {
-        for path in [
-            "spec.items[0].count",
-            "spec.items[*]",
-            "spec/warmReplicas",
-            "spec.../etc/passwd",
-            "spec..warmReplicas",
-            "spec.\"quoted\"",
-            "spec.'quoted'",
-            "spec.*",
-            "spec.a b",
-            "spec.a-b",
-            "spec.a_b",
-            "spec.$ref",
-            "spec.~0",
-            "spec.a\nb",
-            "spec.a\tb",
-        ] {
+    fn test_capacity_field_rejects_empty_and_malformed_dots() {
+        for path in ["", "warmReplicas.", ".warmReplicas", "a..b"] {
             assert!(
-                validate_write_path(path).is_err(),
+                validate_capacity_field(path).is_err(),
                 "{path:?} must be rejected"
             );
         }
     }
 
-    /// Kubernetes field names are camelCase; an uppercase first letter would be
-    /// a type name, not a field, and admitting it widens the charset for no
-    /// gain.
+    /// No JSON Pointer escape, no array index, no traversal, no quoting. These
+    /// cannot reach anything dangerous any more, but they would still construct
+    /// a nonsense field name on an object 5-Spot creates, and an allowlist is
+    /// cheaper to reason about than an argument about which are harmless.
     #[test]
-    fn test_write_path_rejects_segment_not_starting_lowercase() {
-        for path in ["spec.WarmReplicas", "spec.2replicas", "Spec.warmReplicas"] {
+    fn test_capacity_field_rejects_pointer_index_and_traversal_syntax() {
+        for path in [
+            "items[0].count",
+            "items[*]",
+            "warm/replicas",
+            "../etc/passwd",
+            "\"quoted\"",
+            "'quoted'",
+            "*",
+            "a b",
+            "a-b",
+            "a_b",
+            "$ref",
+            "~0",
+            "a\nb",
+            "a\tb",
+        ] {
             assert!(
-                validate_write_path(path).is_err(),
+                validate_capacity_field(path).is_err(),
+                "{path:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_capacity_field_rejects_segment_not_starting_lowercase() {
+        for path in ["WarmReplicas", "2replicas", "a.B"] {
+            assert!(
+                validate_capacity_field(path).is_err(),
                 "{path} must be rejected"
             );
         }
     }
 
     #[test]
-    fn test_write_path_rejects_more_segments_than_the_cap() {
-        let path = "spec.a.b.c.d.e.f.g.h"; // 9
-        let error = validate_write_path(path).expect_err("over the cap");
+    fn test_capacity_field_rejects_more_segments_than_the_cap() {
+        let path = "a.b.c.d.e.f.g.h"; // 8, one over
+        let error = validate_capacity_field(path).expect_err("over the cap");
         assert!(
             matches!(
                 error,
-                CapacityPathError::TooManySegments { found: 9, max: 8 }
+                CapacityPathError::TooManySegments { found: 8, max: 7 }
             ),
             "got {error:?}"
         );
     }
 
     #[test]
-    fn test_write_path_rejects_over_length() {
+    fn test_capacity_field_rejects_over_length() {
         let long_segment = "a".repeat(300);
-        let path = format!("spec.{long_segment}");
         assert!(matches!(
-            validate_write_path(&path).expect_err("too long"),
+            validate_capacity_field(&long_segment).expect_err("too long"),
             CapacityPathError::TooLong { .. }
         ));
+    }
+
+    /// The field cap is one below the path cap because `spec` occupies the
+    /// first position in the object actually constructed. If the two ever drift
+    /// the controller would build an object deeper than the schema admits.
+    #[test]
+    fn test_capacity_field_cap_leaves_room_for_the_implicit_spec_root() {
+        assert_eq!(CAPACITY_FIELD_MAX_SEGMENTS + 1, CAPACITY_PATH_MAX_SEGMENTS);
     }
 
     // ========================================================================
@@ -179,60 +165,90 @@ mod tests {
     }
 
     // ========================================================================
-    // build_merge_patch
+    // inject_capacity_field
     // ========================================================================
 
     #[test]
-    fn test_build_merge_patch_nests_one_level() {
-        let patch = build_merge_patch("spec.warmReplicas", 10).expect("valid");
-        assert_eq!(patch, json!({ "spec": { "warmReplicas": 10 } }));
-    }
-
-    #[test]
-    fn test_build_merge_patch_nests_deeply() {
-        let patch = build_merge_patch("spec.budget.cpu.cores", 16).expect("valid");
+    fn test_inject_sets_a_top_level_knob_and_preserves_the_template() {
+        let template = json!({ "maxReplicas": 20, "readiness": "GuestReady" });
+        let spec = inject_capacity_field(&template, "warmReplicas", 10).expect("valid");
         assert_eq!(
-            patch,
-            json!({ "spec": { "budget": { "cpu": { "cores": 16 } } } })
+            spec,
+            json!({ "maxReplicas": 20, "readiness": "GuestReady", "warmReplicas": 10 })
         );
     }
 
-    /// Zero is the inactive value and must serialise as a real `0`, not be
-    /// elided: handback depends on the target actually receiving it.
     #[test]
-    fn test_build_merge_patch_writes_an_explicit_zero() {
-        let patch = build_merge_patch("spec.warmReplicas", CAPACITY_INACTIVE_VALUE).expect("valid");
-        assert_eq!(patch, json!({ "spec": { "warmReplicas": 0 } }));
+    fn test_inject_creates_missing_intermediate_objects() {
+        let template = json!({ "maxReplicas": 20 });
+        let spec = inject_capacity_field(&template, "scale.warm", 4).expect("valid");
+        assert_eq!(spec, json!({ "maxReplicas": 20, "scale": { "warm": 4 } }));
+    }
+
+    /// Injecting must not flatten a nested sibling that already exists.
+    #[test]
+    fn test_inject_merges_into_an_existing_intermediate() {
+        let template = json!({ "scale": { "max": 20, "policy": "fast" } });
+        let spec = inject_capacity_field(&template, "scale.warm", 4).expect("valid");
         assert_eq!(
-            patch.pointer("/spec/warmReplicas").and_then(|v| v.as_i64()),
+            spec,
+            json!({ "scale": { "max": 20, "policy": "fast", "warm": 4 } })
+        );
+    }
+
+    /// Zero is the inactive value. It must land as a real `0` rather than be
+    /// elided, because window close depends on the owned object receiving it.
+    #[test]
+    fn test_inject_writes_an_explicit_zero() {
+        let spec =
+            inject_capacity_field(&json!({}), "warmReplicas", CAPACITY_INACTIVE_VALUE).expect("ok");
+        assert_eq!(
+            spec.pointer("/warmReplicas").and_then(Value::as_i64),
             Some(0)
         );
     }
 
-    /// A merge patch touches exactly the named field. Anything else in the
-    /// patch body would be 5-Spot writing a field nobody asked it to.
+    /// One source of truth (ADR 0016 decision 3). A template that sets the knob
+    /// itself would fight the schedule on every reconcile, and the loser would
+    /// be whichever wrote last.
     #[test]
-    fn test_build_merge_patch_contains_only_the_named_field() {
-        let patch = build_merge_patch("spec.warmReplicas", 4).expect("valid");
-        let top = patch.as_object().expect("object");
-        assert_eq!(top.len(), 1, "only one top-level key");
-        assert!(top.contains_key("spec"));
-        let spec = top["spec"].as_object().expect("object");
-        assert_eq!(spec.len(), 1, "only the one named field");
+    fn test_inject_refuses_a_template_that_already_sets_the_knob() {
+        let template = json!({ "warmReplicas": 99, "maxReplicas": 20 });
+        let error = inject_capacity_field(&template, "warmReplicas", 10)
+            .expect_err("the template must not set the knob");
         assert!(
-            !spec.contains_key("maxReplicas"),
-            "must never touch a sibling field"
+            matches!(error, CapacityPathError::TemplateSetsCapacityField { .. }),
+            "got {error:?}"
         );
     }
 
-    /// An invalid path must fail before any patch is constructed: the validator
-    /// is the gate, and build_merge_patch must not be a second way in.
     #[test]
-    fn test_build_merge_patch_refuses_an_invalid_path() {
-        for path in ["metadata.labels", "spec.items[0]", "", "status.claimed"] {
+    fn test_inject_refuses_a_template_that_sets_a_nested_knob() {
+        let template = json!({ "scale": { "warm": 99 } });
+        assert!(matches!(
+            inject_capacity_field(&template, "scale.warm", 10).expect_err("nested collision"),
+            CapacityPathError::TemplateSetsCapacityField { .. }
+        ));
+    }
+
+    /// A non-object template is not a spec, and silently replacing it would
+    /// discard the operator's input.
+    #[test]
+    fn test_inject_refuses_a_non_object_template_or_intermediate() {
+        assert!(inject_capacity_field(&json!([1, 2]), "warmReplicas", 1).is_err());
+        assert!(inject_capacity_field(&json!("nope"), "warmReplicas", 1).is_err());
+        // `scale` is a scalar, so `scale.warm` cannot be created under it.
+        assert!(inject_capacity_field(&json!({ "scale": 5 }), "scale.warm", 1).is_err());
+    }
+
+    /// An invalid field must fail before any object is constructed: the
+    /// validator is the gate and this must not be a second way in.
+    #[test]
+    fn test_inject_refuses_an_invalid_field() {
+        for field in ["spec.warmReplicas", "items[0]", "", "a-b"] {
             assert!(
-                build_merge_patch(path, 1).is_err(),
-                "{path} must not produce a patch"
+                inject_capacity_field(&json!({}), field, 1).is_err(),
+                "{field} must not produce a spec"
             );
         }
     }
@@ -288,20 +304,20 @@ mod tests {
     // Round-trip: what we write is what we read back
     // ========================================================================
 
-    /// The write and read halves must agree on path semantics, or the
+    /// The inject and read halves must agree on path semantics, or the
     /// controller would write one field and verify another.
     #[test]
-    fn test_patch_then_read_round_trips() {
-        for (path, value) in [
-            ("spec.warmReplicas", 10_i64),
-            ("spec.budget.cpu.cores", 16),
-            ("spec.warmReplicas", CAPACITY_INACTIVE_VALUE),
+    fn test_inject_then_read_round_trips() {
+        for (field, value) in [
+            ("warmReplicas", 10_i64),
+            ("budget.cpu.cores", 16),
+            ("warmReplicas", CAPACITY_INACTIVE_VALUE),
         ] {
-            let patch = build_merge_patch(path, value).expect("valid path");
+            let spec = inject_capacity_field(&json!({}), field, value).expect("valid field");
             assert_eq!(
-                read_i64_at(&patch, path),
+                read_i64_at(&spec, field),
                 Some(value),
-                "{path} must read back the value it was built with"
+                "{field} must read back the value it was built with"
             );
         }
     }

@@ -85,6 +85,30 @@ budget_tokens: 2000
 <!-- Mistakes made and corrected. Each entry prevents the same mistake recurring. -->
 <!-- Format: [YYYY-MM-DD] Description of what went wrong and what to do instead. -->
 
+- **[2026-10-08] Check a design's premise against the other project's code
+  before building apparatus to work around it.** ADR 0011 refused to let 5-Spot
+  create the capacity object because deleting one "would pull the rug on claim
+  holders", and built a validated field path, a confused-deputy trust boundary
+  and a merge-patch-over-SSA decision on top of that premise. The consumer had
+  already solved it, in code, by recorded decision: it re-parents a claimed
+  member's `ownerReferences` to the claim at bind time. One grep of
+  `~/dev/banlieue` would have saved the whole apparatus. When an ADR's central
+  argument is a claim about a sibling project's behaviour, read that project.
+
+- **[2026-10-08] A `grep` for a Rust field name misses the same field written as
+  a JSON literal key.** Searching `owner_references` across banlieue's
+  controller found only the member-creation site and I nearly concluded that
+  claims do not re-parent. The re-parenting is a `json!({"ownerReferences": ...})`
+  merge patch. Search both spellings (`owner_references` **and**
+  `ownerReferences`) when asking whether a Kubernetes field is ever written.
+
+- **[2026-10-08] "It is only v1alpha1" is not a licence to drop a field without
+  checking whether it shipped.** I wrote that `spec.targetRef` was being
+  withdrawn "before it ever shipped". It is in `v0.3.2`, tagged three days
+  earlier. `git ls-tree -r --name-only <latest-tag>` answers this in one command.
+  State a breaking change as one, with the recreate instruction, rather than
+  arguing it away.
+
 - **[2026-10-03] Never `rsync --delete` onto a remote path without checking
   whether it is already occupied.** `~/dev/CLAUDE.md` gives a conventional
   `builds/<repo>/` sync target, and I used it, straight onto Erick's live

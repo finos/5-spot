@@ -1938,8 +1938,10 @@ mod tests {
     // ========================================================================
 
     /// Canonical `ScheduledCapacity` spec JSON: the worked example from ADR
-    /// 0011, gating a banlieue `VirtualMachinePool`'s `spec.warmReplicas` on a
-    /// `CapitalMarketsSchedule`. Reused so a contract change touches one place.
+    /// 0011 as reshaped by ADR 0016, where 5-Spot **creates and owns** a
+    /// banlieue `VirtualMachinePool` and injects `warmReplicas` into the
+    /// operator's opaque template. Reused so a contract change touches one
+    /// place.
     fn scheduled_capacity_json() -> serde_json::Value {
         serde_json::json!({
             "schedule": {
@@ -1947,12 +1949,16 @@ mod tests {
                 "kind": "CapitalMarketsSchedule",
                 "name": "nyse-trading-day"
             },
-            "targetRef": {
+            "target": {
                 "apiVersion": "banlieue.io/v1alpha1",
-                "kind": "VirtualMachinePool",
-                "name": "agent-sandboxes"
+                "kind": "VirtualMachinePool"
             },
-            "capacity": { "path": "spec.warmReplicas", "activeValue": 10 },
+            "capacity": { "field": "warmReplicas", "activeValue": 10 },
+            "template": {
+                "maxReplicas": 20,
+                "readiness": "GuestReady",
+                "template": { "classRef": { "name": "small" } }
+            },
             "handback": { "drainedPath": "status.claimed", "timeout": "10m" },
             "nodeName": "worker-3"
         })
@@ -1964,10 +1970,19 @@ mod tests {
             serde_json::from_value(scheduled_capacity_json()).unwrap();
 
         assert_eq!(spec.schedule.kind, "CapitalMarketsSchedule");
-        assert_eq!(spec.target_ref.api_version, "banlieue.io/v1alpha1");
-        assert_eq!(spec.target_ref.kind, "VirtualMachinePool");
-        assert_eq!(spec.capacity.path, "spec.warmReplicas");
+        assert_eq!(spec.target.api_version, "banlieue.io/v1alpha1");
+        assert_eq!(spec.target.kind, "VirtualMachinePool");
+        assert_eq!(spec.capacity.field, "warmReplicas");
         assert_eq!(spec.capacity.active_value, 10);
+        // ADR 0016 decision 2: the template is forwarded verbatim and 5-Spot
+        // models none of it.
+        assert_eq!(
+            spec.template
+                .0
+                .pointer("/readiness")
+                .and_then(Value::as_str),
+            Some("GuestReady")
+        );
         let handback = spec.handback.as_ref().expect("handback present");
         assert_eq!(handback.drained_path.as_deref(), Some("status.claimed"));
         assert_eq!(handback.timeout, "10m");
@@ -1986,9 +2001,21 @@ mod tests {
             Some("status.claimed")
         );
         assert_eq!(
-            json.pointer("/targetRef/apiVersion")
+            json.pointer("/target/apiVersion")
                 .and_then(serde_json::Value::as_str),
             Some("banlieue.io/v1alpha1")
+        );
+        assert_eq!(
+            json.pointer("/capacity/field")
+                .and_then(serde_json::Value::as_str),
+            Some("warmReplicas")
+        );
+        // ADR 0016 decision 1: no `name`. The owned object takes the
+        // ScheduledCapacity's own name, so the two can never diverge and no
+        // previously owned object can be orphaned by an edit.
+        assert!(
+            json.pointer("/target/name").is_none(),
+            "spec.target must carry no name: {json}"
         );
         assert_eq!(
             json.get("nodeName").and_then(serde_json::Value::as_str),
@@ -2005,12 +2032,12 @@ mod tests {
                 "kind": "TimeBasedSpotSchedule",
                 "name": "office-hours"
             },
-            "targetRef": {
+            "target": {
                 "apiVersion": "banlieue.io/v1alpha1",
-                "kind": "VirtualMachinePool",
-                "name": "pool"
+                "kind": "VirtualMachinePool"
             },
-            "capacity": { "path": "spec.warmReplicas", "activeValue": 4 }
+            "capacity": { "field": "warmReplicas", "activeValue": 4 },
+            "template": { "maxReplicas": 8, "readiness": "GuestReady" }
         }))
         .unwrap();
 
@@ -2120,38 +2147,118 @@ mod tests {
         assert!(crd.spec.versions[0].storage);
     }
 
-    /// The write path is a security control (ADR 0011 decision 1), so the CRD
-    /// must carry both the charset pattern and the `spec.`-prefix CEL rule.
-    /// A schema that lost either would let `metadata.ownerReferences` through
-    /// admission and leave only the reconciler guard standing.
-    #[test]
-    fn test_scheduled_capacity_crd_pins_write_path_to_spec_prefix() {
+    /// Helper: the `ScheduledCapacity` v1alpha1 OpenAPI schema as JSON.
+    fn scheduled_capacity_schema_json() -> serde_json::Value {
         use kube::CustomResourceExt;
         let crd = ScheduledCapacity::crd();
-        let schema = crd.spec.versions[0]
-            .schema
-            .as_ref()
-            .and_then(|s| s.open_api_v3_schema.as_ref())
-            .expect("CRD has an OpenAPI schema");
-        let json = serde_json::to_value(schema).unwrap();
+        serde_json::to_value(
+            crd.spec.versions[0]
+                .schema
+                .as_ref()
+                .and_then(|s| s.open_api_v3_schema.as_ref())
+                .expect("CRD has an OpenAPI schema"),
+        )
+        .unwrap()
+    }
 
-        let path = json
-            .pointer("/properties/spec/properties/capacity/properties/path")
-            .expect("capacity.path is in the schema");
+    /// ADR 0016 decision 3: the injected field is rooted at the owned object's
+    /// `spec` **by construction**, so the dangerous prefixes are unreachable
+    /// rather than string-rejected. The schema's job shrinks to charset and
+    /// shape, and it must say so by carrying the pattern and **no** prefix CEL
+    /// rule: a `spec.`-prefix rule here would now be wrong, because the value
+    /// is relative to `spec`, not rooted at it.
+    #[test]
+    fn test_scheduled_capacity_crd_constrains_the_injected_field_charset() {
+        let json = scheduled_capacity_schema_json();
+
+        let field = json
+            .pointer("/properties/spec/properties/capacity/properties/field")
+            .expect("capacity.field is in the schema");
         assert_eq!(
-            path.get("pattern").and_then(serde_json::Value::as_str),
-            Some(constants::CAPACITY_PATH_PATTERN)
+            field.get("pattern").and_then(serde_json::Value::as_str),
+            Some(constants::CAPACITY_FIELD_PATTERN)
         );
-        let rules = path
+        assert!(
+            field.get("x-kubernetes-validations").is_none(),
+            "capacity.field needs no prefix CEL rule: the path is rooted at the \
+             owned object's spec by construction (ADR 0016 decision 3), got {field:?}"
+        );
+        assert!(
+            json.pointer("/properties/spec/properties/capacity/properties/path")
+                .is_none(),
+            "capacity.path is withdrawn by ADR 0016"
+        );
+        assert!(
+            json.pointer("/properties/spec/properties/targetRef")
+                .is_none(),
+            "spec.targetRef is withdrawn by ADR 0016"
+        );
+    }
+
+    /// ADR 0016 decision 1: `spec.target` is immutable. Changing the kind would
+    /// orphan the previously owned object, which carries an ownerReference and
+    /// would therefore survive, unmanaged, until the `ScheduledCapacity` itself
+    /// was deleted. ADR 0007 makes immutability the right tool: a field that
+    /// must not change is pinned, not removed later.
+    #[test]
+    fn test_scheduled_capacity_crd_makes_target_immutable() {
+        let json = scheduled_capacity_schema_json();
+        let target = json
+            .pointer("/properties/spec/properties/target")
+            .expect("spec.target is in the schema");
+        let rules = target
             .get("x-kubernetes-validations")
             .and_then(serde_json::Value::as_array)
-            .expect("capacity.path carries a CEL rule");
+            .expect("spec.target carries a CEL rule");
         assert!(
             rules.iter().any(|r| r
                 .get("rule")
                 .and_then(serde_json::Value::as_str)
-                .is_some_and(|rule| rule.contains("startsWith('spec.')"))),
-            "capacity.path must be CEL-pinned to the spec. prefix, got {rules:?}"
+                .is_some_and(|rule| rule.contains("oldSelf"))),
+            "spec.target must be CEL-immutable, got {rules:?}"
+        );
+    }
+
+    /// ADR 0016 decision 2: `spec.template` is an opaque pass-through, so the
+    /// schema must preserve unknown fields. A typed schema here would silently
+    /// prune whatever the consumer's CRD grew since 5-Spot last shipped, which
+    /// is the failure the `bootstrapSpec` pattern already exists to avoid.
+    #[test]
+    fn test_scheduled_capacity_crd_passes_the_template_through_opaquely() {
+        let json = scheduled_capacity_schema_json();
+        let template = json
+            .pointer("/properties/spec/properties/template")
+            .expect("spec.template is in the schema");
+        assert_eq!(
+            template
+                .get("x-kubernetes-preserve-unknown-fields")
+                .and_then(serde_json::Value::as_bool),
+            Some(true),
+            "spec.template must preserve unknown fields, got {template:?}"
+        );
+    }
+
+    /// The required set is the contract: a template with no capacity knob and
+    /// no kind to create cannot actuate anything.
+    #[test]
+    fn test_scheduled_capacity_crd_requires_target_capacity_and_template() {
+        let json = scheduled_capacity_schema_json();
+        let required: Vec<&str> = json
+            .pointer("/properties/spec/required")
+            .and_then(serde_json::Value::as_array)
+            .expect("spec has a required list")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        for field in ["schedule", "target", "capacity", "template"] {
+            assert!(
+                required.contains(&field),
+                "spec.{field} must be required, got {required:?}"
+            );
+        }
+        assert!(
+            !required.contains(&"targetRef"),
+            "spec.targetRef is withdrawn by ADR 0016, got {required:?}"
         );
     }
 
@@ -2224,11 +2331,11 @@ mod tests {
         )
         .unwrap();
         let api_version = json
-            .pointer("/properties/spec/properties/targetRef/properties/apiVersion")
-            .expect("targetRef.apiVersion is in the schema");
+            .pointer("/properties/spec/properties/target/properties/apiVersion")
+            .expect("target.apiVersion is in the schema");
         assert!(
             api_version.get("pattern").is_some(),
-            "targetRef.apiVersion must constrain its charset; the group allowlist \
+            "target.apiVersion must constrain its charset; the group allowlist \
              is enforced in the reconciler but the shape is enforced here"
         );
     }
@@ -2250,6 +2357,20 @@ mod tests {
                 "printer column {expected} missing from {names:?}"
             );
         }
+
+        // A print column whose jsonPath no longer exists renders as an empty
+        // cell with no error, so the withdrawn path has to be asserted gone.
+        let target = crd.spec.versions[0]
+            .additional_printer_columns
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|c| c.name == "Target")
+            .expect("Target column");
+        assert_eq!(
+            target.json_path, ".spec.target.kind",
+            "the Target column must follow spec.target.kind after ADR 0016"
+        );
     }
 
     /// ADR 0011 decision 8: its own phase set, not `ScheduledMachine`'s. A
