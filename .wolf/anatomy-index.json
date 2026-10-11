@@ -1,13 +1,13 @@
 {
   "version": 1,
   "meta": {
-    "lastScanned": "2026-10-03T15:44:53.111Z",
-    "fileCount": 317,
+    "lastScanned": "2026-10-09T23:24:56.039Z",
+    "fileCount": 320,
     "hits": 0,
     "misses": 0,
-    "renderedHash": "65a5a1aad99ed86dd4e8c2d8fbbdf9a0f77be48d6565dc13e6bac6b3599125a7",
-    "storeUpdatedAt": "2026-10-03T15:44:53.117Z",
-    "rootHash": "52fed166c638471c"
+    "renderedHash": "c276fd330ab3fa59ca394d87c8184dd0f220e3eeddd6f6a5fdf18b96346e4af9",
+    "storeUpdatedAt": "2026-10-09T23:24:56.046Z",
+    "rootHash": "b40028cbc144a5b4"
   },
   "files": {
     ".github/actions/extract-version/action.yml": {
@@ -6878,6 +6878,33 @@
       "size": 3804,
       "mtimeMs": 1791042293062.8726,
       "updatedAt": "2026-10-03T15:44:53.110Z",
+      "source": "hook"
+    },
+    "docs/adr/0017-machine-reference-shape-follows-capi-contract.md": {
+      "description": "0017: The Machine's bootstrap and infrastructure references are serialized in the shape the discover",
+      "tokens": 1633,
+      "hash": "5cc4ee6f7ad7af3c",
+      "size": 6539,
+      "mtimeMs": 1791588148084.62,
+      "updatedAt": "2026-10-09T23:22:28.140Z",
+      "source": "hook"
+    },
+    "docs/src/operations/worker-resource-confinement.md": {
+      "description": "Confining a scheduled worker with systemd",
+      "tokens": 2947,
+      "hash": "beb7690564cb0e5a",
+      "size": 11812,
+      "mtimeMs": 1791588226521.5847,
+      "updatedAt": "2026-10-09T23:23:46.575Z",
+      "source": "hook"
+    },
+    ".github/community/06-k0smotron-e2e-and-worker-confinement.md": {
+      "description": "06: k0smotron end-to-end and worker confinement",
+      "tokens": 2281,
+      "hash": "78947aad3638af04",
+      "size": 9184,
+      "mtimeMs": 1791588295988.8486,
+      "updatedAt": "2026-10-09T23:24:56.039Z",
       "source": "hook"
     }
   },

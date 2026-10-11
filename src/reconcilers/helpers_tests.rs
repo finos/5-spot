@@ -1606,6 +1606,94 @@ mod tests {
     }
 
     // ========================================================================
+    // machine_contract_ref: Machine ref shape follows the CAPI contract version
+    // ========================================================================
+
+    #[test]
+    fn test_uses_legacy_object_reference_for_pre_v1beta2_versions() {
+        // Every CAPI line up to and including v1beta1 carries the Machine's
+        // bootstrap/infrastructure refs as a core ObjectReference.
+        assert!(uses_legacy_object_reference("v1beta1"));
+        assert!(uses_legacy_object_reference("v1alpha4"));
+        assert!(uses_legacy_object_reference("v1alpha3"));
+    }
+
+    #[test]
+    fn test_uses_legacy_object_reference_false_from_v1beta2_onward() {
+        // v1beta2 replaced both refs with ContractVersionedObjectReference.
+        assert!(!uses_legacy_object_reference("v1beta2"));
+        // An unknown or future version must default to the MODERN shape: CAPI is
+        // removing the legacy one, so guessing "legacy" would break forward.
+        assert!(!uses_legacy_object_reference("v1beta3"));
+        assert!(!uses_legacy_object_reference("v1"));
+        assert!(!uses_legacy_object_reference("v2"));
+    }
+
+    #[test]
+    fn test_machine_contract_ref_v1beta1_emits_object_reference() {
+        let r = machine_contract_ref(
+            "v1beta1",
+            "bootstrap.cluster.x-k8s.io/v1beta1",
+            "K0sWorkerConfig",
+            "worker-1",
+            "default",
+        );
+        assert_eq!(r["apiVersion"], "bootstrap.cluster.x-k8s.io/v1beta1");
+        assert_eq!(r["kind"], "K0sWorkerConfig");
+        assert_eq!(r["name"], "worker-1");
+        assert_eq!(r["namespace"], "default");
+        // The modern field must be absent on the legacy shape.
+        assert!(r.get("apiGroup").is_none());
+    }
+
+    #[test]
+    fn test_machine_contract_ref_v1beta2_emits_contract_versioned_reference() {
+        // Regression: 5-Spot resolved v1beta2 correctly but still emitted the
+        // v1beta1 ref shape, which CAPI >= v1.11 rejects outright with
+        // `strict decoding error: unknown field "spec.bootstrap.configRef.apiVersion"`.
+        let r = machine_contract_ref(
+            "v1beta2",
+            "bootstrap.cluster.x-k8s.io/v1beta2",
+            "K0sWorkerConfig",
+            "worker-1",
+            "default",
+        );
+        assert_eq!(r["apiGroup"], "bootstrap.cluster.x-k8s.io");
+        assert_eq!(r["kind"], "K0sWorkerConfig");
+        assert_eq!(r["name"], "worker-1");
+        // ContractVersionedObjectReference has NO apiVersion and NO namespace;
+        // sending either is a hard BadRequest, not a silently pruned field.
+        assert!(r.get("apiVersion").is_none());
+        assert!(r.get("namespace").is_none());
+    }
+
+    #[test]
+    fn test_machine_contract_ref_v1beta2_strips_version_from_group() {
+        // apiGroup is the bare group: the version segment must be dropped even
+        // when the referenced object is served at a different version than the
+        // Machine itself.
+        let r = machine_contract_ref(
+            "v1beta2",
+            "infrastructure.cluster.x-k8s.io/v1beta1",
+            "RemoteMachine",
+            "worker-1",
+            "default",
+        );
+        assert_eq!(r["apiGroup"], "infrastructure.cluster.x-k8s.io");
+        assert_eq!(r["kind"], "RemoteMachine");
+    }
+
+    #[test]
+    fn test_machine_contract_ref_v1beta2_handles_groupless_api_version() {
+        // A core (groupless) apiVersion yields an empty apiGroup rather than
+        // panicking. validate_api_group rejects these before we get here, so
+        // this only pins the degenerate path.
+        let r = machine_contract_ref("v1beta2", "v1", "ConfigMap", "worker-1", "default");
+        assert_eq!(r["apiGroup"], "");
+        assert_eq!(r["name"], "worker-1");
+    }
+
+    // ========================================================================
     // create_dynamic_resource — 409 AlreadyExists is idempotent success
     // ========================================================================
 
@@ -2221,11 +2309,22 @@ mod tests {
     #[test]
     fn test_machine_to_sm_wrong_prefix_label_is_ignored() {
         // Similar key (different prefix) must not be confused with the real label.
-        let m = machine_with_labels(
-            &[("5spot.finos.org/scheduled-machine", "imposter")],
-            Some("default"),
-        );
-        assert!(machine_to_scheduled_machine(&m).is_empty());
+        // NOTE: this case previously used `5spot.finos.org/scheduled-machine` as
+        // the imposter, which was only "foreign" because the watched key had
+        // drifted to the retired `5spot.eribourg.dev` domain. That key is now
+        // the canonical one, so the imposters below are genuinely foreign.
+        for imposter in [
+            "other.example.com/scheduled-machine",
+            "5spot.finos.org.example.com/scheduled-machine",
+            // The retired group: it must no longer resolve to anything.
+            "5spot.eribourg.dev/scheduled-machine",
+        ] {
+            let m = machine_with_labels(&[(imposter, "imposter")], Some("default"));
+            assert!(
+                machine_to_scheduled_machine(&m).is_empty(),
+                "label `{imposter}` must not map to a ScheduledMachine"
+            );
+        }
     }
 
     // ========================================================================

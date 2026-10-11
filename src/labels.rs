@@ -37,23 +37,31 @@ pub const LABEL_APP_VERSION: &str = "app.kubernetes.io/version";
 // 5-Spot-Specific Labels
 // ============================================================================
 
-/// Label for identifying `ScheduledMachine` resources
-pub const LABEL_SCHEDULED_MACHINE: &str = "5spot.eribourg.dev/scheduled-machine";
+/// Label for identifying `ScheduledMachine` resources.
+///
+/// Aliases [`crate::constants::SCHEDULED_MACHINE_LABEL`] rather than repeating
+/// the string. The reconciler *stamps* that constant on every Machine,
+/// bootstrap and infrastructure resource it creates, while `main` *selects* on
+/// this one for the Machine and Node secondary watches. Two literals drifted
+/// once already (this module kept the retired `5spot.eribourg.dev` through the
+/// rename, so the watches silently matched nothing), and a single definition is
+/// what stops it recurring.
+pub const LABEL_SCHEDULED_MACHINE: &str = crate::constants::SCHEDULED_MACHINE_LABEL;
 
 /// Label for machine phase
-pub const LABEL_MACHINE_PHASE: &str = "5spot.eribourg.dev/phase";
+pub const LABEL_MACHINE_PHASE: &str = "5spot.finos.org/phase";
 
 /// Label for schedule enabled status
-pub const LABEL_SCHEDULE_ENABLED: &str = "5spot.eribourg.dev/schedule-enabled";
+pub const LABEL_SCHEDULE_ENABLED: &str = "5spot.finos.org/schedule-enabled";
 
 /// Label for cluster deployment reference
-pub const LABEL_CLUSTER_DEPLOYMENT: &str = "5spot.eribourg.dev/cluster-deployment";
+pub const LABEL_CLUSTER_DEPLOYMENT: &str = "5spot.finos.org/cluster-deployment";
 
 /// Label for machine priority
-pub const LABEL_PRIORITY: &str = "5spot.eribourg.dev/priority";
+pub const LABEL_PRIORITY: &str = "5spot.finos.org/priority";
 
 /// Label for operator instance that owns this resource
-pub const LABEL_OPERATOR_INSTANCE: &str = "5spot.eribourg.dev/operator-instance";
+pub const LABEL_OPERATOR_INSTANCE: &str = "5spot.finos.org/operator-instance";
 
 // ============================================================================
 // Standard Label Values

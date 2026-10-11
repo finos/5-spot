@@ -917,6 +917,21 @@ pub fn capi_machine_api_version_full() -> String {
     format!("{CAPI_GROUP}/{}", capi_machine_api_version())
 }
 
+/// CAPI contract versions whose `Machine` still carries `spec.bootstrap.configRef`
+/// and `spec.infrastructureRef` as a core `ObjectReference`
+/// (`apiVersion` + `kind` + `name` + `namespace`).
+///
+/// From `v1beta2` on (Cluster API v1.11+) both fields became a
+/// `ContractVersionedObjectReference`, which carries `apiGroup` + `kind` + `name`
+/// and **requires** `apiGroup`. The removed fields are not pruned: the Machine
+/// type decodes strictly, so sending `apiVersion` or `namespace` fails the create
+/// with `strict decoding error: unknown field "spec.bootstrap.configRef.apiVersion"`.
+///
+/// Anything not listed here is treated as the modern shape, so a CAPI line newer
+/// than this list converges on the contract that replaced the legacy one rather
+/// than on the one being removed.
+pub const CAPI_LEGACY_OBJECT_REFERENCE_VERSIONS: &[&str] = &["v1alpha3", "v1alpha4", "v1beta1"];
+
 /// CAPI cluster name label
 pub const CAPI_CLUSTER_NAME_LABEL: &str = "cluster.x-k8s.io/cluster-name";
 

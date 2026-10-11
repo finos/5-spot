@@ -1,7 +1,7 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-10-03T15:44:53.111Z
-> Files: 317 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-10-09T23:24:56.039Z
+> Files: 320 tracked | Anatomy hits: 0 | Misses: 0
 
 > Project structure index. Auto-maintained by OpenWolf hooks and daemon.
 > Run `openwolf scan` to generate, or wait for the first Claude Code session.
@@ -82,6 +82,7 @@
 - `02-conventions.md` — 02 — Coding conventions (~1386 tok)
 - `03-release-diff-v0-2-2-to-main.md` — 03 — Release diff: `v0.2.2` → `main` (~4629 tok)
 - `04-dependency-internalization-matrix.md` — 04 — Dependency internalization matrix (~2779 tok)
+- `06-k0smotron-e2e-and-worker-confinement.md` — 06: k0smotron end-to-end and worker confinement (~2281 tok)
 - `README.md` — Project documentation (~758 tok)
 
 ## .github/scripts/
@@ -215,6 +216,7 @@
 - `0009-unify-schedule-as-provider-reference.md` — 0009 — Unify activation under `spec.schedule` as a provider reference; ship `TimeBasedSpotSchedule` as the core provider (~2051 tok)
 - `0010-base-image-pins-on-from-line.md` — 0010 — Base-image digests are pinned on the `FROM` line so Dependabot re-pins them (~1681 tok)
 - `0011-schedule-gated-capacity-separate-controller.md` — 0011 — Schedule-gated capacity: a `ScheduledCapacity` CRD and its own controller (~4168 tok)
+- `0017-machine-reference-shape-follows-capi-contract.md` — 0017: The Machine's bootstrap and infrastructure references are serialized in the shape the discover (~1633 tok)
 - `README.md` — Project documentation (~809 tok)
 - `template.md` — NNNN — <short decision title> (~251 tok)
 
@@ -470,6 +472,7 @@
 - `monitoring.md` — Monitoring (~4350 tok)
 - `multi-instance.md` — Multi-Instance Deployment (~1292 tok)
 - `troubleshooting.md` — Troubleshooting (~6291 tok)
+- `worker-resource-confinement.md` — Confining a scheduled worker with systemd (~2947 tok)
 
 ## docs/src/reference/
 

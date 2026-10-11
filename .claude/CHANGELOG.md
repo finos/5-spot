@@ -9,6 +9,83 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-10-09 23:40] - ADR-0017 + stale label domain: first live k0smotron end-to-end run
+
+**Author:** Erick Bourgeois
+
+### Changed
+
+- `src/reconcilers/helpers.rs`: `machine_contract_ref()` and
+  `uses_legacy_object_reference()` added; the CAPI `Machine` body now serializes
+  `spec.bootstrap.configRef` and `spec.infrastructureRef` in the shape the target
+  contract version requires. `add_machine_to_cluster` binds the bare
+  `machine_api_version` and both refs go through the new helper, so neither shape
+  is written anywhere else.
+- `src/constants.rs`: `CAPI_LEGACY_OBJECT_REFERENCE_VERSIONS` added
+  (`v1alpha3`, `v1alpha4`, `v1beta1`). An unrecognised version resolves to the
+  **modern** shape, because the legacy one is the one being removed.
+- `src/labels.rs`: the module still carried the retired `5spot.eribourg.dev`
+  domain after the group was renamed to `5spot.finos.org`.
+  `LABEL_SCHEDULED_MACHINE` is now an alias of
+  `constants::SCHEDULED_MACHINE_LABEL` so the stamped key and the watched key
+  cannot diverge again; the five other label constants move to the current group.
+- `src/labels_tests.rs`: three drift guards (the alias holds, no key carries the
+  retired group, the owned key is covered by `RESERVED_LABEL_PREFIXES`).
+- `src/reconcilers/helpers_tests.rs`: six tests pinning both reference shapes,
+  the group derivation and the unknown-version default.
+  `test_machine_to_sm_wrong_prefix_label_is_ignored` corrected: it had used
+  `5spot.finos.org/scheduled-machine`, the *canonical* key, as its "imposter",
+  which was only foreign while the watched key had drifted. It now uses genuinely
+  foreign prefixes and asserts the retired group no longer resolves.
+- `docs/adr/0017-machine-reference-shape-follows-capi-contract.md`: **new.**
+- `docs/adr/README.md`, `docs/src/development/index.md`: both ADR indexes.
+- `.github/community/06-k0smotron-e2e-and-worker-confinement.md`: **new** roadmap.
+- `ROADMAPS.md`, `.github/community/README.md`: status row and reading order.
+- `docs/src/operations/worker-resource-confinement.md`: **new** guide, plus
+  `docs/mkdocs.yml` nav.
+- `docs/src/security/threat-model.md`: full pass, stamp to **1.7 / ADR-0017**.
+  T2's mitigation was incomplete for the whole period the label domains diverged
+  and now says so; new T12 covers tracking-label confusion; two §7 control rows;
+  the §8 `bootstrapSpec` residual widened to the write side.
+
+### Why
+
+`ScheduledMachine` had never been run against real Cluster API controllers, a
+real k0smotron hosted control plane, or a host k0s is really installed onto over
+SSH. Two defects the entire unit suite could not reach surfaced immediately:
+
+1. discovery resolved `v1beta2` correctly and the Machine body was still built
+   in the `v1beta1` shape, which `v1beta2` rejects outright with a strict
+   decoding error, so Machine creation was impossible on Cluster API v1.11+
+   except via the `v1beta1` passthrough that happened to be self-consistent;
+2. the controller stamped `5spot.finos.org/scheduled-machine` and watched
+   `5spot.eribourg.dev/scheduled-machine`, so both secondary watches matched
+   nothing and the owned key was outside the reserved-prefix allowlist.
+
+### Impact
+
+- [x] Breaking change (behavioural, in the fixing direction: Machines are now
+      created in the shape the server accepts, and the Machine/Node secondary
+      watches begin matching for the first time)
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+
+Three-node k0s management cluster, Cluster API v1.14.3, k0smotron v2.2.0,
+cert-manager v1.21.2, with an 8 vCPU / 8 GiB SSH worker. `cargo fmt` clean,
+`clippy -D warnings` clean, **860 tests pass**. Live: Machine stored with
+`apiGroup`-form refs at `cluster.x-k8s.io/v1beta2`, k0s v1.34.11+k0s.1 joined
+`Ready`, and the full activate -> `ShuttingDown` -> `Inactive` -> reactivate
+cycle observed. Confinement measured at 2.01 cores against 8 demanded with
+~100% of periods throttled, and a 4 GiB ceiling never breached (peak
+3,983,450,112 B, 164,008 `MemoryHigh` events, zero OOM kills). Open items,
+including an unexplained ~30s SIGKILL of pods on the confined worker, are
+recorded in roadmap 06.
+
+---
+
 ## [2026-10-08 14:30] - ADR-0016: 5-Spot creates and owns the capacity object it scales
 
 **Author:** Erick Bourgeois

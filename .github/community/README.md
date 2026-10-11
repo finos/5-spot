@@ -18,6 +18,7 @@ holds the detail each row links to.
 | [03](03-release-diff-v0-2-2-to-main.md) | Release diff `v0.2.2` → `main` | 📄 | What shipped across the kata-config-agent and spot-schedule-provider arcs, with the ADRs behind each. A point-in-time record, generated 2026-07-22 |
 | [04](04-dependency-internalization-matrix.md) | Dependency internalization matrix | ✅ | Every direct dependency, the API surface actually used, and whether it could be maintained internally. Closed 2026-09-27: all six unused crates removed, runtime deps 31 → 22; §§2–3 stay as the internalization reference |
 | [05](05-schedule-gated-capacity.md) | Schedule-gated capacity | ✅ | The non-handover pattern (ADR 0011): a host stays in the cluster and a bounded slice of it is conceded on a schedule, through a `ScheduledCapacity` CRD and a separate controller identity that patches one field on a foreign API group. Closed 2026-10-04, verified against a live cluster |
+| [06](06-k0smotron-e2e-and-worker-confinement.md) | k0smotron end-to-end and worker confinement | 🔶 | The first `ScheduledMachine` run against a real k0smotron hosted control plane and a real SSH-provisioned worker, on current Cluster API. Found two defects the unit suite could not reach (ADR 0017; the stale label domain), verified the full schedule lifecycle, and produced the systemd `k0s.slice` confinement recipe with measured throttling evidence |
 
 ## Conventions
 
