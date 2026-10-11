@@ -81,6 +81,55 @@
         "adr-0011",
         "kube-rs"
       ]
+    },
+    {
+      "id": "bug-006",
+      "date": "2026-10-09",
+      "error_message": "Machine create rejected by Cluster API v1.14.3: 'Machine in version \"v1beta2\" cannot be handled as a Machine: strict decoding error: unknown field \"spec.bootstrap.configRef.apiVersion\", unknown field \"spec.bootstrap.configRef.namespace\", unknown field \"spec.infrastructureRef.apiVersion\", unknown field \"spec.infrastructureRef.namespace\"'",
+      "root_cause": "Only half of the CAPI version-agnostic design was implemented. resolve_capi_machine_version() discovered the served Machine version correctly (v1beta2 on CAPI v1.11+), but add_machine_to_cluster built spec.bootstrap.configRef and spec.infrastructureRef in exactly one shape: the v1beta1 core ObjectReference with apiVersion + namespace. v1beta2 replaced both with a ContractVersionedObjectReference whose only fields are apiGroup, kind and name, and the Machine type decodes strictly, so the surplus fields are a hard BadRequest rather than being pruned. It survived review because machine_api_version_for() passes the user's bootstrapSpec version through, so a ScheduledMachine declaring bootstrap.cluster.x-k8s.io/v1beta1 produced a self-consistent v1beta1 Machine that the conversion webhook accepted; only a v1beta2 spec or the discovery fallback reached the bug, and every unit fixture assumes v1beta1.",
+      "fix": "machine_contract_ref() in src/reconcilers/helpers.rs is now the only place either shape is written, keyed on uses_legacy_object_reference() against CAPI_LEGACY_OBJECT_REFERENCE_VERSIONS (v1alpha3, v1alpha4, v1beta1) in src/constants.rs. An unrecognised version resolves to the MODERN shape, since the legacy one is being removed. Six tests in helpers_tests.rs pin both shapes, the group derivation (version segment dropped) and the unknown-version default. ADR 0017. Verified live: Machine stored at cluster.x-k8s.io/v1beta2 with apiGroup-form refs, phase Running, Node Ready.",
+      "lesson": "Discovering a version is not the same as honouring its contract. When a controller branches on a discovered API version, every field whose SHAPE changed with that version has to branch too, and a unit suite whose fixtures all pin the old version cannot tell you otherwise. A passthrough default (here: the user's bootstrapSpec version) can keep the common path self-consistent and hide the bug on exactly the path that is the future.",
+      "files": [
+        "src/reconcilers/helpers.rs",
+        "src/reconcilers/helpers_tests.rs",
+        "src/constants.rs",
+        "docs/adr/0017-machine-reference-shape-follows-capi-contract.md"
+      ],
+      "tags": [
+        "capi",
+        "v1beta2",
+        "contract-versioned-reference",
+        "machine",
+        "strict-decoding",
+        "adr-0017",
+        "k0smotron",
+        "discovery"
+      ]
+    },
+    {
+      "id": "bug-007",
+      "date": "2026-10-09",
+      "error_message": "Controller's Machine and Node secondary watches matched nothing: watch issued with labelSelector=5spot.eribourg.dev%2Fscheduled-machine while every created Machine was stamped 5spot.finos.org/scheduled-machine. Machine/Node state changes never triggered a reconcile of the owning ScheduledMachine.",
+      "root_cause": "The API group rename from 5spot.eribourg.dev to 5spot.finos.org never reached src/labels.rs. Two constants described the same key: constants::SCHEDULED_MACHINE_LABEL (finos), which merge_owned_labels() STAMPS on every Machine, bootstrap and infra resource, and labels::LABEL_SCHEDULED_MACHINE (eribourg), which main.rs SELECTS on for both secondary watches and which machine_to_scheduled_machine()/node_to_scheduled_machines_via_machine() read. Security consequence: RESERVED_LABEL_PREFIXES covers 5spot.finos.org/ but not the retired domain, so the one key the reverse mapping trusted was injectable through machineTemplate.labels. An existing test had enshrined the bug, asserting that the canonical 5spot.finos.org key was an 'imposter'.",
+      "fix": "labels::LABEL_SCHEDULED_MACHINE is now an alias of constants::SCHEDULED_MACHINE_LABEL, so the stamped key and the watched key are one definition and cannot drift; the five other 5-Spot label constants move to 5spot.finos.org. Three drift guards in labels_tests.rs (alias holds, no key on the retired group, owned key covered by RESERVED_LABEL_PREFIXES). test_machine_to_sm_wrong_prefix_label_is_ignored rewritten to use genuinely foreign prefixes and to assert the retired group no longer resolves. Threat model 1.7: T2's mitigation marked incomplete for that period, new T12 for tracking-label confusion.",
+      "lesson": "Two string literals for one key will drift, and a label used on BOTH the write and the read side is the worst place for it: nothing fails, the watch just silently matches nothing, so the controller degrades from event-driven to timer-driven with no error anywhere. Alias the one constant instead of repeating the string. Also: a test asserting that the CORRECT value is wrong is the loudest possible signal that a rename was left half-finished, so when a test calls something an imposter, check which side is actually canonical.",
+      "files": [
+        "src/labels.rs",
+        "src/labels_tests.rs",
+        "src/reconcilers/helpers_tests.rs",
+        "src/main.rs",
+        "docs/src/security/threat-model.md"
+      ],
+      "tags": [
+        "labels",
+        "api-group-rename",
+        "watch",
+        "event-driven",
+        "reserved-prefix",
+        "security",
+        "drift",
+        "roadmap-06"
+      ]
     }
   ]
 }

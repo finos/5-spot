@@ -1,9 +1,33 @@
-# Cross-compilation linker configuration
-# These settings tell Cargo which linker to use for each target
-# Install toolchains with: brew tap messense/macos-cross-toolchains && brew install <target>
-
-[target.x86_64-unknown-linux-gnu]
-linker = "x86_64-unknown-linux-gnu-gcc"
-
-[target.aarch64-unknown-linux-gnu]
-linker = "aarch64-unknown-linux-gnu-gcc"
+# Cargo configuration.
+#
+# DELIBERATELY EMPTY OF `linker` PINS. Please do not add them back.
+#
+# This file used to carry:
+#
+#   [target.x86_64-unknown-linux-gnu]
+#   linker = "x86_64-unknown-linux-gnu-gcc"
+#
+# which looks harmless and is not. A `[target.<triple>]` pin applies whenever
+# that triple is the *target*, including when it is also the *host*. On a native
+# linux/amd64 machine building for `x86_64-unknown-linux-gnu`, cargo therefore
+# tried to exec `x86_64-unknown-linux-gnu-gcc`, which is a macOS
+# cross-toolchain name and does not exist there. Every build script failed at
+# once with `linker 'x86_64-unknown-linux-gnu-gcc' not found`, so the project
+# could not be built on the Linux build host the contributor guide tells you to
+# use. Recorded as F-3 in roadmap 06.
+#
+# A cross-linker is a property of the *host/target pair*, which cargo config
+# cannot express. So the Makefile decides: `build-linux-amd64` and
+# `build-linux-arm64` prefer `cross`, fall back to a native build when the host
+# already targets that architecture, and only then export
+# `CARGO_TARGET_<TRIPLE>_LINKER` for whichever cross toolchain is actually on
+# PATH. Env wins over config, and nothing is set when nothing is needed.
+#
+# To cross-compile from macOS, install a toolchain and let the Makefile find it:
+#
+#   brew tap messense/macos-cross-toolchains
+#   brew install x86_64-unknown-linux-gnu      # or aarch64-unknown-linux-gnu
+#   make build-linux-amd64
+#
+# Both the `<triple>-gcc` (messense) and `<arch>-linux-gnu-gcc` (distro)
+# spellings are accepted.

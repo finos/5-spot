@@ -1,9 +1,33 @@
 # Threat Model: 5-Spot ScheduledMachine Controller
 
-**Version:** 1.6  
-**Date:** 2026-10-08  
+**Version:** 1.7  
+**Date:** 2026-10-09  
 **Status:** Active — living document  
-**Covers:** ADR-0001 … ADR-0016 (the 1.6 pass covers ADR-0016, which reshapes how
+**Covers:** ADR-0001 … ADR-0017 (the 1.7 pass covers ADR-0017, which makes the
+Machine's bootstrap and infrastructure references follow the discovered CAPI
+contract shape, and the first live k0smotron end-to-end run that found it
+(roadmap 06). Every section walked. The serialization change itself is posture
+neutral: no new component, identity, credential, boundary or external call, and
+the API server validates the reference strictly, so a mis-shaped reference fails
+closed rather than producing a partly-linked Machine. §7 records it as a control
+on that basis. The **real** security content of this pass came from the second
+defect the same run found, which was not an ADR at all: `src/labels.rs` had kept
+the retired `5spot.eribourg.dev` domain after the group was renamed, so the key
+the Machine and Node reverse mappings trusted sat *outside*
+`RESERVED_LABEL_PREFIXES` and was therefore injectable through
+`machineTemplate.labels`. T2's mitigation was incomplete for that whole period
+and now says so rather than continuing to claim a clean block; new **T12**
+records the tracking-label confusion surface, its same-namespace bound, and the
+drift guards. §8's `bootstrapSpec` residual is widened, again with no new class:
+the new confinement page documents putting host files, systemd units and
+`preStartCommands` through that same opaque blob, which the bootstrap provider
+runs as root on the worker, so the exposure is write-side as well as read-side
+and the existing `get/list` workaround does not cover it. Changed: §6.1 T2 and
+new T12, §7 two control rows, §8 the `bootstrapSpec` residual. §§1-5, 9 and 10
+unchanged: the confinement described in roadmap 06 is operator-side host
+configuration carried as data, not a new 5-Spot component or boundary.
+
+The 1.6 pass covers ADR-0016, which reshapes how
 the capacity controller actuates: 5-Spot now **creates and owns** the capacity
 object instead of patching a consumer's. Every section walked, and this is the
 largest change to TB7 since it was introduced, in **both** directions. Removed:
@@ -309,7 +333,7 @@ namespaces. Everything in §6.5 follows from that.
 | ID | Threat | Likelihood | Impact | Status |
 |---|---|---|---|---|
 | T1 | **Cross-namespace resource creation** — user sets `bootstrapSpec.metadata.namespace` to `kube-system` | High | Critical | **Mitigated (2026-04-08, hardened 2026-05-30)** — controller always uses the SM's own namespace; `metadata.namespace`/`metadata.name` are now **loudly rejected** at admission (VAP rules 13c–13f) and at reconcile (`validate_embedded_metadata()`). Only `metadata.labels`/`metadata.annotations` are accepted, reserved-prefix-checked |
-| T2 | **Label injection** — user sets `machineTemplate.labels["cluster.x-k8s.io/cluster-name"]` to redirect machine to attacker-controlled cluster | High | Critical | **Mitigated (2026-04-08)** — `validate_labels()` blocks reserved prefixes |
+| T2 | **Label injection**: user sets `machineTemplate.labels["cluster.x-k8s.io/cluster-name"]` to redirect machine to attacker-controlled cluster | High | Critical | **Mitigated (2026-04-08, gap closed 2026-10-09)**: `validate_labels()` blocks reserved prefixes. The allowlist was **incomplete until 2026-10-09**: `RESERVED_LABEL_PREFIXES` covered `5spot.finos.org/` while `src/labels.rs` still watched and trusted the retired `5spot.eribourg.dev/` domain, so the one key the Machine and Node reverse mappings read was itself injectable (see T12). Both now name the same constant |
 | T3 | **Annotation injection** — user injects `kubectl.kubernetes.io/restartedAt` to trigger rolling restarts | Medium | Medium | **Mitigated (2026-04-08)** — same prefix allowlist |
 | T4 | **apiVersion/kind injection** — user sets `bootstrapSpec.kind: ClusterRole` to create RBAC resources | High | High | **Mitigated (2026-04-08)** — `validate_api_group()` enforces allowlist |
 | T5 | User injects malicious content into `bootstrapSpec.spec` or `infrastructureSpec.spec` targeting provider vulnerabilities | Medium | High | **Partially mitigated** — spec content is passed opaquely to providers; provider-side validation is out of scope |
@@ -317,6 +341,7 @@ namespaces. Everything in §6.5 follows from that.
 | T7 | **Duration overflow** — user sets `gracefulShutdownTimeout: "9999999999999h"` causing integer overflow | Medium | High | **Mitigated (2026-04-08)** — `checked_mul` + `MAX_DURATION_SECS = 86400` cap |
 | T8 | User updates ScheduledMachine spec after machine is active, changing `clusterName` mid-lifecycle | Medium | Medium | **Residual risk** — spec changes trigger reconciliation; no immutability enforcement on `clusterName` |
 | T8a | **Provider-driven activation control** — a compromised or buggy spot-schedule provider flips `status.active`, starting/stopping the machines that reference it | Medium | Medium | **Mitigated (2026-06-14)** — blast radius equals editing `spec.enabled` and is bounded to **same-namespace** SMs that explicitly named the provider (cross-namespace refs are forbidden by design); controller RBAC is **read-only** (`get/list/watch`) on `spotschedules.5spot.finos.org` — it can never write a provider object; the provider group is CEL-pinned at the CRD field, in the VAP (rule 4), and at reconcile (`validate_activation_source()`). Auditable via `status.spotSchedule` (resolved/reason/message) + `fivespot_spot_schedule_*` metrics (ADR 0006) |
+| T12 | **Tracking-label confusion**: user sets the controller-owned `scheduled-machine` label through `machineTemplate.labels`, so a Machine they influence maps back to a `ScheduledMachine` of their choosing and drives its reconcile | Low | Medium | **Mitigated (2026-10-09)**: the key the reconciler stamps and the key `main` watches are now one constant (`labels::LABEL_SCHEDULED_MACHINE` aliases `constants::SCHEDULED_MACHINE_LABEL`), so it is covered by `RESERVED_LABEL_PREFIXES` and `validate_labels()` rejects it. Previously the watched key carried the retired API group and was outside the allowlist. Blast radius was bounded to the user's own namespace (the mapping requires a namespace and resolves same-namespace only) and to triggering a reconcile, not to changing its outcome. Pinned by three drift-guard tests in `src/labels_tests.rs` plus a corrected imposter-label test in `src/reconcilers/helpers_tests.rs` |
 
 #### Repudiation
 | ID | Threat | Likelihood | Impact | Status |
@@ -516,6 +541,8 @@ removed rather than quietly dropped.
 | `EmbeddedResource.namespace` field removed | `src/crd.rs` | T1 — cross-namespace creation |
 | `validate_api_group()` allowlist | `src/reconcilers/helpers.rs` | T4, E1 — kind/apiVersion injection |
 | `validate_labels()` reserved prefix rejection | `src/reconcilers/helpers.rs` | T2, T3 — label/annotation injection |
+| One constant for the controller-owned `scheduled-machine` label, stamped and watched | `src/constants.rs`, `src/labels.rs` | T2, T12: keeps the owned key inside `RESERVED_LABEL_PREFIXES`; a second literal is how the key fell outside it |
+| Machine bootstrap/infrastructure references serialized for the discovered CAPI contract | `src/reconcilers/helpers.rs` (`machine_contract_ref`) | ADR 0017: removes a silent-divergence class; the API server strictly rejects a mis-shaped reference, so a wrong shape fails closed rather than creating a partly-linked Machine |
 | `checked_mul` + `MAX_DURATION_SECS` cap | `src/reconcilers/helpers.rs` | T7 — duration overflow |
 | Timezone `maxLength` + character pattern in CRD | `src/crd.rs` | T6 — log injection |
 | `tokio::time::timeout(600s)` in finalizer cleanup | `src/reconcilers/helpers.rs` | D2 — finalizer hang |
@@ -580,6 +607,8 @@ them run in `.github/workflows/`.
 **Recommendation:** Introduce a `secretRef` field alongside `spec` that references a Secret, and merge the Secret's data at runtime inside the controller. This keeps credentials out of the CR and benefits from Kubernetes secret encryption-at-rest.
 
 **Workaround (now):** Restrict `get/list` on `scheduledmachines` to the owning service account and cluster admins only.
+
+**Widened in scope 2026-10-09 (no new class).** The same opaque passthrough also carries *behaviour*, not only data. [Worker Resource Confinement](../operations/worker-resource-confinement.md) documents the supported pattern of putting `K0sWorkerConfig.files` and `preStartCommands` in `bootstrapSpec.spec`, which the bootstrap provider executes **as root on the worker host**: arbitrary host files, arbitrary systemd units, arbitrary commands. That power is k0smotron's and predates the page, but anyone reading the page now knows it is there, so the exposure of `bootstrapSpec` is write-side as well as read-side and the `get/list` workaround above does not address it. Whoever may create a `ScheduledMachine` in a namespace can root every host its `RemoteMachine` reaches. *Revisit when* `bootstrapSpec` gains a `secretRef`: the same change should decide whether a narrower, declarative confinement field is preferable to passing host-file content through an opaque blob.
 
 ---
 

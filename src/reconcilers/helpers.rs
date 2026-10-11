@@ -43,14 +43,14 @@ use tracing::{debug, error, info, warn};
 use super::{Context, ReconcilerError};
 use crate::constants::{
     capi_machine_api_version, ALLOWED_BOOTSTRAP_API_GROUPS, ALLOWED_INFRASTRUCTURE_API_GROUPS,
-    API_VERSION_FULL, CAPI_CLUSTER_NAME_LABEL, CAPI_GROUP, CAPI_RESOURCE_MACHINES,
-    CONDITION_STATUS_TRUE, CONDITION_TYPE_READY, DEFAULT_INSTANCE_ID, ENV_OPERATOR_INSTANCE_ID,
-    ERROR_REQUEUE_SECS, FINALIZER_CLEANUP_TIMEOUT_SECS, FINALIZER_SCHEDULED_MACHINE,
-    HTTP_ALREADY_EXISTS, HTTP_NOT_FOUND, HTTP_TOO_MANY_REQUESTS, MAX_BACKOFF_SECS,
-    MAX_CLUSTER_NAME_LEN, MAX_DURATION_SECS, MAX_KILL_IF_COMMANDS_COUNT, MAX_KILL_IF_COMMAND_LEN,
-    MAX_RECONCILE_RETRIES, PHASE_ACTIVE, PHASE_ERROR, PHASE_INACTIVE, PHASE_SHUTTING_DOWN,
-    PHASE_TERMINATED, POD_EVICTION_GRACE_PERIOD_SECS, RBAC_VERB_CREATE, REASON_GRACE_PERIOD,
-    REASON_KILL_SWITCH, REASON_RECONCILE_SUCCEEDED, RESERVED_LABEL_PREFIXES,
+    API_VERSION_FULL, CAPI_CLUSTER_NAME_LABEL, CAPI_GROUP, CAPI_LEGACY_OBJECT_REFERENCE_VERSIONS,
+    CAPI_RESOURCE_MACHINES, CONDITION_STATUS_TRUE, CONDITION_TYPE_READY, DEFAULT_INSTANCE_ID,
+    ENV_OPERATOR_INSTANCE_ID, ERROR_REQUEUE_SECS, FINALIZER_CLEANUP_TIMEOUT_SECS,
+    FINALIZER_SCHEDULED_MACHINE, HTTP_ALREADY_EXISTS, HTTP_NOT_FOUND, HTTP_TOO_MANY_REQUESTS,
+    MAX_BACKOFF_SECS, MAX_CLUSTER_NAME_LEN, MAX_DURATION_SECS, MAX_KILL_IF_COMMANDS_COUNT,
+    MAX_KILL_IF_COMMAND_LEN, MAX_RECONCILE_RETRIES, PHASE_ACTIVE, PHASE_ERROR, PHASE_INACTIVE,
+    PHASE_SHUTTING_DOWN, PHASE_TERMINATED, POD_EVICTION_GRACE_PERIOD_SECS, RBAC_VERB_CREATE,
+    REASON_GRACE_PERIOD, REASON_KILL_SWITCH, REASON_RECONCILE_SUCCEEDED, RESERVED_LABEL_PREFIXES,
     SCHEDULED_MACHINE_LABEL, TIMER_REQUEUE_SECS,
 };
 use crate::crd::{Condition, NodeRef, ScheduledMachine, ScheduledMachineStatus};
@@ -1141,6 +1141,55 @@ fn machine_api_version_for(bootstrap_api_version: Option<&str>) -> String {
         )
 }
 
+/// Whether `machine_api_version` still expects the legacy `ObjectReference`
+/// shape for a `Machine`'s bootstrap / infrastructure references.
+///
+/// See [`CAPI_LEGACY_OBJECT_REFERENCE_VERSIONS`] for why an unrecognised version
+/// is reported as *modern* rather than legacy.
+fn uses_legacy_object_reference(machine_api_version: &str) -> bool {
+    CAPI_LEGACY_OBJECT_REFERENCE_VERSIONS.contains(&machine_api_version)
+}
+
+/// Build a `Machine`'s `spec.bootstrap.configRef` / `spec.infrastructureRef` in
+/// the shape the target CAPI contract version requires.
+///
+/// # Arguments
+/// * `machine_api_version` - the `cluster.x-k8s.io` version the Machine is created at
+/// * `api_version` - the referenced object's full `apiVersion` (e.g.
+///   `bootstrap.cluster.x-k8s.io/v1beta1`)
+/// * `kind` - the referenced object's kind
+/// * `name` - the referenced object's name
+/// * `namespace` - the referenced object's namespace; used only by the legacy shape,
+///   because a `ContractVersionedObjectReference` is always same-namespace
+///
+/// Both shapes are emitted from the same inputs, so the only thing that varies is
+/// which fields the API server will accept.
+fn machine_contract_ref(
+    machine_api_version: &str,
+    api_version: &str,
+    kind: &str,
+    name: &str,
+    namespace: &str,
+) -> serde_json::Value {
+    if uses_legacy_object_reference(machine_api_version) {
+        return json!({
+            "apiVersion": api_version,
+            "kind": kind,
+            "name": name,
+            "namespace": namespace,
+        });
+    }
+
+    // ContractVersionedObjectReference: the group alone, with the version
+    // resolved by CAPI against the contract rather than pinned by us.
+    let (group, _version) = parse_api_version(api_version);
+    json!({
+        "apiGroup": group,
+        "kind": kind,
+        "name": name,
+    })
+}
+
 /// Add machine to cluster by creating bootstrap, infrastructure, and Machine resources
 ///
 /// This function:
@@ -1196,10 +1245,8 @@ pub async fn add_machine_to_cluster(
     })?;
     // The created CAPI Machine shares the contract version the user declared on
     // bootstrapSpec (passthrough); see machine_api_version_for.
-    let machine_api_version_full = format!(
-        "{CAPI_GROUP}/{}",
-        machine_api_version_for(Some(bootstrap_api_version))
-    );
+    let machine_api_version = machine_api_version_for(Some(bootstrap_api_version));
+    let machine_api_version_full = format!("{CAPI_GROUP}/{machine_api_version}");
     let bootstrap_kind = resource.spec.bootstrap_spec.kind().ok_or_else(|| {
         ReconcilerError::InvalidConfig("bootstrapSpec missing required field 'kind'".to_string())
     })?;
@@ -1416,19 +1463,21 @@ pub async fn add_machine_to_cluster(
         "spec": {
             "clusterName": cluster_name,
             "bootstrap": {
-                "configRef": {
-                    "apiVersion": bootstrap_api_version,
-                    "kind": bootstrap_kind,
-                    "name": name,
-                    "namespace": bootstrap_ns,
-                }
+                "configRef": machine_contract_ref(
+                    &machine_api_version,
+                    bootstrap_api_version,
+                    bootstrap_kind,
+                    &name,
+                    bootstrap_ns,
+                )
             },
-            "infrastructureRef": {
-                "apiVersion": infra_api_version,
-                "kind": infra_kind,
-                "name": name,
-                "namespace": infra_ns,
-            },
+            "infrastructureRef": machine_contract_ref(
+                &machine_api_version,
+                infra_api_version,
+                infra_kind,
+                &name,
+                infra_ns,
+            ),
         }
     });
 
@@ -1891,7 +1940,7 @@ pub async fn get_node_from_machine(
 
 /// Map a CAPI Machine event to the owning `ScheduledMachine`.
 ///
-/// Uses the `5spot.eribourg.dev/scheduled-machine` label that the reconciler
+/// Uses the `5spot.finos.org/scheduled-machine` label that the reconciler
 /// already stamps on every Machine it creates. Returns an empty vec when the
 /// label is missing, empty, whitespace-only, or when the Machine has no
 /// namespace — any of those would produce an ill-formed reconcile request.

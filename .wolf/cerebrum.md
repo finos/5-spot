@@ -85,6 +85,22 @@ budget_tokens: 2000
 <!-- Mistakes made and corrected. Each entry prevents the same mistake recurring. -->
 <!-- Format: [YYYY-MM-DD] Description of what went wrong and what to do instead. -->
 
+- **[2026-10-11] Never pin a `linker` in `.cargo/config.toml`.** A
+  `[target.<triple>] linker = ...` entry applies whenever that triple is the
+  *target*, including when it is also the *host*, so a macOS cross-toolchain
+  name there breaks every native Linux build with `linker '...' not found` in
+  every build script at once. A cross-linker is a property of the host/target
+  pair, which cargo config cannot express: decide it in the Makefile and export
+  `CARGO_TARGET_<TRIPLE>_LINKER` only when actually cross-compiling. Roadmap 06
+  F-3.
+
+- **[2026-10-11] Do not document a control that has only ever been applied by
+  hand.** The confinement guide recommended a systemd unit to delegate the
+  `hugetlb` controller, but the running worker only had it because of a manual
+  `echo` in the same boot. Install the thing you are documenting and verify it
+  the way a reader would get it (here: across a real reboot, confirming it
+  ordered before kubelet), or say plainly that it is untested.
+
 - **[2026-10-08] Check a design's premise against the other project's code
   before building apparatus to work around it.** ADR 0011 refused to let 5-Spot
   create the capacity object because deleting one "would pull the rug on claim

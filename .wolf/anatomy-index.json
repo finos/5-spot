@@ -1,13 +1,13 @@
 {
   "version": 1,
   "meta": {
-    "lastScanned": "2026-10-03T15:44:53.111Z",
-    "fileCount": 317,
+    "lastScanned": "2026-10-11T06:49:35.179Z",
+    "fileCount": 321,
     "hits": 0,
     "misses": 0,
-    "renderedHash": "65a5a1aad99ed86dd4e8c2d8fbbdf9a0f77be48d6565dc13e6bac6b3599125a7",
-    "storeUpdatedAt": "2026-10-03T15:44:53.117Z",
-    "rootHash": "52fed166c638471c"
+    "renderedHash": "539204bddd86774cb7f7be2a0ef0730afad3d95c4a3c2b6dd255b1444ce87d44",
+    "storeUpdatedAt": "2026-10-11T06:49:35.185Z",
+    "rootHash": "79e9deda2ad1d6ad"
   },
   "files": {
     ".github/actions/extract-version/action.yml": {
@@ -6878,6 +6878,42 @@
       "size": 3804,
       "mtimeMs": 1791042293062.8726,
       "updatedAt": "2026-10-03T15:44:53.110Z",
+      "source": "hook"
+    },
+    "docs/adr/0017-machine-reference-shape-follows-capi-contract.md": {
+      "description": "0017: The Machine's bootstrap and infrastructure references are serialized in the shape the discover",
+      "tokens": 1633,
+      "hash": "5cc4ee6f7ad7af3c",
+      "size": 6539,
+      "mtimeMs": 1791588148084.62,
+      "updatedAt": "2026-10-09T23:22:28.140Z",
+      "source": "hook"
+    },
+    "docs/src/operations/worker-resource-confinement.md": {
+      "description": "Confining a scheduled worker with systemd and cgroup v2",
+      "tokens": 6182,
+      "hash": "4dfd97b5eb917237",
+      "size": 24763,
+      "mtimeMs": 1791701375114.5786,
+      "updatedAt": "2026-10-11T06:49:35.179Z",
+      "source": "hook"
+    },
+    ".github/community/06-k0smotron-e2e-and-worker-confinement.md": {
+      "description": "06: k0smotron end-to-end and worker confinement",
+      "tokens": 2281,
+      "hash": "78947aad3638af04",
+      "size": 9184,
+      "mtimeMs": 1791588295988.8486,
+      "updatedAt": "2026-10-09T23:24:56.039Z",
+      "source": "hook"
+    },
+    ".cargo/config.toml": {
+      "description": "Cargo configuration.",
+      "tokens": 415,
+      "hash": "aa483a2de13e3f43",
+      "size": 1556,
+      "mtimeMs": 1791700626938.6892,
+      "updatedAt": "2026-10-11T06:37:06.992Z",
       "source": "hook"
     }
   },

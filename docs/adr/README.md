@@ -52,3 +52,4 @@ refactors) need neither. When unsure, **write the ADR.**
 | [0014](./0014-zero-capacity-on-governance-conflict.md) | Drive capacity to zero on a host-governance conflict (amends ADR-0011 decision 7) | Accepted |
 | [0015](./0015-dependency-internalization-policy.md) | Internalize a dependency when its used surface is 500 lines or less | Accepted |
 | [0016](./0016-own-the-capacity-object.md) | 5-Spot creates and owns the capacity object it scales (supersedes ADR-0011 decisions 1, 2, 5) | Accepted |
+| [0017](./0017-machine-reference-shape-follows-capi-contract.md) | The Machine's bootstrap and infrastructure references are serialized in the shape the discovered CAPI contract requires | Accepted |

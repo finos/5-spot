@@ -90,3 +90,15 @@ description: chronological action log per session, consolidated weekly
 | 11:43 | Created src/reconcilers/scheduled_capacity_tests.rs | — | ~4216 |
 | 11:44 | Created src/bin/scheduled_capacity_controller.rs | — | ~1451 |
 | 11:44 | Created src/bin/scheduled_capacity_controller_tests.rs | — | ~1015 |
+| 23:01 | Session end: 17 writes across 12 files (0011-schedule-gated-capacity-separate-controller.md, scheduledcapacity.yaml, leader.rs, leader_tests.rs, capacity_path_tests.rs) | 29 reads | ~46021 tok |
+
+## Session: 2026-10-09 23:01
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|
+| 01:22 | Created docs/adr/0017-machine-reference-shape-follows-capi-contract.md | — | ~1742 |
+| 01:23 | Created docs/src/operations/worker-resource-confinement.md | — | ~3144 |
+| 01:24 | Created .github/community/06-k0smotron-e2e-and-worker-confinement.md | — | ~2433 |
+| 08:37 | Created .cargo/config.toml | — | ~415 |
+| 08:49 | Created docs/src/operations/worker-resource-confinement.md | — | ~6594 |
+| 10:25 | Closed F-3: removed the cargo linker pins, moved linker choice into the Makefile (verified native + cross); expanded the cgroup confinement guide to the full control surface | .cargo/config.toml, Makefile, docs/src/operations/worker-resource-confinement.md, docs/src/development/building.md, .github/community/06-*.md, ROADMAPS.md, .claude/CHANGELOG.md | gates green: fmt/clippy/860 tests, crds+crddoc byte-identical, mkdocs --strict clean | ~9000 |

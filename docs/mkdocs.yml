@@ -230,6 +230,7 @@ nav:
       - Monitoring: operations/monitoring.md
       - Troubleshooting: operations/troubleshooting.md
       - Multi-Instance: operations/multi-instance.md
+      - Worker Resource Confinement: operations/worker-resource-confinement.md
 
   - Advanced Topics:
       - High Availability: advanced/ha.md

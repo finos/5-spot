@@ -9,6 +9,170 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-10-11 10:20] - Close F-3 (cargo linker pins) and complete the cgroup confinement guide
+
+**Author:** Erick Bourgeois
+
+### Changed
+
+- `.cargo/config.toml`: both `[target.<triple>] linker = ...` pins **removed**.
+  A pin there applies whenever the triple is the target, *including when it is
+  also the host*, so a native linux/amd64 build tried to exec a macOS
+  cross-toolchain binary and every build script failed with
+  `linker 'x86_64-unknown-linux-gnu-gcc' not found`. The file now carries only a
+  comment explaining why the pins are absent, so they are not reinstated.
+- `Makefile`: `build-linux-amd64` and `build-linux-arm64` resolve the linker
+  themselves, preferring `cross`, then a native build when the host already
+  targets that architecture, then a cross toolchain on `PATH` with
+  `CARGO_TARGET_<TRIPLE>_LINKER` exported for it. Both the `<triple>-gcc` and
+  `<arch>-linux-gnu-gcc` spellings are accepted, which also fixes a
+  pre-existing mismatch where the config pinned one name and the Makefile
+  probed the other. `kind-load` got the same treatment: it previously demanded
+  a cross linker unconditionally and so could not run on a Linux host at all.
+- `docs/src/development/building.md`: cross-compilation section rewritten around
+  the Makefile targets, with an explicit "do not pin the linker in
+  `.cargo/config.toml`" subsection showing the failure mode.
+- `docs/src/operations/worker-resource-confinement.md`: expanded from a
+  worked example into the full guide. New: prerequisites; a complete control
+  surface for CPU, memory, IO and pids with every systemd directive mapped to
+  the cgroup v2 interface file it writes; why `Delegate=` must stay off this
+  slice; guidance on choosing values; a verification cookbook covering
+  placement, limits, throttling, memory events, PSI and the live views
+  (`systemd-cgtop`, `systemd-cgls`, `io.stat`, `pids.current`); four smaller
+  traps; and the insulation option via `systemReservedCgroup`.
+- `.github/community/06-k0smotron-e2e-and-worker-confinement.md`: F-3 marked
+  closed with the two-direction verification; two rows added to the verified
+  table.
+- `ROADMAPS.md`: status row updated (F-3 closed, guide completed, F-4 and the
+  SIGKILL thread still open).
+
+### Why
+
+F-3 was the last finding from roadmap 06 that was purely self-inflicted: the
+repository could not be built on the Linux build host its own contributor guide
+tells you to use. The guide expansion was requested so the confinement feature
+is documented as a feature rather than as the single configuration that the
+end-to-end run happened to use.
+
+### Impact
+
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (build tooling)
+- [x] Documentation only (the guide expansion)
+
+### Verification
+
+Build fix checked in **both** directions, because removing the pin alone would
+have broken macOS cross builds:
+
+- native Linux x86_64 with `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER`
+  explicitly unset: `make build-linux-amd64` completes, release profile, 4m02s;
+- cross from macOS: without the env var a target build fails at
+  `linking with 'cc' failed`; with it, it links and yields
+  `ELF 64-bit LSB pie executable, x86-64`.
+
+Every directive-to-interface-file mapping in the guide was applied to a live
+worker with `systemctl set-property --runtime` and read back: `CPUWeight` ->
+`cpu.weight`, `AllowedCPUs` -> `cpuset.cpus`, `IOWeight` -> `io.weight`,
+`MemoryMin` -> `memory.min`, `CPUQuotaPeriodSec` rescaling both fields of
+`cpu.max`. Two behaviours found this way are documented as traps: clearing
+`AllowedCPUs` with an empty value does **not** reset `cpuset.cpus`, and changing
+the quota period rewrites the quota to preserve the ratio.
+
+The `hugetlb` delegation unit the guide recommends was installed and verified
+**across a real reboot** rather than asserted: it ran to `success` ahead of
+kubelet, `hugetlb` appeared in the root's `subtree_control` and the slice's
+`cgroup.controllers` with no manual step, and kubelet logged **0**
+missing-controller failures that boot against **17** on the boot before the unit
+existed. Previously the guide described a control that had only ever been
+applied by hand.
+
+`cargo fmt` clean, `clippy -D warnings` clean, **860 tests pass**; `make crds`
+and `make crddoc` regenerate byte-identically; `mkdocs build --strict` clean.
+No threat-model pass: no ADR reached implementation here, the build change has
+no posture effect, and the guide documents operator-side host configuration
+already covered by the §8 `bootstrapSpec` residual widened at stamp 1.7.
+
+---
+
+## [2026-10-09 23:40] - ADR-0017 + stale label domain: first live k0smotron end-to-end run
+
+**Author:** Erick Bourgeois
+
+### Changed
+
+- `src/reconcilers/helpers.rs`: `machine_contract_ref()` and
+  `uses_legacy_object_reference()` added; the CAPI `Machine` body now serializes
+  `spec.bootstrap.configRef` and `spec.infrastructureRef` in the shape the target
+  contract version requires. `add_machine_to_cluster` binds the bare
+  `machine_api_version` and both refs go through the new helper, so neither shape
+  is written anywhere else.
+- `src/constants.rs`: `CAPI_LEGACY_OBJECT_REFERENCE_VERSIONS` added
+  (`v1alpha3`, `v1alpha4`, `v1beta1`). An unrecognised version resolves to the
+  **modern** shape, because the legacy one is the one being removed.
+- `src/labels.rs`: the module still carried the retired `5spot.eribourg.dev`
+  domain after the group was renamed to `5spot.finos.org`.
+  `LABEL_SCHEDULED_MACHINE` is now an alias of
+  `constants::SCHEDULED_MACHINE_LABEL` so the stamped key and the watched key
+  cannot diverge again; the five other label constants move to the current group.
+- `src/labels_tests.rs`: three drift guards (the alias holds, no key carries the
+  retired group, the owned key is covered by `RESERVED_LABEL_PREFIXES`).
+- `src/reconcilers/helpers_tests.rs`: six tests pinning both reference shapes,
+  the group derivation and the unknown-version default.
+  `test_machine_to_sm_wrong_prefix_label_is_ignored` corrected: it had used
+  `5spot.finos.org/scheduled-machine`, the *canonical* key, as its "imposter",
+  which was only foreign while the watched key had drifted. It now uses genuinely
+  foreign prefixes and asserts the retired group no longer resolves.
+- `docs/adr/0017-machine-reference-shape-follows-capi-contract.md`: **new.**
+- `docs/adr/README.md`, `docs/src/development/index.md`: both ADR indexes.
+- `.github/community/06-k0smotron-e2e-and-worker-confinement.md`: **new** roadmap.
+- `ROADMAPS.md`, `.github/community/README.md`: status row and reading order.
+- `docs/src/operations/worker-resource-confinement.md`: **new** guide, plus
+  `docs/mkdocs.yml` nav.
+- `docs/src/security/threat-model.md`: full pass, stamp to **1.7 / ADR-0017**.
+  T2's mitigation was incomplete for the whole period the label domains diverged
+  and now says so; new T12 covers tracking-label confusion; two §7 control rows;
+  the §8 `bootstrapSpec` residual widened to the write side.
+
+### Why
+
+`ScheduledMachine` had never been run against real Cluster API controllers, a
+real k0smotron hosted control plane, or a host k0s is really installed onto over
+SSH. Two defects the entire unit suite could not reach surfaced immediately:
+
+1. discovery resolved `v1beta2` correctly and the Machine body was still built
+   in the `v1beta1` shape, which `v1beta2` rejects outright with a strict
+   decoding error, so Machine creation was impossible on Cluster API v1.11+
+   except via the `v1beta1` passthrough that happened to be self-consistent;
+2. the controller stamped `5spot.finos.org/scheduled-machine` and watched
+   `5spot.eribourg.dev/scheduled-machine`, so both secondary watches matched
+   nothing and the owned key was outside the reserved-prefix allowlist.
+
+### Impact
+
+- [x] Breaking change (behavioural, in the fixing direction: Machines are now
+      created in the shape the server accepts, and the Machine/Node secondary
+      watches begin matching for the first time)
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+
+Three-node k0s management cluster, Cluster API v1.14.3, k0smotron v2.2.0,
+cert-manager v1.21.2, with an 8 vCPU / 8 GiB SSH worker. `cargo fmt` clean,
+`clippy -D warnings` clean, **860 tests pass**. Live: Machine stored with
+`apiGroup`-form refs at `cluster.x-k8s.io/v1beta2`, k0s v1.34.11+k0s.1 joined
+`Ready`, and the full activate -> `ShuttingDown` -> `Inactive` -> reactivate
+cycle observed. Confinement measured at 2.01 cores against 8 demanded with
+~100% of periods throttled, and a 4 GiB ceiling never breached (peak
+3,983,450,112 B, 164,008 `MemoryHigh` events, zero OOM kills). Open items,
+including an unexplained ~30s SIGKILL of pods on the confined worker, are
+recorded in roadmap 06.
+
+---
+
 ## [2026-10-08 14:30] - ADR-0016: 5-Spot creates and owns the capacity object it scales
 
 **Author:** Erick Bourgeois
