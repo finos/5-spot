@@ -101,22 +101,43 @@ than a decision.
 stamps, so the write path and the read path cannot drift again, and three
 drift-guard tests pin it.
 
-### F-3: `.cargo/config.toml` makes the tree unbuildable on native Linux
+### F-3: `.cargo/config.toml` made the tree unbuildable on native Linux
 
-**Open.** The checked-in cargo config hardcodes macOS cross-toolchain linkers:
+**Closed 2026-10-11.** The checked-in cargo config hardcoded macOS
+cross-toolchain linkers:
 
 ```toml
 [target.x86_64-unknown-linux-gnu]
 linker = "x86_64-unknown-linux-gnu-gcc"
 ```
 
-On a native `x86_64-unknown-linux-gnu` host that linker does not exist, so every
-build script fails. This contradicts the project's own instruction to build on
-a Linux build host, and the run had to work around it with
-`CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=cc`. The fix is to move the
-cross-linker pins somewhere that only applies when actually cross-compiling
-(a `Cross.toml`, a `[target.…]` block selected by an explicit profile, or a
-documented env override), rather than to the default config every build reads.
+A `[target.<triple>]` pin applies whenever that triple is the *target*,
+including when it is also the *host*. On a native `x86_64-unknown-linux-gnu`
+machine that binary does not exist, so every build script failed at once with
+`linker 'x86_64-unknown-linux-gnu-gcc' not found`, and the project could not be
+built on the Linux build host the contributor guide tells you to use. The run
+had to work around it with an env override.
+
+A cross-linker is a property of the host/target **pair**, which cargo's config
+cannot express, so the choice moved to the Makefile. `build-linux-amd64` and
+`build-linux-arm64` now try `cross`, then a native build when the host already
+targets that architecture, then a cross toolchain on `PATH` with
+`CARGO_TARGET_<TRIPLE>_LINKER` exported for it. `kind-load` got the same
+treatment: it previously required a cross linker unconditionally and so could
+not run on a Linux host at all. Both the `<triple>-gcc` and
+`<arch>-linux-gnu-gcc` spellings are now accepted, which also resolves a
+pre-existing inconsistency where the config pinned one name and the Makefile
+probed the other. `.cargo/config.toml` keeps a comment explaining why the pins
+are absent, so they do not come back.
+
+Verified in both directions, because removing the pin alone would have broken
+macOS cross builds:
+
+- **native Linux x86_64**, env override explicitly unset: `make
+  build-linux-amd64` completes (release profile, 4m02s);
+- **cross from macOS**: without the linker env a target build fails at
+  `linking with 'cc' failed`; with the env var the Makefile now exports it links
+  and produces a valid `ELF 64-bit LSB pie executable, x86-64`.
 
 ### F-4: the node advertises the host, not the cap
 
@@ -142,6 +163,8 @@ with the correction in the operations page.
 | Deactivation | window closed -> `ShuttingDown` -> grace period -> `Inactive`, all three objects removed |
 | Reactivation | window reopened -> `Active` within 20s, objects recreated with correct refs |
 | Host cleanup | k0smotron stopped `k0sworker` on Machine deletion |
+| Controller delegation across reboot | the `hugetlb` delegation unit ran to `success` before kubelet; **0** missing-controller failures that boot against **17** on the boot before it existed |
+| Native Linux build (F-3 fix) | `make build-linux-amd64` with no env override, release profile, 4m02s |
 
 The CPU figure is self-checking: 8 demanded minus 2 granted is 6 cores' worth
 of denied runnable time, and 6 x 15s = 90s, which is what `throttled_usec`
@@ -158,7 +181,7 @@ slice.
 
 ## Open threads
 
-- **F-3** and **F-4** above.
+- **F-4** above. F-3 is closed.
 - **A pod on the confined worker was killed with SIGKILL about 30s after
   start**, repeatably, with no OOM (`oom_kill 0`), no node pressure, no taint,
   no cordon and nothing in the 5-Spot controller log. systemd created and then

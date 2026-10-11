@@ -131,20 +131,65 @@ strip = true
 
 ## Cross-Compilation
 
-### Linux (from macOS)
+Use the Makefile targets rather than calling `cargo build --target` yourself.
+They pick a strategy based on what the host actually is, and only they know
+which linker the host needs:
 
 ```bash
-# Install cross
-cargo install cross
-
-# Build for Linux
-cross build --release --target x86_64-unknown-linux-musl
+make build-linux-amd64        # -> target/x86_64-unknown-linux-gnu/release/
+make build-linux-arm64        # -> target/aarch64-unknown-linux-gnu/release/
 ```
 
-### ARM64
+Each target tries three things in order:
+
+1. **`cross`**, if it is installed. Builds in a container, so no host
+   toolchain is involved. `cargo install cross` to get it.
+2. **A native build**, when the host already is that OS and architecture. No
+   cross toolchain is needed or used.
+3. **A cross toolchain on `PATH`**, with the Makefile exporting
+   `CARGO_TARGET_<TRIPLE>_LINKER` for it. Both the
+   `x86_64-unknown-linux-gnu-gcc` (Homebrew / messense) and
+   `x86_64-linux-gnu-gcc` (distro) spellings are accepted.
+
+On macOS, install a toolchain for option 3:
 
 ```bash
-cross build --release --target aarch64-unknown-linux-musl
+brew tap messense/macos-cross-toolchains
+brew install x86_64-unknown-linux-gnu     # or aarch64-unknown-linux-gnu
+```
+
+### Do not pin the linker in `.cargo/config.toml`
+
+This is worth knowing before you "helpfully" add it back. A
+`[target.<triple>] linker = …` entry applies whenever that triple is the
+**target**, including when it is also the **host**:
+
+```toml
+# WRONG: breaks every native linux/amd64 build
+[target.x86_64-unknown-linux-gnu]
+linker = "x86_64-unknown-linux-gnu-gcc"
+```
+
+On a native linux/amd64 machine, cargo then tries to exec a macOS
+cross-toolchain binary that is not installed there, and every build script
+fails at once:
+
+```text
+error: linker `x86_64-unknown-linux-gnu-gcc` not found
+error: could not compile `serde_json` (build script) due to 1 previous error
+...
+```
+
+A cross-linker is a property of the host/target **pair**, which cargo's config
+cannot express, so the choice lives in the Makefile instead. `.cargo/config.toml`
+carries a comment saying so. Recorded as F-3 in
+[roadmap 06](https://github.com/finos/5-spot/blob/main/.github/community/06-k0smotron-e2e-and-worker-confinement.md).
+
+If you must drive cargo directly, supply the linker yourself:
+
+```bash
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-unknown-linux-gnu-gcc \
+  cargo build --release --target x86_64-unknown-linux-gnu
 ```
 
 ## CI/CD Build

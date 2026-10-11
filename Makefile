@@ -129,9 +129,14 @@ build-linux-amd64: ## Build for Linux x86_64 (requires cross toolchain)
 	elif [ "$$(uname -s)" = "Linux" ] && [ "$$(uname -m)" = "x86_64" ]; then \
 		echo "Building natively on Linux x86_64..."; \
 		cargo build --release --target x86_64-unknown-linux-gnu; \
+	elif command -v x86_64-unknown-linux-gnu-gcc >/dev/null 2>&1; then \
+		echo "Cross-building with x86_64-unknown-linux-gnu-gcc..."; \
+		CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-unknown-linux-gnu-gcc \
+			cargo build --release --target x86_64-unknown-linux-gnu; \
 	elif command -v x86_64-linux-gnu-gcc >/dev/null 2>&1; then \
-		echo "Building with cargo + x86_64-linux-gnu toolchain..."; \
-		cargo build --release --target x86_64-unknown-linux-gnu; \
+		echo "Cross-building with x86_64-linux-gnu-gcc..."; \
+		CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc \
+			cargo build --release --target x86_64-unknown-linux-gnu; \
 	else \
 		echo "ERROR: Cross-compilation to Linux x86_64 requires one of:"; \
 		echo "  1. cross tool (recommended): cargo install cross"; \
@@ -155,9 +160,14 @@ build-linux-arm64: ## Build for Linux ARM64 (requires cross toolchain)
 	elif [ "$$(uname -s)" = "Linux" ] && [ "$$(uname -m)" = "aarch64" ]; then \
 		echo "Building natively on Linux ARM64..."; \
 		cargo build --release --target aarch64-unknown-linux-gnu; \
+	elif command -v aarch64-unknown-linux-gnu-gcc >/dev/null 2>&1; then \
+		echo "Cross-building with aarch64-unknown-linux-gnu-gcc..."; \
+		CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-unknown-linux-gnu-gcc \
+			cargo build --release --target aarch64-unknown-linux-gnu; \
 	elif command -v aarch64-linux-gnu-gcc >/dev/null 2>&1; then \
-		echo "Building with cargo + aarch64-linux-gnu toolchain..."; \
-		cargo build --release --target aarch64-unknown-linux-gnu; \
+		echo "Cross-building with aarch64-linux-gnu-gcc..."; \
+		CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+			cargo build --release --target aarch64-unknown-linux-gnu; \
 	else \
 		echo "ERROR: Cross-compilation to Linux ARM64 requires one of:"; \
 		echo "  1. cross tool (recommended): cargo install cross"; \
@@ -821,15 +831,26 @@ kind-load: ## Build image for host arch (native cross-compile, bypassing cross) 
 	fi
 	@HOST_ARCH=$$(uname -m); \
 		case "$$HOST_ARCH" in \
-			arm64|aarch64) TRIPLE=aarch64-unknown-linux-gnu; DOCKER_ARCH=arm64; LINKER=aarch64-unknown-linux-gnu-gcc ;; \
-			x86_64|amd64)  TRIPLE=x86_64-unknown-linux-gnu;  DOCKER_ARCH=amd64; LINKER=x86_64-unknown-linux-gnu-gcc ;; \
+			arm64|aarch64) TRIPLE=aarch64-unknown-linux-gnu; DOCKER_ARCH=arm64; LINKER=aarch64-unknown-linux-gnu-gcc; ALT_LINKER=aarch64-linux-gnu-gcc ;; \
+			x86_64|amd64)  TRIPLE=x86_64-unknown-linux-gnu;  DOCKER_ARCH=amd64; LINKER=x86_64-unknown-linux-gnu-gcc;  ALT_LINKER=x86_64-linux-gnu-gcc ;; \
 			*) echo "ERROR: unsupported host arch: $$HOST_ARCH"; exit 1 ;; \
 		esac; \
 		echo "Host $$HOST_ARCH -> building linux/$$DOCKER_ARCH image"; \
-		if ! command -v $$LINKER >/dev/null 2>&1; then \
-			echo "ERROR: linker '$$LINKER' not found on PATH."; \
+		LINKER_ENV=""; \
+		if [ "$$(uname -s)" = "Linux" ]; then \
+			echo "Native Linux host: using the default linker"; \
+		elif command -v $$LINKER >/dev/null 2>&1; then \
+			LINKER_VAR=$$(echo "CARGO_TARGET_$${TRIPLE}_LINKER" | tr 'a-z-' 'A-Z_'); \
+			LINKER_ENV="$$LINKER_VAR=$$LINKER"; \
+			echo "Cross-building with $$LINKER"; \
+		elif command -v $$ALT_LINKER >/dev/null 2>&1; then \
+			LINKER_VAR=$$(echo "CARGO_TARGET_$${TRIPLE}_LINKER" | tr 'a-z-' 'A-Z_'); \
+			LINKER_ENV="$$LINKER_VAR=$$ALT_LINKER"; \
+			echo "Cross-building with $$ALT_LINKER"; \
+		else \
+			echo "ERROR: no linker for $$TRIPLE on PATH (tried '$$LINKER' and '$$ALT_LINKER')."; \
 			echo "  On macOS: brew tap messense/macos-cross-toolchains && brew install $$TRIPLE"; \
-			echo "  On Linux: install the matching gcc cross toolchain for your distro."; \
+			echo "  On Linux: a native host needs no cross toolchain; otherwise install the matching gcc."; \
 			exit 1; \
 		fi; \
 		if ! rustup target list --installed | grep -qx "$$TRIPLE"; then \
@@ -837,7 +858,7 @@ kind-load: ## Build image for host arch (native cross-compile, bypassing cross) 
 			rustup target add "$$TRIPLE"; \
 		fi; \
 		echo "Compiling 5spot for $$TRIPLE..."; \
-		cargo build --release --target "$$TRIPLE"; \
+		env $$LINKER_ENV cargo build --release --target "$$TRIPLE"; \
 		echo "Staging binary at binaries/$$DOCKER_ARCH/5spot..."; \
 		mkdir -p "binaries/$$DOCKER_ARCH"; \
 		cp "target/$$TRIPLE/release/5spot" "binaries/$$DOCKER_ARCH/5spot"; \

@@ -1,7 +1,7 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-10-09T23:24:56.039Z
-> Files: 320 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-10-11T06:49:35.179Z
+> Files: 321 tracked | Anatomy hits: 0 | Misses: 0
 
 > Project structure index. Auto-maintained by OpenWolf hooks and daemon.
 > Run `openwolf scan` to generate, or wait for the first Claude Code session.
@@ -29,6 +29,10 @@
 - `README.md` — Project documentation (~4284 tok)
 - `ROADMAPS.md` — Roadmaps (~902 tok)
 - `SECURITY.md` — Security Policy (~825 tok)
+
+## .cargo/
+
+- `config.toml` — Cargo configuration. (~415 tok)
 
 ## .claude/
 
@@ -472,7 +476,7 @@
 - `monitoring.md` — Monitoring (~4350 tok)
 - `multi-instance.md` — Multi-Instance Deployment (~1292 tok)
 - `troubleshooting.md` — Troubleshooting (~6291 tok)
-- `worker-resource-confinement.md` — Confining a scheduled worker with systemd (~2947 tok)
+- `worker-resource-confinement.md` — Confining a scheduled worker with systemd and cgroup v2 (~6182 tok)
 
 ## docs/src/reference/
 

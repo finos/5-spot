@@ -1,13 +1,13 @@
 {
   "version": 1,
   "meta": {
-    "lastScanned": "2026-10-09T23:24:56.039Z",
-    "fileCount": 320,
+    "lastScanned": "2026-10-11T06:49:35.179Z",
+    "fileCount": 321,
     "hits": 0,
     "misses": 0,
-    "renderedHash": "c276fd330ab3fa59ca394d87c8184dd0f220e3eeddd6f6a5fdf18b96346e4af9",
-    "storeUpdatedAt": "2026-10-09T23:24:56.046Z",
-    "rootHash": "b40028cbc144a5b4"
+    "renderedHash": "539204bddd86774cb7f7be2a0ef0730afad3d95c4a3c2b6dd255b1444ce87d44",
+    "storeUpdatedAt": "2026-10-11T06:49:35.185Z",
+    "rootHash": "79e9deda2ad1d6ad"
   },
   "files": {
     ".github/actions/extract-version/action.yml": {
@@ -6890,12 +6890,12 @@
       "source": "hook"
     },
     "docs/src/operations/worker-resource-confinement.md": {
-      "description": "Confining a scheduled worker with systemd",
-      "tokens": 2947,
-      "hash": "beb7690564cb0e5a",
-      "size": 11812,
-      "mtimeMs": 1791588226521.5847,
-      "updatedAt": "2026-10-09T23:23:46.575Z",
+      "description": "Confining a scheduled worker with systemd and cgroup v2",
+      "tokens": 6182,
+      "hash": "4dfd97b5eb917237",
+      "size": 24763,
+      "mtimeMs": 1791701375114.5786,
+      "updatedAt": "2026-10-11T06:49:35.179Z",
       "source": "hook"
     },
     ".github/community/06-k0smotron-e2e-and-worker-confinement.md": {
@@ -6905,6 +6905,15 @@
       "size": 9184,
       "mtimeMs": 1791588295988.8486,
       "updatedAt": "2026-10-09T23:24:56.039Z",
+      "source": "hook"
+    },
+    ".cargo/config.toml": {
+      "description": "Cargo configuration.",
+      "tokens": 415,
+      "hash": "aa483a2de13e3f43",
+      "size": 1556,
+      "mtimeMs": 1791700626938.6892,
+      "updatedAt": "2026-10-11T06:37:06.992Z",
       "source": "hook"
     }
   },

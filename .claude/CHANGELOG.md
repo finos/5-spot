@@ -9,6 +9,93 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-10-11 10:20] - Close F-3 (cargo linker pins) and complete the cgroup confinement guide
+
+**Author:** Erick Bourgeois
+
+### Changed
+
+- `.cargo/config.toml`: both `[target.<triple>] linker = ...` pins **removed**.
+  A pin there applies whenever the triple is the target, *including when it is
+  also the host*, so a native linux/amd64 build tried to exec a macOS
+  cross-toolchain binary and every build script failed with
+  `linker 'x86_64-unknown-linux-gnu-gcc' not found`. The file now carries only a
+  comment explaining why the pins are absent, so they are not reinstated.
+- `Makefile`: `build-linux-amd64` and `build-linux-arm64` resolve the linker
+  themselves, preferring `cross`, then a native build when the host already
+  targets that architecture, then a cross toolchain on `PATH` with
+  `CARGO_TARGET_<TRIPLE>_LINKER` exported for it. Both the `<triple>-gcc` and
+  `<arch>-linux-gnu-gcc` spellings are accepted, which also fixes a
+  pre-existing mismatch where the config pinned one name and the Makefile
+  probed the other. `kind-load` got the same treatment: it previously demanded
+  a cross linker unconditionally and so could not run on a Linux host at all.
+- `docs/src/development/building.md`: cross-compilation section rewritten around
+  the Makefile targets, with an explicit "do not pin the linker in
+  `.cargo/config.toml`" subsection showing the failure mode.
+- `docs/src/operations/worker-resource-confinement.md`: expanded from a
+  worked example into the full guide. New: prerequisites; a complete control
+  surface for CPU, memory, IO and pids with every systemd directive mapped to
+  the cgroup v2 interface file it writes; why `Delegate=` must stay off this
+  slice; guidance on choosing values; a verification cookbook covering
+  placement, limits, throttling, memory events, PSI and the live views
+  (`systemd-cgtop`, `systemd-cgls`, `io.stat`, `pids.current`); four smaller
+  traps; and the insulation option via `systemReservedCgroup`.
+- `.github/community/06-k0smotron-e2e-and-worker-confinement.md`: F-3 marked
+  closed with the two-direction verification; two rows added to the verified
+  table.
+- `ROADMAPS.md`: status row updated (F-3 closed, guide completed, F-4 and the
+  SIGKILL thread still open).
+
+### Why
+
+F-3 was the last finding from roadmap 06 that was purely self-inflicted: the
+repository could not be built on the Linux build host its own contributor guide
+tells you to use. The guide expansion was requested so the confinement feature
+is documented as a feature rather than as the single configuration that the
+end-to-end run happened to use.
+
+### Impact
+
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (build tooling)
+- [x] Documentation only (the guide expansion)
+
+### Verification
+
+Build fix checked in **both** directions, because removing the pin alone would
+have broken macOS cross builds:
+
+- native Linux x86_64 with `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER`
+  explicitly unset: `make build-linux-amd64` completes, release profile, 4m02s;
+- cross from macOS: without the env var a target build fails at
+  `linking with 'cc' failed`; with it, it links and yields
+  `ELF 64-bit LSB pie executable, x86-64`.
+
+Every directive-to-interface-file mapping in the guide was applied to a live
+worker with `systemctl set-property --runtime` and read back: `CPUWeight` ->
+`cpu.weight`, `AllowedCPUs` -> `cpuset.cpus`, `IOWeight` -> `io.weight`,
+`MemoryMin` -> `memory.min`, `CPUQuotaPeriodSec` rescaling both fields of
+`cpu.max`. Two behaviours found this way are documented as traps: clearing
+`AllowedCPUs` with an empty value does **not** reset `cpuset.cpus`, and changing
+the quota period rewrites the quota to preserve the ratio.
+
+The `hugetlb` delegation unit the guide recommends was installed and verified
+**across a real reboot** rather than asserted: it ran to `success` ahead of
+kubelet, `hugetlb` appeared in the root's `subtree_control` and the slice's
+`cgroup.controllers` with no manual step, and kubelet logged **0**
+missing-controller failures that boot against **17** on the boot before the unit
+existed. Previously the guide described a control that had only ever been
+applied by hand.
+
+`cargo fmt` clean, `clippy -D warnings` clean, **860 tests pass**; `make crds`
+and `make crddoc` regenerate byte-identically; `mkdocs build --strict` clean.
+No threat-model pass: no ADR reached implementation here, the build change has
+no posture effect, and the guide documents operator-side host configuration
+already covered by the §8 `bootstrapSpec` residual widened at stamp 1.7.
+
+---
+
 ## [2026-10-09 23:40] - ADR-0017 + stale label domain: first live k0smotron end-to-end run
 
 **Author:** Erick Bourgeois
