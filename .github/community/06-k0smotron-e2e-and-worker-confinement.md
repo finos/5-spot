@@ -206,16 +206,60 @@ cluster with three control plane replicas, a stable VIP, correct certificate
 SANs and fully verified TLS. The single-endpoint single-replica control plane
 was not the cause.
 
-**The confinement is now exonerated twice over.** Having already shown the
-*limits* were never approached, this run tested the remaining variable, the
-cgroup *placement*: `cgroupRoot` was removed from the worker profile so
-`kubepods.slice` moved back to the root and pods left `k0s.slice` entirely. The
-CrashLoop continued unchanged. Both halves of the confinement are therefore ruled
-out as the cause, by independent experiment rather than by inference.
+**The confinement is exonerated three times over, and cgroups are not the
+cause.** Three independent experiments, in increasing order of severity:
 
-Also ruled out: a CNI or sandbox fault (the `hostNetwork` pods, which have no
-CNI sandbox, CrashLoop too) and the management cluster's API (healthy
-throughout, and its own control-plane VIP is held by exactly one node).
+1. **Limits never approached.** Measured during the failure: `oom_kill 0`,
+   779 MB of 4 GiB, 76 throttled periods out of 684,221 (0.011%),
+   `cpu.pressure` 0.00.
+2. **Pods outside the slice.** `cgroupRoot` removed from the worker profile, so
+   `kubepods.slice` returned to the root and pods left `k0s.slice` entirely.
+   CrashLoop unchanged.
+3. **No slicing at all.** The `Slice=k0s.slice` drop-in removed from
+   `k0sworker.service` and the worker rebooted for clean cgroup state, giving
+   `ControlGroup=/system.slice/k0sworker.service`, `cpu.max=max`,
+   `memory.max=max`, `k0s.slice` absent entirely. CrashLoop unchanged.
+
+Experiment 3 matters because experiment 2 alone was **not** a clean test and was
+briefly reported as though it were: removing `cgroupRoot` moves the *pods* out
+of the slice but leaves k0s, containerd and kubelet inside it, still subject to
+the parent's cap through cgroup v2's hierarchical limits. Worth noting for
+anyone repeating this: `systemctl show <unit> -p Slice` reported
+`system.slice` immediately after the drop-in was deleted while `ControlGroup`
+still read `/k0s.slice/k0sworker.service`. systemd does not re-parent a running
+unit's cgroup on `daemon-reload`, so **trust `ControlGroup`, not `Slice`**, and
+reboot if you need certainty.
+
+A corollary: "the slice is too small to run the control agents" is also
+disproved, since the failure persists with no limits whatsoever.
+
+### Also ruled out, each by evidence rather than argument
+
+| Hypothesis | How it was eliminated |
+| --- | --- |
+| cgroup limits too tight | nowhere near any limit (above) |
+| cgroup placement under a slice | pods moved out; failure persists |
+| slicing at all | nothing sliced, unlimited; failure persists |
+| control plane availability / single replica | rebuilt with 3 replicas + stable VIP; failure persists |
+| certificate or kubeconfig invalidity | SANs contain the VIP, TLS verifies fully |
+| CNI sandbox only | `hostNetwork` pods, which have no CNI sandbox, fail too |
+| AppArmor denial | `apparmor="DENIED"` count is 0 |
+| `systemd-oomd` | not installed, not running, no kills logged |
+| kernel OOM killer | no `oom`/`Killed process` in `dmesg`; machine using 563 MB of 7.9 GB |
+| resource starvation | root PSI cpu and memory ~0.00; 7.4 GB available |
+| duplicate address on the worker | no ARP conflict in `dmesg` |
+| management cluster health | `readyz` ok; its CPLB VIP held by exactly one node |
+
+### What the signal actually looks like
+
+Containers are **SIGKILLed** externally: containerd records
+`exit_status:137` while the container's own cgroup is unlimited and reports
+`oom_kill 0`. Each one writes its complete startup output within about one
+second (`kube-proxy` reaching "Caches are synced", CoreDNS serving on `:53`),
+sits idle, and is killed 60 to 90 seconds later. `kube-proxy` has neither a
+liveness nor a readiness probe, so probe failure cannot explain it. kubelet is
+continuously issuing `StopPodSandbox` / `TearDown network` /
+`RemovePodSandbox`, with sandbox attempt counters climbing into the twenties.
 
 ### What the rebuild did prove
 
@@ -271,13 +315,20 @@ does not make the pool a cluster-wide default.
   certificate and kubeconfig validity, the CNI sandbox, and the management
   cluster's own health.
 
-  The untested variable is now **the worker substrate itself**. This VM is
-  attached with **macvtap** on a VM host whose CPU is passed through, and macvtap
-  deliberately breaks host-to-guest traffic. The next experiment is to provision
-  a second worker on a plain bridge, change nothing else, and compare: that
-  isolates the network attachment and the VM environment in one step. Until that
-  runs, nothing here should be attributed to 5-Spot, to k0smotron or to the
-  confinement.
+  The surviving hypothesis is **the worker substrate**, and specifically its
+  network attachment. This VM is attached with **macvtap**, which deliberately
+  breaks host-to-guest traffic, and the churn is centred on pod sandboxes and
+  the CNI (`kube-router` reached sandbox `Attempt:9` and
+  `konnectivity-agent` container `Attempt:24` inside a single 150-second
+  window). The next experiment is one worker on a **plain bridge**, nothing else
+  changed, compared against this one: that isolates the attachment and the VM
+  environment in a single step.
+
+  Until that runs, nothing here should be attributed to 5-Spot, to k0smotron or
+  to the confinement. 5-Spot's own behaviour was correct throughout: it
+  activated, created all three CAPI objects with the right contract shape,
+  reported `Active`/`Ready`, and on teardown its finalizer removed everything in
+  15 seconds against this very cluster.
 
 - **No automated e2e covers this path.** The run was driven by hand. The
   manifests are recorded well enough here to script against a disposable VM, and

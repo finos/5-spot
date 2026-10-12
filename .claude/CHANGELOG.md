@@ -9,6 +9,66 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-10-12 15:00] - True no-slice baseline: cgroups and slicing fully exonerated
+
+**Author:** Erick Bourgeois
+
+### Changed
+
+- `.github/community/06-k0smotron-e2e-and-worker-confinement.md`: the
+  confinement section now records **three** independent experiments rather than
+  two, adds a table of every eliminated hypothesis with how each was ruled out,
+  and describes what the failure signal actually looks like. The surviving
+  hypothesis is narrowed to the worker's network attachment.
+- `ROADMAPS.md`: status row updated.
+
+### Why
+
+The previous pass reported the confinement exonerated on the strength of
+removing `cgroupRoot`. That was **not** a clean test and the record overstated
+it: removing `cgroupRoot` moves the pods out of the slice but leaves k0s,
+containerd and kubelet inside it, still capped through cgroup v2's hierarchical
+limits. The honest baseline, nothing sliced and no limits at all, had never been
+run.
+
+### Impact
+
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+### Verification
+
+True baseline established by removing the `Slice=` drop-in from
+`k0sworker.service` and rebooting the worker for clean cgroup state:
+`ControlGroup=/system.slice/k0sworker.service`, `cpu.max=max`,
+`memory.max=max`, `k0s.slice` absent, pods at `/sys/fs/cgroup/kubepods.slice`.
+**The CrashLoop persists unchanged** (coredns 19->22, kube-proxy 19->22,
+metrics-server 24->25 across six minutes). Cgroups, slicing and
+resource-starvation are therefore all ruled out.
+
+A systemd detail worth keeping: immediately after deleting the drop-in,
+`systemctl show -p Slice` reported `system.slice` while `ControlGroup` still
+read `/k0s.slice/k0sworker.service`. systemd does not re-parent a running
+unit's cgroup on `daemon-reload`. Trust `ControlGroup`, not `Slice`.
+
+Further eliminated this pass, each by direct evidence: AppArmor (`DENIED` count
+0), `systemd-oomd` (not installed), the kernel OOM killer (no `dmesg` record;
+563 MB used of 7.9 GB), resource starvation (root PSI ~0.00), and a duplicate
+address on the worker. containerd records `exit_status:137` for containers whose
+own cgroup is unlimited with `oom_kill 0`, so they are SIGKILLed externally
+while the machine is idle.
+
+5-Spot itself behaved correctly throughout: activation, all three CAPI objects
+with the correct contract shape, `Active`/`Ready`, and finalizer teardown in 15
+seconds against the degraded cluster.
+
+`mkdocs build --strict` clean. No Rust changed. No threat-model pass: no ADR, no
+posture change.
+
+---
+
 ## [2026-10-12 13:30] - Rebuild on a LoadBalancer control plane: ADR 0017's v1beta2 path proven, confinement exonerated twice
 
 **Author:** Erick Bourgeois
