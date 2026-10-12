@@ -28,7 +28,7 @@ Every command, value and measurement below was taken from a live run; see
 | --- | --- | --- |
 | **cgroup v2** (unified hierarchy) | Everything here uses the v2 interface files. v1 has different names and no `MemoryHigh` equivalent | `stat -fc %T /sys/fs/cgroup` returns `cgroup2fs` |
 | **systemd** as PID 1 | The limits are expressed as unit properties | `systemctl --version` (257 in the reference run) |
-| **kubelet on the systemd cgroup driver** | The two halves (section 2) must agree on who creates cgroups | set in the worker profile, section 4 |
+| **kubelet and containerd on the SAME cgroup driver** | A mismatch silently destroys pod lifecycle on the node; k0s uses cgroupfs | `grep SystemdCgroup /run/k0s/containerd-cri.toml`, section 6.1 |
 | **The `hugetlb` controller delegated** | kubelet refuses to start without it, and systemd never delegates it on its own | section 6.2 |
 
 A host with no swap, as the reference run had, simplifies memory behaviour:
@@ -54,16 +54,15 @@ single `CPUQuota` governs the union:
 ```text
 k0s.slice                      CPUQuota=200%  MemoryMax=4G   <-- the limit lives here
 ├── k0sworker.service          k0s + containerd + kubelet
-└── k0s-kubepods.slice         every workload pod
-    ├── k0s-kubepods-burstable.slice
-    │   └── k0s-kubepods-burstable-pod<uid>.slice
-    └── k0s-kubepods-besteffort.slice
-        └── k0s-kubepods-besteffort-pod<uid>.slice
+└── kubepods                   every workload pod
+    ├── burstable/pod<uid>
+    └── besteffort/pod<uid>
 ```
 
-Note the systemd naming: the slice is `k0s.slice`, and children are named by
-prefixing the parent, so `kubepods` under it becomes `k0s-kubepods.slice`. That
-is why `cgroupRoot` is written `/k0s` and not `/k0s.slice` (section 6.1).
+The `kubepods` tree uses plain **cgroupfs** names (`kubepods/burstable`), not
+systemd ones (`kubepods.slice`), because k0s's containerd uses the cgroupfs
+driver and kubelet must match it. Getting that wrong is the single most
+destructive mistake available here; see section 6.1.
 
 ---
 
@@ -213,13 +212,20 @@ spec:
       workerProfiles:
         - name: confined
           values:
-            cgroupDriver: systemd
-            cgroupRoot: /k0s           # NOT /k0s.slice - see 6.1
+            # Do NOT set cgroupDriver here. k0s's containerd ships
+            # SystemdCgroup = false, so overriding kubelet to `systemd`
+            # is a driver MISMATCH that breaks the node. See 6.1.
+            cgroupRoot: /k0s.slice
             # make the Node's advertised capacity match the cap - see 6.3
             systemReserved:
               cpu: "6"
               memory: 4Gi
 ```
+
+With k0s's default **cgroupfs** driver, `cgroupRoot` is a literal cgroup path, so
+`/k0s.slice` means exactly the directory `/sys/fs/cgroup/k0s.slice` that systemd
+created for the slice. kubelet then builds `kubepods` inside it and the slice's
+limits apply to the whole subtree.
 
 `values` is a `KubeletConfiguration`, so anything kubelet accepts there is
 available, including `evictionHard`, `kubeReserved`, `systemReservedCgroup` and
@@ -318,31 +324,76 @@ worker running ~104 tasks at idle.
 ### 5.5 Delegation
 
 `Delegate=yes` on a unit hands its subtree to the process inside and tells
-systemd to stop managing children there. **Do not set it on this slice.** kubelet
-with the systemd driver creates its pod slices *through* systemd, so delegation
-and the systemd cgroup driver are contradictory. Leave `Delegate=no` (the
-default) and let systemd own the tree; this is why the pod slices show up as
-real systemd units:
+systemd to stop managing children there. Which setting is right depends entirely
+on the cgroup driver, so this is worth stating carefully:
 
-```console
-$ systemctl list-units --all 'k0s-*'
-k0s-kubepods.slice                      loaded active active libcontainer container k0s-kubepods.slice
-k0s-kubepods-besteffort.slice           loaded active active libcontainer container ...
-k0s-kubepods-burstable-pod<uid>.slice   loaded active active libcontainer container ...
-```
+- **With the cgroupfs driver (k0s's default, and what this guide uses)** kubelet
+  creates plain cgroup directories under `cgroupRoot` without going through
+  systemd. `Delegate=yes` is the honest declaration of that arrangement. The
+  verified configuration here carries `Delegate=yes` in the slice unit, though
+  note `systemctl show k0s.slice -p Delegate` still reported `no` and the
+  configuration worked regardless, so do not treat it as the load-bearing
+  setting. What matters is that the drivers match.
+- **With the systemd driver** kubelet creates its pod slices *through* systemd,
+  so delegation and that driver are contradictory and `Delegate` should be left
+  at its default.
 
-Controller **delegation** in the kernel sense is separate and is required:
-see 6.2.
+Controller **delegation** in the kernel sense is a separate thing and is
+required either way: see 6.2.
 
 ---
 
 ## 6. The three things that will catch you
 
-### 6.1 `cgroupRoot` must not carry the `.slice` suffix
+### 6.1 Do not set `cgroupDriver: systemd` on k0s
 
-The systemd cgroup driver appends `.slice` to every path component. Writing
-`cgroupRoot: /k0s.slice` therefore asks for `k0s.slice.slice`, and kubelet
-crash-loops:
+**This is the one that will cost you a day.** k0s's containerd is configured
+with the **cgroupfs** driver:
+
+```console
+$ sudo grep SystemdCgroup /run/k0s/containerd-cri.toml
+            SystemdCgroup = false
+```
+
+Overriding kubelet to `cgroupDriver: systemd` therefore creates a **cgroup
+driver mismatch**: kubelet creates and expects systemd slices
+(`kubepods.slice`, `k0s-kubepods-besteffort-pod<uid>.slice`) while containerd
+puts containers in cgroupfs paths. kubelet cannot reconcile what it finds with
+what it expects, so it tears down and recreates pod sandboxes forever.
+
+The symptom is **nothing like a cgroup problem**, which is what makes it
+expensive:
+
+- every pod on the node, `hostNetwork` or not, starts perfectly (caches synced,
+  DNS answering), sits idle, and is SIGKILLed 60 to 90 seconds later;
+- containerd reports `exit_status:137` while the container's own cgroup is
+  unlimited and reports `oom_kill 0`;
+- `kube-proxy` dies with **no error logged at all** and has no liveness or
+  readiness probe that could explain it;
+- the Node stays `Ready` the whole time, because kubelet's own health is fine;
+- restart counts climb into the hundreds over a day;
+- `SandboxChanged: Pod sandbox changed, it will be killed and re-created`
+  appears in events, and kubelet loops on `StopPodSandbox` / `TearDown network`
+  / `RemovePodSandbox`.
+
+None of the obvious culprits are involved: no limit is approached, no OOM
+occurs, PSI stays at zero, and removing the limits, the `cgroupRoot` or the
+slice entirely changes nothing, because the driver mismatch is still there.
+
+**So: leave `cgroupDriver` unset** and let kubelet use k0s's default. Check
+which driver containerd actually uses before overriding anything:
+
+```sh
+sudo grep -n 'SystemdCgroup' /run/k0s/containerd-cri.toml
+```
+
+If you genuinely want the systemd driver, you must switch **both** sides,
+giving containerd a drop-in under `/etc/k0s/containerd.d/` that sets
+`SystemdCgroup = true`, and only then set `cgroupDriver: systemd`. In that case
+`cgroupRoot` becomes a systemd *slice name* rather than a path, and the systemd
+driver appends `.slice` to every component, so it must be written `/k0s` (which
+resolves to `k0s.slice`); writing `/k0s.slice` asks for `k0s.slice.slice` and
+kubelet refuses to start:
 
 ```text
 failed to run Kubelet: invalid configuration: could not read controllers for
@@ -350,7 +401,8 @@ cgroup ["k0s.slice"]: open /sys/fs/cgroup/k0s.slice.slice/cgroup.controllers:
 no such file or directory
 ```
 
-Use `cgroupRoot: /k0s` to target the slice named `k0s.slice`.
+The cgroupfs path in this guide is the simpler of the two and is what has been
+verified end to end.
 
 ### 6.2 systemd does not delegate `hugetlb`, and kubelet requires it
 
@@ -471,7 +523,21 @@ workloads:
 $ find /sys/fs/cgroup/k0s.slice -maxdepth 1 -type d
 /sys/fs/cgroup/k0s.slice
 /sys/fs/cgroup/k0s.slice/k0sworker.service
-/sys/fs/cgroup/k0s.slice/k0s-kubepods.slice
+/sys/fs/cgroup/k0s.slice/kubepods
+```
+
+`kubepods` with no `.slice` suffix is what you want: it confirms kubelet is on
+the cgroupfs driver and therefore matching containerd. If you see
+`k0s-kubepods.slice` here, kubelet is on the systemd driver and, unless you also
+switched containerd, the node is in the failure mode described in 6.1.
+
+Confirm the two agree:
+
+```console
+$ sudo grep -c 'SystemdCgroup = false' /run/k0s/containerd-cri.toml   # containerd: cgroupfs
+1
+$ find /sys/fs/cgroup/k0s.slice -maxdepth 1 -name 'kubepods*'          # kubelet: cgroupfs
+/sys/fs/cgroup/k0s.slice/kubepods
 ```
 
 ### 7.4 Does the slice have the controllers it needs?

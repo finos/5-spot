@@ -206,60 +206,52 @@ cluster with three control plane replicas, a stable VIP, correct certificate
 SANs and fully verified TLS. The single-endpoint single-replica control plane
 was not the cause.
 
-**The confinement is exonerated three times over, and cgroups are not the
-cause.** Three independent experiments, in increasing order of severity:
+**Root cause, found 2026-10-12: a cgroup driver mismatch introduced by this
+project's own worker profile.** k0s's containerd is configured with
+`SystemdCgroup = false`, i.e. the **cgroupfs** driver. The confinement recipe
+set `cgroupDriver: systemd` on kubelet, so kubelet created and expected systemd
+slices while containerd placed containers in cgroupfs paths. kubelet could not
+reconcile the two and tore down and recreated pod sandboxes indefinitely.
 
-1. **Limits never approached.** Measured during the failure: `oom_kill 0`,
-   779 MB of 4 GiB, 76 throttled periods out of 684,221 (0.011%),
-   `cpu.pressure` 0.00.
-2. **Pods outside the slice.** `cgroupRoot` removed from the worker profile, so
-   `kubepods.slice` returned to the root and pods left `k0s.slice` entirely.
-   CrashLoop unchanged.
-3. **No slicing at all.** The `Slice=k0s.slice` drop-in removed from
-   `k0sworker.service` and the worker rebooted for clean cgroup state, giving
-   `ControlGroup=/system.slice/k0sworker.service`, `cpu.max=max`,
-   `memory.max=max`, `k0s.slice` absent entirely. CrashLoop unchanged.
+Proven by two controls:
 
-Experiment 3 matters because experiment 2 alone was **not** a clean test and was
-briefly reported as though it were: removing `cgroupRoot` moves the *pods* out
-of the slice but leaves k0s, containerd and kubelet inside it, still subject to
-the parent's cap through cgroup v2's hierarchical limits. Worth noting for
-anyone repeating this: `systemctl show <unit> -p Slice` reported
-`system.slice` immediately after the drop-in was deleted while `ControlGroup`
-still read `/k0s.slice/k0sworker.service`. systemd does not re-parent a running
-unit's cgroup on `daemon-reload`, so **trust `ControlGroup`, not `Slice`**, and
-reboot if you need certainty.
-
-A corollary: "the slice is too small to run the control agents" is also
-disproved, since the failure persists with no limits whatsoever.
-
-### Also ruled out, each by evidence rather than argument
-
-| Hypothesis | How it was eliminated |
+| configuration | result |
 | --- | --- |
-| cgroup limits too tight | nowhere near any limit (above) |
-| cgroup placement under a slice | pods moved out; failure persists |
-| slicing at all | nothing sliced, unlimited; failure persists |
-| control plane availability / single replica | rebuilt with 3 replicas + stable VIP; failure persists |
-| certificate or kubeconfig invalidity | SANs contain the VIP, TLS verifies fully |
-| CNI sandbox only | `hostNetwork` pods, which have no CNI sandbox, fail too |
-| AppArmor denial | `apparmor="DENIED"` count is 0 |
-| `systemd-oomd` | not installed, not running, no kills logged |
-| kernel OOM killer | no `oom`/`Killed process` in `dmesg`; machine using 563 MB of 7.9 GB |
-| resource starvation | root PSI cpu and memory ~0.00; 7.4 GB available |
-| duplicate address on the worker | no ARP conflict in `dmesg` |
-| management cluster health | `readyz` ok; its CPLB VIP held by exactly one node |
+| **stock** k0smotron worker, no `files`, no `preK0sCommands`, no `--profile`, no worker profile | all 5 system pods `1/1 Running`, **0 restarts**, 7 minutes |
+| **corrected** confinement: slice + limits kept, `cgroupDriver` override removed, `cgroupRoot: /k0s.slice` | all 5 pods `1/1 Running`, **0 restarts**, 7 minutes, **and** the cap enforces: 8 cores demanded, 2.01 used, 301 of 301 periods throttled, pods still healthy under full saturation |
 
-### What the signal actually looks like
+### Why the earlier "exoneration" was wrong
 
-Containers are **SIGKILLed** externally: containerd records
-`exit_status:137` while the container's own cgroup is unlimited and reports
-`oom_kill 0`. Each one writes its complete startup output within about one
-second (`kube-proxy` reaching "Caches are synced", CoreDNS serving on `:53`),
-sits idle, and is killed 60 to 90 seconds later. `kube-proxy` has neither a
-liveness nor a readiness probe, so probe failure cannot explain it. kubelet is
-continuously issuing `StopPodSandbox` / `TearDown network` /
-`RemovePodSandbox`, with sandbox attempt counters climbing into the twenties.
+The three elimination experiments were real measurements but **all confounded by
+the same uncontrolled variable**: `cgroupDriver: systemd` stayed in the worker
+profile throughout. Removing the limits, then the `cgroupRoot`, then the slice
+itself each changed nothing *because the mismatch was never removed*. The
+conclusion drawn from them, that cgroups were innocent and the substrate was at
+fault, was wrong, and the macvtap hypothesis it produced was a dead end.
+
+The lesson is about method, not cgroups: when several knobs are changed together
+and then removed one at a time, "removing X changed nothing" only exonerates X
+if everything else is genuinely back to default. The honest control was the
+**stock install**, and it should have been the first experiment rather than the
+tenth.
+
+### Why it was so hard to see
+
+The failure presents as nothing resembling a cgroup problem:
+
+- every pod, `hostNetwork` or not, starts perfectly (caches synced, DNS
+  answering), idles, and is SIGKILLed 60 to 90 seconds later;
+- containerd reports `exit_status:137` while the container's own cgroup is
+  unlimited and reports `oom_kill 0`;
+- `kube-proxy` dies with no error logged and has no probes that could explain it;
+- the Node stays `Ready` throughout, because kubelet's own health is fine;
+- no limit is approached: 76 throttled periods of 684,221, 779 MB of 4 GiB,
+  `pids` 85 of 8192, PSI 0.00;
+- AppArmor, `systemd-oomd`, the kernel OOM killer, certificates, control-plane
+  availability and the management cluster were all checked and were all clean.
+
+A `Ready` node whose every pod silently restarts is the signature worth
+remembering.
 
 ### What the rebuild did prove
 
@@ -306,29 +298,12 @@ does not make the pool a cluster-wide default.
 ## Open threads
 
 - **F-4** is closed; **F-3** is closed. See above.
-- **The worker pod CrashLoop is still unexplained, but tightly bounded.** Every
-  pod on the worker, `hostNetwork` or not, starts cleanly (caches synced, DNS
-  serving) and is then killed within one to two minutes, repeatedly.
-  `kube-proxy` exits 2 with nothing logged after a successful startup and has no
-  probes configured. Ruled out so far, each by experiment rather than argument:
-  cgroup limits, cgroup placement, control-plane availability and replica count,
-  certificate and kubeconfig validity, the CNI sandbox, and the management
-  cluster's own health.
-
-  The surviving hypothesis is **the worker substrate**, and specifically its
-  network attachment. This VM is attached with **macvtap**, which deliberately
-  breaks host-to-guest traffic, and the churn is centred on pod sandboxes and
-  the CNI (`kube-router` reached sandbox `Attempt:9` and
-  `konnectivity-agent` container `Attempt:24` inside a single 150-second
-  window). The next experiment is one worker on a **plain bridge**, nothing else
-  changed, compared against this one: that isolates the attachment and the VM
-  environment in a single step.
-
-  Until that runs, nothing here should be attributed to 5-Spot, to k0smotron or
-  to the confinement. 5-Spot's own behaviour was correct throughout: it
-  activated, created all three CAPI objects with the right contract shape,
-  reported `Active`/`Ready`, and on teardown its finalizer removed everything in
-  15 seconds against this very cluster.
+- **The worker pod CrashLoop is resolved.** Cause and fix above. The guide
+  (`docs/src/operations/worker-resource-confinement.md`) has been corrected: the
+  `cgroupDriver` override is removed, `cgroupRoot` is `/k0s.slice` for the
+  cgroupfs driver, section 6.1 now leads with the mismatch and its symptom
+  signature, and the `Delegate=` advice is split by driver. The macvtap
+  hypothesis is withdrawn: the substrate was never implicated.
 
 - **No automated e2e covers this path.** The run was driven by hand. The
   manifests are recorded well enough here to script against a disposable VM, and
