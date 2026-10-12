@@ -141,12 +141,26 @@ macOS cross builds:
 
 ### F-4: the node advertises the host, not the cap
 
-**Open, by nature.** kubelet reads CPU and memory from `/proc`, so with the
-slice capped at 2 cores / 4 GiB the Node still advertised `cpu: 8` and
-`memory: 8030652Ki`. The scheduler will admit pods the worker can never serve.
-There is no cgroup-only fix: the cap is the *enforcement* and
-`systemReserved` is the *advertisement*, and both have to be set. Documented
-with the correction in the operations page.
+**Closed 2026-10-12** (the behaviour is inherent; the *correction* is now
+verified rather than merely prescribed). kubelet reads CPU and memory from
+`/proc`, so with the slice capped at 2 cores / 4 GiB the Node still advertised
+`cpu: 8`, `memory: 8030648Ki`, and the scheduler would admit pods the worker can
+never serve. There is no cgroup-only fix: the cap is the *enforcement* and
+`systemReserved` is the *advertisement*, and both have to be set.
+
+Applying `systemReserved: {cpu: "6", memory: 4Gi}` to the worker profile and
+restarting `k0sworker` brought the two views into line:
+
+| | cpu | memory |
+| --- | --- | --- |
+| capacity | 8 | 8133048Ki |
+| allocatable, before | 8 | 8030648Ki |
+| allocatable, after | **2** | **3836344Ki** |
+
+`cpu=2` matches `CPUQuota=200%` exactly. Memory settles slightly *under*
+`MemoryMax` because kubelet also withholds its hard-eviction threshold on top of
+`systemReserved`, which is worth knowing before anyone tries to make the two
+numbers identical.
 
 ## What was verified
 
@@ -179,24 +193,97 @@ workload cannot observe the limit that binds it, so a container's
 `nr_throttled 0` is not evidence that it is unconstrained. Diagnose at the
 slice.
 
+## The 2026-10-12 rebuild: what it settled
+
+The environment was torn down and recreated from scratch to test the leading
+hypothesis for the pod-kill thread, with three changes: a **stable LoadBalancer
+endpoint** instead of a NodePort, `externalAddress` pinned, and **three control
+plane replicas** instead of one. Everything was written at the **v1beta2**
+storage versions so no field could be lost in conversion.
+
+**The hypothesis was wrong.** Pods on the worker still CrashLoop on a brand new
+cluster with three control plane replicas, a stable VIP, correct certificate
+SANs and fully verified TLS. The single-endpoint single-replica control plane
+was not the cause.
+
+**The confinement is now exonerated twice over.** Having already shown the
+*limits* were never approached, this run tested the remaining variable, the
+cgroup *placement*: `cgroupRoot` was removed from the worker profile so
+`kubepods.slice` moved back to the root and pods left `k0s.slice` entirely. The
+CrashLoop continued unchanged. Both halves of the confinement are therefore ruled
+out as the cause, by independent experiment rather than by inference.
+
+Also ruled out: a CNI or sandbox fault (the `hostNetwork` pods, which have no
+CNI sandbox, CrashLoop too) and the management cluster's API (healthy
+throughout, and its own control-plane VIP is held by exactly one node).
+
+### What the rebuild did prove
+
+| Behaviour | Result |
+| --- | --- |
+| ADR 0017 on the **forward** path | a `v1beta2` `bootstrapSpec` produced a `cluster.x-k8s.io/v1beta2` Machine with `apiGroup`-form refs, phase `Running`. This path was previously both broken and unexercised |
+| LoadBalancer control plane | VIP assigned on creation, both ports reachable, API answers |
+| `externalAddress` before creation | lands in the serving certificate SANs **and** the generated kubeconfig |
+| Full TLS verification over the VIP | `/version` returns `v1.34.11+k0s`, no `--insecure-skip-tls-verify` |
+| Three CP + three etcd replicas | all `1/1` within ~2 minutes |
+| 5-Spot finalizer on teardown | removed the Machine, bootstrap and infrastructure objects in 15s, against a *degraded* child cluster |
+| Worker join | Node `Ready`, confinement reapplied from `bootstrapSpec` |
+
+### Two things cannot be retrofitted onto an existing k0smotron cluster
+
+Both are fixed at creation time and k0smotron reconciles neither, so changing
+the service type on a live cluster is not sufficient:
+
+- the **generated kubeconfig** keeps the original server address. Deleting the
+  secret does not help: it was not recreated at all;
+- the **serving certificate SANs** keep the original address, so a client using
+  the new VIP fails with `x509: certificate is valid for ... not <vip>`.
+
+Set `externalAddress` **before** the cluster is created.
+
+### k0smotron v1beta1 to v1beta2 conversion is lossy
+
+Worth knowing independently of 5-Spot, and the same class of defect as
+ADR 0017: fields present in the served `v1beta1` but absent from the `v1beta2`
+**storage** version are silently discarded on write.
+
+| Type | v1beta1 | v1beta2 (storage) |
+| --- | --- | --- |
+| `K0smotronControlPlane.spec.service` | `annotations`, `labels`, `externalTrafficPolicy`, `loadBalancerClass`, … | **none of those**; only `apiPort`, `konnectivityPort`, `type` |
+| `K0sWorkerConfig.spec` | `preStartCommands`, `postStartCommands` | renamed to **`preK0sCommands`**, **`postK0sCommands`** |
+| `RemoteMachine.spec` | `customCleanUpCommands` | renamed to **`cleanUpCommands`** |
+
+The practical consequence here: a MetalLB pool **cannot** be selected with
+`service.annotations`, because that field never reaches storage. The pool is
+instead scoped with MetalLB's own
+`serviceAllocation.namespaces`, which needs no annotation on the Service and
+does not make the pool a cluster-wide default.
+
 ## Open threads
 
-- **F-4** above. F-3 is closed.
-- **A pod on the confined worker was killed with SIGKILL about 30s after
-  start**, repeatably, with no OOM (`oom_kill 0`), no node pressure, no taint,
-  no cordon and nothing in the 5-Spot controller log. systemd created and then
-  removed only that pod's slice while the system pods' slices stayed active, so
-  kubelet is ending it. Not yet root-caused; the CPU and memory measurements
-  above were taken with the load placed directly into `k0s.slice` via
-  `systemd-run`, which is the unit under test and is unaffected. This needs its
-  own investigation before the confinement recipe is recommended for anything
-  carrying real workloads.
-- **No automated e2e covers this path.** The run was driven by hand. A
-  `kind`-based harness cannot replace it, because the defects came from real
-  CAPI controllers and a real SSH install, but the manifests are recorded well
-  enough here to script against a disposable VM.
+- **F-4** is closed; **F-3** is closed. See above.
+- **The worker pod CrashLoop is still unexplained, but tightly bounded.** Every
+  pod on the worker, `hostNetwork` or not, starts cleanly (caches synced, DNS
+  serving) and is then killed within one to two minutes, repeatedly.
+  `kube-proxy` exits 2 with nothing logged after a successful startup and has no
+  probes configured. Ruled out so far, each by experiment rather than argument:
+  cgroup limits, cgroup placement, control-plane availability and replica count,
+  certificate and kubeconfig validity, the CNI sandbox, and the management
+  cluster's own health.
+
+  The untested variable is now **the worker substrate itself**. This VM is
+  attached with **macvtap** on a VM host whose CPU is passed through, and macvtap
+  deliberately breaks host-to-guest traffic. The next experiment is to provision
+  a second worker on a plain bridge, change nothing else, and compare: that
+  isolates the network attachment and the VM environment in one step. Until that
+  runs, nothing here should be attributed to 5-Spot, to k0smotron or to the
+  confinement.
+
+- **No automated e2e covers this path.** The run was driven by hand. The
+  manifests are recorded well enough here to script against a disposable VM, and
+  the v1beta2 shapes above are the ones worth scripting, since `v1beta1` is
+  deprecated.
 - **Watch-stream reconnects log at ERROR/WARN.** Normal watch timeouts surface
   as `ServiceError: error reading a body from connection` with an `ERROR`-level
-  "reflector terminated" line, which reads as a fault during routine operation
-  and made the first minutes of this run much harder to interpret. Worth
-  demoting to `debug`/`info` with a distinct message for genuine failures.
+  "reflector terminated" line, which reads as a fault during routine operation.
+  Worth demoting to `debug`/`info` with a distinct message for genuine failures.

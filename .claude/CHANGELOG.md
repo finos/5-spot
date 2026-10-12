@@ -9,6 +9,136 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-10-12 13:30] - Rebuild on a LoadBalancer control plane: ADR 0017's v1beta2 path proven, confinement exonerated twice
+
+**Author:** Erick Bourgeois
+
+### Changed
+
+- `.github/community/06-k0smotron-e2e-and-worker-confinement.md`: new section
+  for the 2026-10-12 rebuild. Records that the single-endpoint hypothesis was
+  **wrong**, that the cgroup *placement* is now exonerated alongside the limits,
+  what the rebuild did prove, the two things that cannot be retrofitted onto a
+  live k0smotron cluster, and k0smotron's lossy v1beta1 to v1beta2 conversion.
+  Open threads rewritten around the one remaining untested variable.
+- `docs/src/operations/worker-resource-confinement.md`: note on the `v1beta2`
+  field renames (`preStartCommands` -> `preK0sCommands`, `postStartCommands` ->
+  `postK0sCommands`, `customCleanUpCommands` -> `cleanUpCommands`) and how to
+  check the storage version's schema instead of the served one.
+
+### Why
+
+The pod CrashLoop on the confined worker was attributed, on the previous pass,
+to a plausible but untested cause: a NodePort hosted control plane pinning every
+worker to one management node with one replica. Testing it required a clean
+rebuild. The rebuild disproved it, and in doing so closed the last open question
+about whether the confinement this project documents is itself harmful.
+
+### Impact
+
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+### Verification
+
+Environment rebuilt from scratch at the **v1beta2** storage versions
+throughout: CAPI `Cluster` with `apiGroup`-form refs, `K0smotronControlPlane`
+with `replicas: 3`, `service.type: LoadBalancer` and `externalAddress` pinned to
+a MetalLB VIP, and a `ScheduledMachine` whose `bootstrapSpec` and
+`infrastructureSpec` are **v1beta2**.
+
+**ADR 0017 proven on the forward path**, which nothing had previously
+exercised: the v1beta2 `bootstrapSpec` produced a `cluster.x-k8s.io/v1beta2`
+Machine carrying `{apiGroup, kind, name}` refs for both bootstrap and
+infrastructure, reaching phase `Running` with the worker Node `Ready`. The
+unfixed code could not have created this object at all.
+
+**Hypothesis disproved.** Pods still CrashLoop with three control plane
+replicas, a stable VIP, SANs containing the VIP and fully verified TLS
+(`/version` returns `v1.34.11+k0s` with no `--insecure-skip-tls-verify`).
+
+**Confinement exonerated a second time, independently.** `cgroupRoot` was
+removed from the worker profile so `kubepods.slice` returned to the root and
+pods left `k0s.slice` entirely; the CrashLoop continued unchanged. Combined with
+the earlier measurement that no limit was ever approached, both halves of the
+confinement are ruled out by experiment. Also ruled out: a CNI/sandbox fault
+(`hostNetwork` pods CrashLoop too) and the management cluster's API (`readyz` ok,
+its control-plane VIP held by exactly one node).
+
+**Retrofit is impossible** on a live k0smotron cluster: the generated kubeconfig
+keeps the original server address and is not recreated even if deleted, and the
+serving certificate SANs keep the original address, so a client on the new VIP
+fails `x509: certificate is valid for ... not <vip>`. `externalAddress` must be
+set before creation.
+
+**5-Spot's finalizer** removed the Machine, bootstrap and infrastructure objects
+in 15 seconds during teardown, against a degraded child cluster.
+
+`mkdocs build --strict` clean. No Rust changed, so `cargo-quality` does not
+apply. No threat-model pass: no ADR, no posture change.
+
+---
+
+## [2026-10-12 09:40] - Close F-4 and exonerate the confinement for the worker pod-kill thread
+
+**Author:** Erick Bourgeois
+
+### Changed
+
+- `docs/src/operations/worker-resource-confinement.md`: section 6.3 now carries
+  the measured before/after for `systemReserved` instead of only prescribing it,
+  plus the note that allocatable settles slightly under `MemoryMax` because
+  kubelet also withholds its hard-eviction threshold.
+- `.github/community/06-k0smotron-e2e-and-worker-confinement.md`: F-4 closed
+  with the verified numbers; the pod-kill open thread rewritten as a resolution
+  for the question that mattered, with the two disproved hypotheses recorded and
+  the host disk-exhaustion event added as its own finding.
+- `ROADMAPS.md`: status row updated.
+
+### Why
+
+The guide prescribed `systemReserved` as the fix for F-4 without anyone having
+applied it, which is the same "documented but never executed" defect caught
+earlier with the `hugetlb` delegation unit. And the confinement was left under
+suspicion for killing pods, which the evidence contradicts.
+
+### Impact
+
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+### Verification
+
+**F-4.** `systemReserved: {cpu: "6", memory: 4Gi}` applied to the worker profile
+and `k0sworker` restarted. Node `allocatable` moved from `cpu=8`,
+`mem=8030648Ki` to `cpu=2`, `mem=3836344Ki`, against a slice permitting
+`CPUQuota=200%` and `MemoryMax=4G`. `cpu=2` matches exactly.
+
+**The confinement is not killing pods.** Re-examined when the symptom had
+escalated to every system pod on the worker CrashLooping (550 to 650 restarts
+over 2d9h). Measured during the failure: `memory.events` `max 0` / `oom_kill 0`
+at 779 MB of 4 GiB; `cpu.stat` 76 throttled periods of 684,221 (0.011%);
+`cpu.pressure` 0.00 across all windows; `pids.current` 85 of 8192 with
+`pids.events: max 0`; `k0sworker` 0 restarts over 26h. Two hypotheses tested and
+disproved: PKI mismatch (CA valid to 2036, kubelet cert to 2027, dominant error
+`connection refused` not `Unauthorized`) and systemd GC of pod slices (zero
+slice churn and zero `SandboxChanged` in 15 minutes). Evidence points at
+child-cluster control-plane reachability: kubelet failing on
+`dial tcp <mgmt-node>:30443: connection refused` against the single NodePort in
+its kubeconfig, with 5-Spot logging 387 child-cluster watcher errors in the same
+window. Not fully root-caused and deliberately retired on this instance, whose
+control plane was hard-paused mid-write by a host disk-full event.
+
+`mkdocs build --strict` clean. No Rust changed, so `cargo-quality` does not
+apply; `make crds` / `make crddoc` unaffected and still byte-identical. No
+threat-model pass: no ADR, no posture change.
+
+---
+
 ## [2026-10-11 10:20] - Close F-3 (cargo linker pins) and complete the cgroup confinement guide
 
 **Author:** Erick Bourgeois
