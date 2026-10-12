@@ -165,6 +165,27 @@ spec:
     `bootstrapSpec` residual in the
     [threat model](../security/threat-model.md).
 
+!!! note "If you write `bootstrapSpec` at `v1beta2`"
+    The example above targets `bootstrap.cluster.x-k8s.io/v1beta1`. `v1beta1`
+    is deprecated, and several field names differ in the `v1beta2` **storage**
+    version:
+
+    | v1beta1 | v1beta2 |
+    | --- | --- |
+    | `preStartCommands` | `preK0sCommands` |
+    | `postStartCommands` | `postK0sCommands` |
+    | `RemoteMachine.customCleanUpCommands` | `cleanUpCommands` |
+
+    `files`, `args` and `version` are unchanged. A field written at `v1beta1`
+    that does not exist in `v1beta2` is **silently discarded** on conversion, so
+    check the storage version's schema rather than trusting the served one:
+
+    ```sh
+    kubectl get crd k0sworkerconfigs.bootstrap.cluster.x-k8s.io -o json \
+      | jq -r '.spec.versions[] | select(.storage)
+               | .schema.openAPIV3Schema.properties.spec.properties | keys'
+    ```
+
 ---
 
 ## 4. The kubelet half: a worker profile
@@ -376,6 +397,27 @@ against `CPUQuota=200%` and `MemoryMax=4G`. The scheduler will admit pods
 requesting 6 CPU and 6 GiB onto a worker that can never deliver them. Reconcile
 the two views with `systemReserved` in the worker profile (section 4) so
 allocatable matches what the slice actually permits.
+
+Verified on the reference worker. Before, with the cap already in force:
+
+```console
+capacity    cpu=8  mem=8133048Ki
+allocatable cpu=8  mem=8030648Ki     <-- the whole host, on a 2-core/4GiB slice
+```
+
+and after adding `systemReserved: {cpu: "6", memory: 4Gi}` and restarting
+`k0sworker`:
+
+```console
+capacity    cpu=8  mem=8133048Ki
+allocatable cpu=2  mem=3836344Ki     <-- now matches what the slice permits
+```
+
+`cpu=2` lines up exactly with `CPUQuota=200%`. Memory lands a little *under*
+`MemoryMax` rather than on it, because kubelet also holds back its hard-eviction
+threshold on top of `systemReserved`. Aim `systemReserved` at the gap between
+the host and the cap and let that margin fall where it may; do not try to make
+allocatable equal `MemoryMax` to the byte.
 
 **The cgroup is the enforcement; the reservation is the advertisement.** Set one
 without the other and you get either an unbounded worker or a lying one.
