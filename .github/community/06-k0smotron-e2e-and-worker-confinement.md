@@ -8,7 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 > control plane with a **real** SSH-provisioned worker, on current Cluster API.
 > It found two defects that the whole unit suite could not see, and it produced
 > the systemd confinement recipe now documented in
-> [Worker Resource Confinement](../../docs/src/operations/worker-resource-confinement.md).
+> [Worker Resource Confinement](../../docs/src/guides/confining-a-worker-with-cgroups.md).
 > Decision recorded in [ADR 0017](../../docs/adr/0017-machine-reference-shape-follows-capi-contract.md).
 
 ## Why this exists
@@ -299,7 +299,7 @@ does not make the pool a cluster-wide default.
 
 - **F-4** is closed; **F-3** is closed. See above.
 - **The worker pod CrashLoop is resolved.** Cause and fix above. The guide
-  (`docs/src/operations/worker-resource-confinement.md`) has been corrected: the
+  (`docs/src/guides/confining-a-worker-with-cgroups.md`) has been corrected: the
   `cgroupDriver` override is removed, `cgroupRoot` is `/k0s.slice` for the
   cgroupfs driver, section 6.1 now leads with the mismatch and its symptom
   signature, and the `Delegate=` advice is split by driver. The macvtap

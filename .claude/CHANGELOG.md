@@ -9,6 +9,64 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-10-12 18:10] - Promote the cgroup confinement page to a full Guide
+
+**Author:** Erick Bourgeois
+
+### Changed
+
+- `docs/src/guides/confining-a-worker-with-cgroups.md`: **new**, and now the
+  canonical home. Restructured from a reference page into a guide matching the
+  shape of the others in `docs/src/guides/`: How it works, Prerequisites,
+  Step 1 (the kubelet half on the control plane), Step 2 (the host half on the
+  ScheduledMachine), Step 3 (confirm the confinement landed, four checks),
+  Step 4 (align the Node's advertised capacity), Step 5 (prove the limits
+  bite), then Tuning (the full CPU / memory / IO / pids / delegation control
+  surface), Choosing values, Updating, Tearing down, Troubleshooting, the
+  trade-offs, and Related.
+- `docs/src/operations/worker-resource-confinement.md`: **removed.** Single
+  canonical location rather than two.
+- `docs/mkdocs.yml`: nav entry moved from Operations to Guides, first in the
+  list.
+- `docs/src/security/threat-model.md`, `ROADMAPS.md`,
+  `.github/community/06-k0smotron-e2e-and-worker-confinement.md`: links
+  repointed; the threat model's `preStartCommands` corrected to
+  `preK0sCommands` to match the v1beta2 example it now cites.
+
+### Why
+
+The content was filed under Operations, which is where it had grown from a
+worked example, but it is a deployment procedure someone follows end to end.
+`docs/src/guides/` is where this project puts those, and the request was for it
+to be fully documented as a guide.
+
+### Impact
+
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+### Verification
+
+`mkdocs build --strict` clean with no orphaned pages or broken internal links;
+`rg` confirms no remaining reference to the old path. Content is the corrected,
+verified recipe throughout: no `cgroupDriver` override, `cgroupRoot: /k0s.slice`,
+and the measurements from the live run (8 cores demanded against a 2-core cap
+yields 2.01 used with 301 of 301 periods throttled; 6 GiB demanded against a
+4 GiB cap peaks at 3,874,889,728 bytes with `oom_kill 0`; five system pods at
+0 restarts through both stress tests).
+
+One further stale claim corrected while restructuring: the old page stated that
+`kubectl exec` degrades under saturation because the konnectivity agent shares
+the capped slice. That observation came from the **broken** configuration. On
+the corrected one all five system pods stayed `1/1 Running` with zero restarts
+under full CPU saturation, so the guide now presents agent contention as a
+design consideration with that measurement, rather than as an observed
+degradation.
+
+---
+
 ## [2026-10-12 17:30] - Root cause: the confinement guide prescribed a cgroup driver mismatch
 
 **Author:** Erick Bourgeois
