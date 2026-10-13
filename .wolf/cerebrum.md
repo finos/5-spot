@@ -85,6 +85,14 @@ budget_tokens: 2000
 <!-- Mistakes made and corrected. Each entry prevents the same mistake recurring. -->
 <!-- Format: [YYYY-MM-DD] Description of what went wrong and what to do instead. -->
 
+- **[2026-10-13] Never put `!` in a commit message or a handed-over command.**
+  The shell is zsh, which history-expands `!` even inside double quotes, so
+  `git commit -m "feat(deps)!: ..."` mangles or fails. Signal a breaking change
+  with a `BREAKING CHANGE:` footer in the body. And do not use a breaking marker
+  unless the change really is breaking: it was used on a dependency swap that
+  removed nothing from the public API, contradicting the unticked "Breaking
+  change" box in the same CHANGELOG entry.
+
 - **[2026-10-12] NEVER print, echo or otherwise process a secret.** A
   `sudo grep -A12` on `/etc/k0s/k0s.yaml` to read one key dumped the VRRP
   `authPass` and the full Postgres kine DSN, password included, into the
