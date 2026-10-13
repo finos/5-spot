@@ -339,7 +339,7 @@ mod tests {
         // fixture is missing reports success while proving nothing.
         let yaml = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("capacity-target fixture {FIXTURE} is required: {e}"));
-        let crd: serde_json::Value = serde_yaml::from_str(&yaml).expect("fixture parses as YAML");
+        let crd: serde_json::Value = serde_saphyr::from_str(&yaml).expect("fixture parses as YAML");
 
         let required = crd
             .pointer("/spec/versions/0/schema/openAPIV3Schema/properties/spec/required")

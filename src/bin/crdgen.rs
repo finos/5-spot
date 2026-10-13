@@ -56,13 +56,13 @@ impl CrdSelector {
     /// Serialise this CRD to a YAML string.
     fn render(self) -> String {
         let yaml = match self {
-            CrdSelector::ScheduledMachine => serde_yaml::to_string(&ScheduledMachine::crd()),
-            CrdSelector::ScheduledCapacity => serde_yaml::to_string(&ScheduledCapacity::crd()),
+            CrdSelector::ScheduledMachine => five_spot::yaml::to_string(&ScheduledMachine::crd()),
+            CrdSelector::ScheduledCapacity => five_spot::yaml::to_string(&ScheduledCapacity::crd()),
             CrdSelector::TimeBasedSpotSchedule => {
-                serde_yaml::to_string(&TimeBasedSpotSchedule::crd())
+                five_spot::yaml::to_string(&TimeBasedSpotSchedule::crd())
             }
             CrdSelector::CapitalMarketsSchedule => {
-                serde_yaml::to_string(&CapitalMarketsSchedule::crd())
+                five_spot::yaml::to_string(&CapitalMarketsSchedule::crd())
             }
         };
         yaml.expect("serialise CRD to YAML")

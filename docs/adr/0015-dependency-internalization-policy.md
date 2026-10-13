@@ -35,7 +35,9 @@ dependency.** The surface measurement answers "how coupled are we", not "how
 much code would we own". Four categories break the line-count test entirely:
 
 - **Specifications and wire formats.** `serde_yaml`'s used surface is one call,
-  `to_string`. The implementation is a conformant YAML emitter. Owning it means
+  `to_string`. The implementation is a conformant YAML emitter.
+  (`serde_yaml` was later replaced by `serde-saphyr` per ADR 0018; the
+  reasoning is unchanged, only the crate.) Owning it means
   owning YAML's parsing CVEs and its spec drift. Same for `toml`,
   `serde_json`, and `prometheus`'s exposition format.
 - **Reference data.** `chrono-tz` is one symbol, `Tz`, and that symbol *is* the

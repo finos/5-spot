@@ -1,7 +1,7 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-10-12T21:38:41.449Z
-> Files: 322 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-10-13T13:34:34.283Z
+> Files: 325 tracked | Anatomy hits: 0 | Misses: 0
 
 > Project structure index. Auto-maintained by OpenWolf hooks and daemon.
 > Run `openwolf scan` to generate, or wait for the first Claude Code session.
@@ -221,6 +221,7 @@
 - `0010-base-image-pins-on-from-line.md` — 0010 — Base-image digests are pinned on the `FROM` line so Dependabot re-pins them (~1681 tok)
 - `0011-schedule-gated-capacity-separate-controller.md` — 0011 — Schedule-gated capacity: a `ScheduledCapacity` CRD and its own controller (~4168 tok)
 - `0017-machine-reference-shape-follows-capi-contract.md` — 0017: The Machine's bootstrap and infrastructure references are serialized in the shape the discover (~1633 tok)
+- `0018-replace-serde-yaml-with-serde-saphyr.md` — 0018: Replace `serde_yaml` with `serde-saphyr`, behind one output-style wrapper (~1442 tok)
 - `README.md` — Project documentation (~809 tok)
 - `template.md` — NNNN — <short decision title> (~251 tok)
 
@@ -561,6 +562,8 @@
 - `netlink_proc.rs` — # Netlink proc connector — rung 2 of the reclaim-agent detection ladder (~9728 tok)
 - `reclaim_agent_tests.rs` — Write a fake `/proc/<pid>/comm` + `/proc/<pid>/cmdline` pair. (~7327 tok)
 - `reclaim_agent.rs` — # Reclaim agent — process-match detector (~4722 tok)
+- `yaml_tests.rs` — SPDX-License-Identifier: Apache-2.0 (~1357 tok)
+- `yaml.rs` — YAML output for the manifests 5-Spot generates (the CRDs in `deploy/crds/`). (~781 tok)
 
 ## src/bin/
 

@@ -9,6 +9,91 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-10-13 16:20] - ADR-0018: replace serde_yaml with serde-saphyr; bump CI action pins
+
+**Author:** Erick Bourgeois
+
+### Changed
+
+- `Cargo.toml`: `serde_yaml = "0.9"` removed, `serde-saphyr = "1.3"` added, with
+  the same comment the sibling `bindy` and `banlieue` projects carry.
+- `src/yaml.rs`: **new.** One wrapper, `five_spot::yaml::to_string`, that sets
+  `folded_wrap_chars = usize::MAX` so long scalars are never folded, and strips
+  indentation from otherwise-blank lines so no emitted line ends in whitespace.
+  `SerializerOptions` is `#[non_exhaustive]`, so it mutates `Default::default()`.
+- `src/yaml_tests.rs`: **new**, 9 tests pinning no-trailing-whitespace,
+  no-folding, round-trip fidelity, and the strip helper's edge cases (line count
+  preserved, empty input, final line without a newline, whitespace-only final
+  line).
+- `src/lib.rs`: `pub mod yaml;`.
+- `src/bin/crdgen.rs`: all four `serde_yaml::to_string` calls route through the
+  wrapper.
+- `src/kata_config_agent_tests.rs`: multi-document parse moves from
+  `serde_yaml::Deserializer::from_str` to `serde_saphyr::from_multiple` over
+  `serde_json::Value`; `as_sequence` becomes `as_array`.
+- `src/reconcilers/scheduled_capacity_tests.rs`: `from_str` swap.
+- `deploy/crds/*.yaml`: regenerated. Quote style only (see Verification).
+- `.github/workflows/{build,dependabot-auto-merge,fuzz}.yaml`: the six
+  `firestoned/github-actions` composite actions 1.3.7 -> 1.3.9 (17 call sites,
+  PRs #190-#195) and `anchore/sbom-action` 0.24.2 -> 0.24.3 (PR #189). tokio
+  1.53.1 -> 1.53.2 (PR #188) is in the lockfile.
+- `docs/adr/0018-replace-serde-yaml-with-serde-saphyr.md`: **new**; both ADR
+  indexes updated.
+- `docs/adr/0015-dependency-internalization-policy.md`: a parenthetical noting
+  the crate changed. The ADR's reasoning is untouched, since it is a record of a
+  decision and the argument still holds.
+- `.github/community/04-dependency-internalization-matrix.md`: three rows, as
+  the matrix is required to stay current when a dependency is added or dropped.
+- `.claude/rules/dependency-internalization.md`: the wire-format example.
+- `docs/src/security/threat-model.md`: full pass, stamp **1.8 / ADR-0018**.
+
+### Why
+
+`serde_yaml` is deprecated and its `unsafe-libyaml` backend is unmaintained
+(RUSTSEC-2024-0449), which fails the `cargo-deny` CI job: it runs
+`check --all-features` with no `continue-on-error` and `deny.toml` carries
+`ignore = []`. The advisory was failing on `main` already, independent of any
+dependency bump. Fixing it beat suppressing it, the surface was one call, and
+`serde-saphyr` was already in the production graph transitively via
+`kube-client 4.2.0`.
+
+### Impact
+
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (dependency + generated artifact reformat)
+- [ ] Documentation only
+
+### Verification
+
+**The generated CRDs are semantically identical.** The only textual change is
+quote style: `- 'True'` becomes `- "True"`, and a single-quoted description
+containing double quotes becomes a double-quoted one with escapes. All four CRDs
+were parsed before and after and compared structurally: every one yields an
+identical tree. Spot-checked that `"True"` still parses as the string `True`
+rather than a boolean, which was the one case that could have changed the schema.
+No folding and no whitespace differences appeared, which is the wrapper doing its
+job.
+
+`make crds` and `make crddoc` are idempotent over two consecutive runs.
+`cargo fmt` clean, `clippy -D warnings` clean, **869 tests pass** (860 before,
+plus the 9 new yaml tests).
+
+**`cargo deny` is now green**: `advisories ok, bans ok, licenses ok, sources ok`,
+exit 0. `serde_yaml` and `unsafe-libyaml` are gone from `Cargo.lock`.
+
+Action pins verified against the commit each tag points at, not the tag object:
+`anchore`'s tags are annotated, so the tag SHA is not what the action resolves
+to. v0.24.2's commit matched the existing pin exactly, confirming the method. All
+ten workflows parse and `actionlint` reports nothing beyond six pre-existing
+shellcheck infos in `run:` blocks.
+
+Known wart, recorded in the ADR: two `serde-saphyr` versions are in the graph,
+our direct 1.3.0 and 0.0.29 via `kube-client`. `bans.multiple-versions` is
+`warn`, so it is tolerated; it resolves when `kube` moves forward.
+
+---
+
 ## [2026-10-13 12:40] - Verify the confinement survives reboots and schedule cycles
 
 **Author:** Erick Bourgeois

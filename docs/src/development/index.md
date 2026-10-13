@@ -83,6 +83,7 @@ the table below is a convenience copy.
 | [0015](https://github.com/finos/5-spot/blob/main/docs/adr/0015-dependency-internalization-policy.md) | Internalize a dependency when its used surface is 500 lines or less | Accepted |
 | [0016](https://github.com/finos/5-spot/blob/main/docs/adr/0016-own-the-capacity-object.md) | 5-Spot creates and owns the capacity object it scales | Accepted |
 | [0017](https://github.com/finos/5-spot/blob/main/docs/adr/0017-machine-reference-shape-follows-capi-contract.md) | Machine references follow the discovered CAPI contract shape | Accepted |
+| [0018](https://github.com/finos/5-spot/blob/main/docs/adr/0018-replace-serde-yaml-with-serde-saphyr.md) | Replace `serde_yaml` with `serde-saphyr` behind one output-style wrapper | Accepted |
 
 Start with **0001** for the methodology, **0006** and **0009** for how
 activation works, **0007** before touching a CRD, and **0004** before deploying

@@ -35,6 +35,7 @@ pub mod providers;
 pub mod reclaim_agent;
 pub mod reconcilers;
 pub mod stream;
+pub mod yaml;
 
 // Re-export main types
 pub use crd::{ScheduledCapacity, ScheduledMachine};

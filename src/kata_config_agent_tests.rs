@@ -488,8 +488,6 @@ mod tests {
 
     #[test]
     fn test_kata_annotation_policy_manifest_matches_the_constants() {
-        use serde::Deserialize as _;
-
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/deploy/admission/kata-config-annotation-policy.yaml"
@@ -497,12 +495,11 @@ mod tests {
         let raw = std::fs::read_to_string(path)
             .expect("the policy protecting kata-config-ref must ship in deploy/admission/");
 
-        let docs: Vec<serde_yaml::Value> = serde_yaml::Deserializer::from_str(&raw)
-            .map(|d| serde_yaml::Value::deserialize(d).expect("each YAML document parses"))
-            .collect();
+        let docs: Vec<serde_json::Value> =
+            serde_saphyr::from_multiple(&raw).expect("each YAML document parses");
         assert_eq!(docs.len(), 2, "expected a policy and its binding");
 
-        let kind = |d: &serde_yaml::Value| d["kind"].as_str().unwrap_or_default().to_string();
+        let kind = |d: &serde_json::Value| d["kind"].as_str().unwrap_or_default().to_string();
         let policy = docs
             .iter()
             .find(|d| kind(d) == "ValidatingAdmissionPolicy")
@@ -522,8 +519,8 @@ mod tests {
         // It guards Node updates, and only updates: a CREATE carries no
         // oldObject to compare against.
         let rule = &policy["spec"]["matchConstraints"]["resourceRules"][0];
-        let has = |v: &serde_yaml::Value, needle: &str| {
-            v.as_sequence()
+        let has = |v: &serde_json::Value, needle: &str| {
+            v.as_array()
                 .is_some_and(|xs| xs.iter().any(|x| x.as_str() == Some(needle)))
         };
         assert!(
