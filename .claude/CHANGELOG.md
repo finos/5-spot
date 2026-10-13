@@ -9,6 +9,54 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-10-13 12:40] - Verify the confinement survives reboots and schedule cycles
+
+**Author:** Erick Bourgeois
+
+### Changed
+
+- `.github/community/06-k0smotron-e2e-and-worker-confinement.md`: new
+  "Durability, verified 2026-10-13" section with the reboot, deactivation,
+  reactivation and reapplication results.
+- `docs/src/guides/confining-a-worker-with-cgroups.md`: a success admonition in
+  Step 1 recording that the confinement survives both, plus the warning that
+  k0smotron's host reset does not remove `files`, so a self-test must delete
+  them deliberately.
+
+### Why
+
+The guide is published advice. Two gaps remained between "it works now" and
+"it keeps working": whether the confinement survives a host reboot, and whether
+the schedule genuinely rebuilds it rather than relying on host state left behind.
+
+### Impact
+
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+### Verification
+
+- **Duration**: 20h21m uptime, **0** total pod restarts across all five system
+  pods.
+- **Host reboot**: confinement reassembles unattended. `hugetlb` unit
+  `active (success)` with the controller delegated, `k0sworker` in
+  `/k0s.slice/k0sworker.service`, `cpu.max` 2 cores, `memory.max` 4 GiB, pods
+  under `k0s.slice/kubepods`, **0** kubelet controller failures.
+- **Schedule cycle**: window closed, `active=false` in 20s, `ShuttingDown`, 5m
+  grace honoured, `Inactive` with all three CAPI objects removed; reopened,
+  `active=true` in 20s, Machine `Running` in 60s.
+- **Reapplication**: all three host files were deleted while the machine was
+  down, and the fresh activation recreated every one with identical limits and
+  pod placement. This is the check that matters, because k0smotron's host reset
+  leaves `K0sWorkerConfig.files` in place, so a leftover slice would make a naive
+  test pass for the wrong reason.
+
+`mkdocs build --strict` clean. No Rust changed.
+
+---
+
 ## [2026-10-12 18:10] - Promote the cgroup confinement page to a full Guide
 
 **Author:** Erick Bourgeois
