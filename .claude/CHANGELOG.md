@@ -9,6 +9,128 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-10-12 18:10] - Promote the cgroup confinement page to a full Guide
+
+**Author:** Erick Bourgeois
+
+### Changed
+
+- `docs/src/guides/confining-a-worker-with-cgroups.md`: **new**, and now the
+  canonical home. Restructured from a reference page into a guide matching the
+  shape of the others in `docs/src/guides/`: How it works, Prerequisites,
+  Step 1 (the kubelet half on the control plane), Step 2 (the host half on the
+  ScheduledMachine), Step 3 (confirm the confinement landed, four checks),
+  Step 4 (align the Node's advertised capacity), Step 5 (prove the limits
+  bite), then Tuning (the full CPU / memory / IO / pids / delegation control
+  surface), Choosing values, Updating, Tearing down, Troubleshooting, the
+  trade-offs, and Related.
+- `docs/src/operations/worker-resource-confinement.md`: **removed.** Single
+  canonical location rather than two.
+- `docs/mkdocs.yml`: nav entry moved from Operations to Guides, first in the
+  list.
+- `docs/src/security/threat-model.md`, `ROADMAPS.md`,
+  `.github/community/06-k0smotron-e2e-and-worker-confinement.md`: links
+  repointed; the threat model's `preStartCommands` corrected to
+  `preK0sCommands` to match the v1beta2 example it now cites.
+
+### Why
+
+The content was filed under Operations, which is where it had grown from a
+worked example, but it is a deployment procedure someone follows end to end.
+`docs/src/guides/` is where this project puts those, and the request was for it
+to be fully documented as a guide.
+
+### Impact
+
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+### Verification
+
+`mkdocs build --strict` clean with no orphaned pages or broken internal links;
+`rg` confirms no remaining reference to the old path. Content is the corrected,
+verified recipe throughout: no `cgroupDriver` override, `cgroupRoot: /k0s.slice`,
+and the measurements from the live run (8 cores demanded against a 2-core cap
+yields 2.01 used with 301 of 301 periods throttled; 6 GiB demanded against a
+4 GiB cap peaks at 3,874,889,728 bytes with `oom_kill 0`; five system pods at
+0 restarts through both stress tests).
+
+One further stale claim corrected while restructuring: the old page stated that
+`kubectl exec` degrades under saturation because the konnectivity agent shares
+the capped slice. That observation came from the **broken** configuration. On
+the corrected one all five system pods stayed `1/1 Running` with zero restarts
+under full CPU saturation, so the guide now presents agent contention as a
+design consideration with that measurement, rather than as an observed
+degradation.
+
+---
+
+## [2026-10-12 17:30] - Root cause: the confinement guide prescribed a cgroup driver mismatch
+
+**Author:** Erick Bourgeois
+
+### Changed
+
+- `docs/src/operations/worker-resource-confinement.md`: **corrects a harmful
+  instruction.** The worker profile no longer sets `cgroupDriver: systemd`;
+  `cgroupRoot` becomes `/k0s.slice` (a literal path under the cgroupfs driver);
+  the prerequisites table requires kubelet and containerd to agree on the
+  driver; section 2's tree uses cgroupfs names; section 5.5's `Delegate=`
+  advice is split by driver; section 6.1 is rewritten to lead with the mismatch
+  and its symptom signature; section 7.3 adds an explicit both-sides check.
+- `.github/community/06-k0smotron-e2e-and-worker-confinement.md`: records the
+  root cause, the two controls that prove it, why the earlier "exoneration" was
+  wrong, and withdraws the macvtap hypothesis.
+- `ROADMAPS.md`: roadmap 06 moves to done.
+
+### Why
+
+The guide instructed readers to set `cgroupDriver: systemd` on a k0s worker.
+k0s's containerd runs with `SystemdCgroup = false`, so that override is a cgroup
+driver mismatch: kubelet creates and expects systemd slices while containerd
+places containers in cgroupfs paths, and kubelet then tears down and recreates
+pod sandboxes indefinitely. Following the guide as written broke the node.
+
+Three earlier elimination experiments concluded cgroups were innocent. All three
+were confounded: `cgroupDriver: systemd` remained set throughout, so removing
+the limits, then `cgroupRoot`, then the slice itself each changed nothing for a
+reason unrelated to what was being tested. The conclusion, and the macvtap
+hypothesis it produced, were wrong.
+
+### Impact
+
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (but it corrects guidance that breaks a node)
+
+### Verification
+
+Two controls on the same worker and cluster:
+
+- **stock** k0smotron install, with no `files`, no `preK0sCommands`, no
+  `--profile` and no worker profile: all five system pods `1/1 Running` with
+  **0 restarts** across 7 minutes.
+- **corrected** confinement, keeping the slice and its limits but dropping the
+  `cgroupDriver` override and using `cgroupRoot: /k0s.slice`: all five pods
+  `1/1 Running` with **0 restarts** across 7 minutes, placement confirmed
+  (`k0sworker` in `/k0s.slice/k0sworker.service`, pods at
+  `k0s.slice/kubepods`, `cpu.max` 2 cores, `memory.max` 4 GiB, zero kubelet
+  controller failures), and the cap still enforces: 8 cores demanded, **2.01
+  used**, **301 of 301 periods throttled**, with all pods still healthy under
+  full saturation.
+
+Driver confirmed directly: `SystemdCgroup = false` in
+`/run/k0s/containerd-cri.toml`, and a stock worker's pods at
+`/sys/fs/cgroup/kubepods/burstable` (cgroupfs naming).
+
+`mkdocs build --strict` clean. No Rust changed. No threat-model pass: no ADR,
+no posture change.
+
+---
+
 ## [2026-10-12 15:00] - True no-slice baseline: cgroups and slicing fully exonerated
 
 **Author:** Erick Bourgeois

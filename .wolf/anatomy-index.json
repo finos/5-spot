@@ -1,13 +1,13 @@
 {
   "version": 1,
   "meta": {
-    "lastScanned": "2026-10-11T06:49:35.179Z",
-    "fileCount": 321,
+    "lastScanned": "2026-10-12T21:38:41.449Z",
+    "fileCount": 322,
     "hits": 0,
     "misses": 0,
-    "renderedHash": "539204bddd86774cb7f7be2a0ef0730afad3d95c4a3c2b6dd255b1444ce87d44",
-    "storeUpdatedAt": "2026-10-11T06:49:35.185Z",
-    "rootHash": "79e9deda2ad1d6ad"
+    "renderedHash": "c5b1f2f501a3b04cbb092ae6f4b1a714214496b81e4af072b9f5d3069ac41805",
+    "storeUpdatedAt": "2026-10-12T21:38:41.463Z",
+    "rootHash": "5b48ef41e84f17de"
   },
   "files": {
     ".github/actions/extract-version/action.yml": {
@@ -6914,6 +6914,15 @@
       "size": 1556,
       "mtimeMs": 1791700626938.6892,
       "updatedAt": "2026-10-11T06:37:06.992Z",
+      "source": "hook"
+    },
+    "docs/src/guides/confining-a-worker-with-cgroups.md": {
+      "description": "Confining a Scheduled Worker with cgroups",
+      "tokens": 6598,
+      "hash": "d18433c08939ed1c",
+      "size": 26416,
+      "mtimeMs": 1791841121413.5002,
+      "updatedAt": "2026-10-12T21:38:41.449Z",
       "source": "hook"
     }
   },

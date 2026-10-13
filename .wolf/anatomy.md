@@ -1,7 +1,7 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-10-11T06:49:35.179Z
-> Files: 321 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-10-12T21:38:41.449Z
+> Files: 322 tracked | Anatomy hits: 0 | Misses: 0
 
 > Project structure index. Auto-maintained by OpenWolf hooks and daemon.
 > Run `openwolf scan` to generate, or wait for the first Claude Code session.
@@ -455,6 +455,7 @@
 ## docs/src/guides/
 
 - `capital-markets-schedule.md` — Guide: CapitalMarketsSchedule provider (~1035 tok)
+- `confining-a-worker-with-cgroups.md` — Confining a Scheduled Worker with cgroups (~6598 tok)
 - `create-your-own-provider.md` — Guide: Create your own spot-schedule provider (~2255 tok)
 - `kata-config.md` — Delivering a Kata containerd Drop-In (~1731 tok)
 - `time-based-schedule.md` — Guide: TimeBasedSpotSchedule provider (~1168 tok)

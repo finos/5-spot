@@ -219,6 +219,7 @@ nav:
       - Kata Config Delivery: concepts/kata-config-delivery.md
 
   - Guides:
+      - Confining a Worker with cgroups: guides/confining-a-worker-with-cgroups.md
       - Kata Config Drop-In: guides/kata-config.md
       - Spot Schedule Providers:
           - TimeBasedSpotSchedule: guides/time-based-schedule.md
@@ -230,7 +231,6 @@ nav:
       - Monitoring: operations/monitoring.md
       - Troubleshooting: operations/troubleshooting.md
       - Multi-Instance: operations/multi-instance.md
-      - Worker Resource Confinement: operations/worker-resource-confinement.md
 
   - Advanced Topics:
       - High Availability: advanced/ha.md
