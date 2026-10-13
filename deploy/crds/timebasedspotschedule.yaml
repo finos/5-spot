@@ -107,10 +107,10 @@ spec:
                       description: One-word reason in CamelCase
                       type: string
                     status:
-                      description: 'Status: "True", "False", or "Unknown"'
+                      description: "Status: \"True\", \"False\", or \"Unknown\""
                       enum:
-                      - 'True'
-                      - 'False'
+                      - "True"
+                      - "False"
                       - Unknown
                       type: string
                     type:

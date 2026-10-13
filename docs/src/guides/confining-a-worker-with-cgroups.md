@@ -108,6 +108,14 @@ Changing a profile requires the worker to re-read it: patch the control plane,
 then `systemctl restart k0sworker` on the host, or let the schedule recreate the
 machine.
 
+!!! success "This survives reboots and schedule cycles"
+    Verified on the reference worker: after a host reboot the confinement
+    reassembles unattended, and after a full deactivate/reactivate cycle it is
+    rebuilt from `bootstrapSpec` even when every file it writes is deleted from
+    the host while the machine is down. Note that k0smotron's host reset does
+    **not** remove files written by `files`, so if you are testing this
+    yourself, delete them deliberately or you will be verifying leftovers.
+
 ## Step 2: declare the host half on the ScheduledMachine
 
 `K0sWorkerConfig` accepts `files`, `preK0sCommands` and `args`, so the whole

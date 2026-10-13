@@ -85,6 +85,31 @@ budget_tokens: 2000
 <!-- Mistakes made and corrected. Each entry prevents the same mistake recurring. -->
 <!-- Format: [YYYY-MM-DD] Description of what went wrong and what to do instead. -->
 
+- **[2026-10-12] NEVER print, echo or otherwise process a secret.** A
+  `sudo grep -A12` on `/etc/k0s/k0s.yaml` to read one key dumped the VRRP
+  `authPass` and the full Postgres kine DSN, password included, into the
+  session transcript. Extract exactly the key you need, filter the output, or
+  read structure (counts, filenames) instead of content. When a rotation is
+  needed, hand back the commands; do not run them. Secrets must never transit a
+  command line, an argument list or a redirect either.
+
+- **[2026-10-12] When several knobs were changed together, the honest control is
+  "stock", and it belongs FIRST.** Chasing a worker CrashLoop, three experiments
+  removed the cgroup limits, then `cgroupRoot`, then the slice itself, each
+  changing nothing, and "cgroups are exonerated" was reported with confidence.
+  All three were confounded: `cgroupDriver: systemd` stayed set the whole time
+  and was the actual cause. "Removing X changed nothing" only exonerates X if
+  everything else is genuinely back to default. A stock install would have found
+  it in one step instead of ten.
+
+- **[2026-10-12] Check containerd's cgroup driver before overriding kubelet's.**
+  k0s ships `SystemdCgroup = false` (cgroupfs). Setting `cgroupDriver: systemd`
+  is a mismatch that makes kubelet recreate pod sandboxes forever, presenting as
+  a `Ready` node whose every pod silently restarts, with no limit approached, no
+  OOM, and nothing logged by the dying process. Also: `systemctl show -p Slice`
+  reports the *configured* slice; `ControlGroup` is the authority, because
+  systemd does not re-parent a running unit on `daemon-reload`.
+
 - **[2026-10-11] Never pin a `linker` in `.cargo/config.toml`.** A
   `[target.<triple>] linker = ...` entry applies whenever that triple is the
   *target*, including when it is also the *host*, so a macOS cross-toolchain

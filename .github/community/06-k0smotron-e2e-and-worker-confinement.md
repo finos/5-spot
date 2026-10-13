@@ -220,6 +220,25 @@ Proven by two controls:
 | **stock** k0smotron worker, no `files`, no `preK0sCommands`, no `--profile`, no worker profile | all 5 system pods `1/1 Running`, **0 restarts**, 7 minutes |
 | **corrected** confinement: slice + limits kept, `cgroupDriver` override removed, `cgroupRoot: /k0s.slice` | all 5 pods `1/1 Running`, **0 restarts**, 7 minutes, **and** the cap enforces: 8 cores demanded, 2.01 used, 301 of 301 periods throttled, pods still healthy under full saturation |
 
+### Durability, verified 2026-10-13
+
+The corrected confinement was then checked against the two things a scheduled
+machine actually does: outlive a host reboot, and be rebuilt by the schedule.
+
+| check | result |
+| --- | --- |
+| **Duration** | 20h21m uptime with **0 total pod restarts** across all five system pods |
+| **Host reboot** | confinement reassembles unattended: `hugetlb` unit `active (success)` and the controller delegated, `k0sworker` back in `/k0s.slice/k0sworker.service`, `cpu.max` 2 cores, `memory.max` 4 GiB, pods back under `k0s.slice/kubepods`, **0** kubelet controller failures |
+| **Deactivation** | window closed, `active=false` within 20s, `ShuttingDown`, 5m grace honoured, `Inactive` with all three CAPI objects removed |
+| **Reactivation** | window reopened, `active=true` within 20s, Machine `Running` in 60s |
+| **Reapplication from `bootstrapSpec`** | all three host files were **deliberately deleted** while the machine was down, and the fresh activation recreated every one: slice, `Slice=` drop-in and `hugetlb` unit, with the limits and pod placement identical and 0 controller failures |
+
+The reapplication check is the one worth noting. k0smotron's host reset does
+**not** remove files written by `K0sWorkerConfig.files`, so a leftover slice
+would have made a naive test pass for the wrong reason. Wiping them first is what
+proves the confinement genuinely travels with the machine definition rather than
+persisting as host state.
+
 ### Why the earlier "exoneration" was wrong
 
 The three elimination experiments were real measurements but **all confounded by

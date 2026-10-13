@@ -1,9 +1,23 @@
 # Threat Model: 5-Spot ScheduledMachine Controller
 
-**Version:** 1.7  
-**Date:** 2026-10-09  
+**Version:** 1.8  
+**Date:** 2026-10-13  
 **Status:** Active — living document  
-**Covers:** ADR-0001 … ADR-0017 (the 1.7 pass covers ADR-0017, which makes the
+**Covers:** ADR-0001 … ADR-0018 (the 1.8 pass covers ADR-0018, which replaces
+`serde_yaml` with `serde-saphyr`. Every section walked. The trigger that fires is
+"new external dependency in the build or boot path", and the effect is in the
+**reducing** direction: a C-derived YAML parser over the unmaintained
+`unsafe-libyaml` leaves the artifact that writes cluster manifests, closing
+RUSTSEC-2024-0449 by fixing it rather than by adding a `deny.toml` ignore.
+Scope matters and is recorded rather than overstated: 5-Spot's YAML path
+**emits** and does not ingest, so that parser was never exposed to untrusted
+input at runtime, and the gain is to the build and supply-chain surface, not to
+a runtime trust boundary. No new component, identity, credential, boundary or
+external call. Changed: §6 T10 (reduced, with the scope note) and §7 one new
+control row, that advisories are fixed and not suppressed, with `ignore = []` as
+the standing posture. §§1-5, 8, 9 and 10 unchanged.
+
+The 1.7 pass covers ADR-0017, which makes the
 Machine's bootstrap and infrastructure references follow the discovered CAPI
 contract shape, and the first live k0smotron end-to-end run that found it
 (roadmap 06). Every section walked. The serialization change itself is posture
@@ -386,7 +400,7 @@ namespaces. Everything in §6.5 follows from that.
 | ID | Threat | Likelihood | Impact | Status |
 |---|---|---|---|---|
 | T9 | Memory corruption in unsafe Rust code or via malformed serde input | Very Low | Critical | **Mitigated** — codebase is safe Rust; no `unsafe` blocks; serde handles malformed input with errors |
-| T10 | Supply chain attack via malicious crate version | Low | Critical | **Residual risk:** mitigated by Grype container scan (VEX-aware) in CI; no automated dependency pinning beyond Cargo.lock. **ADR 0015 cuts both ways here:** every dependency removed is one fewer upstream that can be compromised, and also one fewer component a scanner reports on, because internalized code leaves the SBOM. The 500-line bound and the test requirement are what keep the second effect small; see the §7 supply-chain note and §8 |
+| T10 | Supply chain attack via malicious crate version | Low | Critical | **Residual risk:** mitigated by Grype container scan (VEX-aware) in CI; no automated dependency pinning beyond Cargo.lock. **ADR 0015 cuts both ways here:** every dependency removed is one fewer upstream that can be compromised, and also one fewer component a scanner reports on, because internalized code leaves the SBOM. The 500-line bound and the test requirement are what keep the second effect small; see the §7 supply-chain note and §8. **Reduced 2026-10-13 (ADR 0018):** the YAML emitter is now safe Rust (`serde-saphyr`) instead of a C-derived one (`serde_yaml` over the unmaintained `unsafe-libyaml`), removing a memory-unsafe parser from the artifact that writes cluster manifests. Scope note: 5-Spot's YAML path **emits** rather than ingests, so this parser was never exposed to untrusted input in production, and the gain is to the build and supply-chain surface rather than to a runtime boundary |
 
 #### Information Disclosure
 | ID | Threat | Likelihood | Impact | Status |
@@ -581,6 +595,7 @@ them run in `.github/workflows/`.
 | Base images digest-pinned on the `FROM` line, Dependabot-tracked (ADR 0010) | `Dockerfile`, `Dockerfile.chainguard`, `.github/dependabot.yml` | A stale or substituted base image |
 | Actions SHA-pinned; Dependabot groups and a 7-day cooldown per ecosystem | `.github/workflows/*`, `.github/dependabot.yml` | A compromised action release |
 | Scanning: CodeQL, Trivy (image + IaC), grype, `cargo audit`, `cargo deny`, gitleaks, Semgrep | `.github/workflows/` | Known-vulnerable dependency, leaked credential |
+| Advisories are fixed, not suppressed: `deny.toml` keeps `ignore = []` | `deny.toml`, `.github/workflows/build.yaml` (`cargo-deny`) | A known advisory being silenced instead of resolved. ADR 0018 is the worked example: RUSTSEC-2024-0449 was closed by replacing `serde_yaml` with the safe-Rust `serde-saphyr`, not by adding an ignore entry |
 | No `pull_request_target`, no `issue_comment`; untrusted event fields reach `run:` only through `env:` | `.github/workflows/` | Workflow script injection from a fork |
 
 ### Deployment-Layer Controls (operator responsibility)

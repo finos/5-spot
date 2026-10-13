@@ -90,7 +90,7 @@ own. "Internalize?" is the engineering call, not just feasibility.
 | — | `tower` | **0** | *(none)* | 0 | ✅ delete |
 | 1 | `schemars` | 1 | `JsonSchema` (derive) | 1 | ❌ no — CRD schema gen, deep kube/k8s-openapi integration |
 | 2 | `chrono-tz` | 1 | `Tz` | 3 | ❌ **no** — that one symbol *is* the entire IANA tz database |
-| 3 | `serde_yaml` | 1 | `to_string` | 1 | ⚠️ maybe — but YAML is a deceptively hard format |
+| 3 | `serde-saphyr` | 1 | `to_string_with_options` | 1 | ⚠️ maybe, but YAML is a deceptively hard format. Replaced `serde_yaml` per ADR 0018 |
 | 4 | `tokio-stream` | 1 | `wrappers::ReceiverStream::new` | 1 | ✅ **yes** — ~15 lines, a `Stream` impl over `mpsc::Receiver` |
 | 5 | `thiserror` | 1 | `Error` (derive) | 5 | ⚠️ feasible but high-churn — hand-rolled `impl Error` × N error enums |
 | 6 | `sha2` | 2 | `Digest`, `Sha256` | 1 | ❌ no — crypto primitive, never hand-roll |
@@ -131,7 +131,7 @@ hides the Linux-gated entries.
 | `kube-lease-manager` | 1,857 | ~150 to 250 LOC + lease-renewal edge cases | no | 1 | ⚠️ **in bounds, deferred.** Plausible, but leader election is a correctness-critical distributed protocol (clock skew, renewal races, fencing). Needs its own ADR and a test suite that can actually fail, not just an LOC count |
 | `warp` | 6,904 | ~120 to 200 LOC for two trivial servers | no | 1 | ⚠️ **in bounds, deferred.** Two endpoints (`/healthz`, `/readyz`, `/metrics`); the replacement cost is the HTTP plumbing underneath, and dropping `warp` without re-adding `hyper` is the open question. Roadmap 04 §4 already sketched this |
 | `anyhow` | 2,508 | ~40 LOC of `Box<dyn Error>` glue | no | 1 | ❌ in bounds but pointless: it buys nothing, and 29 call sites would churn for zero benefit |
-| `serde_yaml` | 8,724 | n/a | **yes**: wire format | 1 | ❌ one call (`to_string`) over a conformant YAML emitter |
+| `serde-saphyr` | n/a | n/a | **yes**: wire format | 1 | ❌ one call over a conformant YAML emitter. Replaced `serde_yaml` (ADR 0018) after RUSTSEC-2024-0449 made its `unsafe-libyaml` backend a `cargo-deny` failure |
 | `toml` | 7,143 | n/a | **yes**: wire format | 1 | ❌ config parser |
 | `sha2` | n/a | n/a | **yes**: crypto | 1 | ❌ never hand-roll |
 | `chrono-tz` | n/a | n/a | **yes**: reference data | 1 | ❌ `Tz` *is* the IANA database, and DST changes by decree |
@@ -157,7 +157,7 @@ genuinely uses them*. Owning any of these is a multi-month liability, not a savi
 **Thin but bad trades (small surface, still keep):**
 - `chrono-tz` — 1 symbol, but `Tz` embeds the IANA timezone database. You do **not**
   want to hand-maintain DST rules in a banking scheduler. Keep.
-- `sha2`, `serde`, `serde_yaml`, `toml`, `schemars`, `prometheus` — small touch
+- `sha2`, `serde`, `serde-saphyr`, `toml`, `schemars`, `prometheus` - small touch
   points but each encodes a *format/spec/crypto-primitive* that's expensive to get
   right and dangerous to get wrong. Keep.
 - `anyhow` — you could replace with `Box<dyn Error>` in an afternoon, but it buys

@@ -47,7 +47,7 @@ Do **not** internalize these, no matter how few symbols we touch:
 
 | Category | Examples here | Why |
 | --- | --- | --- |
-| **Specifications and wire formats** | `serde_json`, `serde_yaml`, `toml`, `prometheus` | Our surface is often one call (`to_string`); the implementation is a conformant parser or exposition format. Owning it means owning its parsing CVEs and its spec drift. YAML in particular is far harder than it looks. |
+| **Specifications and wire formats** | `serde_json`, `serde-saphyr`, `toml`, `prometheus` | Our surface is often one call (`to_string`); the implementation is a conformant parser or exposition format. Owning it means owning its parsing CVEs and its spec drift. YAML in particular is far harder than it looks. |
 | **Cryptographic primitives** | `sha2` | Never hand-roll. Also an audit and FIPS question in a regulated environment, not merely a correctness one. |
 | **Reference data** | `chrono-tz` | `Tz` is one symbol and *is* the IANA timezone database. DST rules change several times a year by government decree. Hand-maintaining them inside a scheduler is the worst possible place for that risk. |
 | **Date and time arithmetic** | `chrono` | Leap years, leap seconds, DST transitions, ambiguous local times. A correctness minefield with no upside to owning. |

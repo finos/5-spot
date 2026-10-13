@@ -1,13 +1,13 @@
 {
   "version": 1,
   "meta": {
-    "lastScanned": "2026-10-12T21:38:41.449Z",
-    "fileCount": 322,
+    "lastScanned": "2026-10-13T13:34:34.283Z",
+    "fileCount": 325,
     "hits": 0,
     "misses": 0,
-    "renderedHash": "c5b1f2f501a3b04cbb092ae6f4b1a714214496b81e4af072b9f5d3069ac41805",
-    "storeUpdatedAt": "2026-10-12T21:38:41.463Z",
-    "rootHash": "5b48ef41e84f17de"
+    "renderedHash": "2518627134a59efb576aa822238211c55f8eb6bf9229463b911d14209c1cc95e",
+    "storeUpdatedAt": "2026-10-13T13:34:34.289Z",
+    "rootHash": "adc0cbf24b96bc5b"
   },
   "files": {
     ".github/actions/extract-version/action.yml": {
@@ -6923,6 +6923,49 @@
       "size": 26416,
       "mtimeMs": 1791841121413.5002,
       "updatedAt": "2026-10-12T21:38:41.449Z",
+      "source": "hook"
+    },
+    "src/yaml.rs": {
+      "description": "YAML output for the manifests 5-Spot generates (the CRDs in `deploy/crds/`).",
+      "tokens": 781,
+      "hash": "6da860465e028f1a",
+      "size": 2926,
+      "mtimeMs": 1791897777319.31,
+      "updatedAt": "2026-10-13T13:22:57.364Z",
+      "source": "hook",
+      "symbols": [
+        {
+          "name": "to_string",
+          "kind": "fn",
+          "startLine": 40,
+          "endLine": 54,
+          "tokens": 192
+        },
+        {
+          "name": "strip_blank_line_indentation",
+          "kind": "fn",
+          "startLine": 55,
+          "endLine": 73,
+          "tokens": 136
+        }
+      ]
+    },
+    "src/yaml_tests.rs": {
+      "description": "SPDX-License-Identifier: Apache-2.0",
+      "tokens": 1357,
+      "hash": "93fb8f8ba5e0e197",
+      "size": 5087,
+      "mtimeMs": 1791897801833.6152,
+      "updatedAt": "2026-10-13T13:23:21.889Z",
+      "source": "hook"
+    },
+    "docs/adr/0018-replace-serde-yaml-with-serde-saphyr.md": {
+      "description": "0018: Replace `serde_yaml` with `serde-saphyr`, behind one output-style wrapper",
+      "tokens": 1442,
+      "hash": "eb148b1af9d0ea01",
+      "size": 5767,
+      "mtimeMs": 1791898474246.8381,
+      "updatedAt": "2026-10-13T13:34:34.282Z",
       "source": "hook"
     }
   },
