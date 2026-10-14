@@ -6,25 +6,26 @@
 #
 # Everything here is upstream Cluster API — no k0smotron, no k0rdent.
 #
-# NOTE ON API VERSION: these manifests use the `v1beta1` CAPI contract
-# throughout, which every Cluster API release up to and including the v1.14 line
-# still serves. Any recent `clusterctl` therefore works; no pinning to an old
-# release is needed.
+# NOTE ON API VERSION: these manifests use the Cluster API `v1beta2` contract
+# and CAPD's `Dev*` kinds (`DevCluster`, `DevMachineTemplate`, `DevMachine`)
+# with the docker backend. They need Cluster API v1.11 or later; they were
+# validated against v1.14.3, where the older `Docker*` kinds are deprecated in
+# favour of these. The `v1beta2` shapes differ from `v1beta1` in more than the
+# version string: references are `apiGroup` + `kind` + `name`,
+# `KubeadmControlPlane.spec.machineTemplate.infrastructureRef` moved under
+# `machineTemplate.spec`, and kubeadm's `extraArgs` / `kubeletExtraArgs` are
+# lists of `name` / `value` pairs.
 #
 # 5-Spot does not constrain this. It passes the version component of
 # `bootstrapSpec.apiVersion` through to the `Machine` it creates and emits the
 # reference shape that contract requires (ADR 0017), so the worker in
-# scheduledmachine-business-hours.yaml declares `v1beta1` purely to match this
-# file. `v1beta2` works equally well, but moving this walkthrough to it also
-# means applying the kubeadm and CAPD structural changes that came with it (for
-# example `KubeadmControlPlane`'s `machineTemplate.infrastructureRef` moving
-# under `machineTemplate.spec`), so the two must be migrated together.
+# scheduledmachine-business-hours.yaml declares `v1beta2` to match this file.
 #
 # NOTE ON THE NODE IMAGE: pin `kindest/node` to a tag that matches your local
 # `kind` version (see the kind release notes). The same tag is reused by the
 # worker in scheduledmachine-business-hours.yaml.
 ---
-apiVersion: cluster.x-k8s.io/v1beta1
+apiVersion: cluster.x-k8s.io/v1beta2
 kind: Cluster
 metadata:
   name: dev-cluster
@@ -37,35 +38,39 @@ spec:
       cidrBlocks: ["10.128.0.0/12"]
     serviceDomain: cluster.local
   controlPlaneRef:
-    apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+    apiGroup: controlplane.cluster.x-k8s.io
     kind: KubeadmControlPlane
     name: dev-cluster-control-plane
   infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-    kind: DockerCluster
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: DevCluster
     name: dev-cluster
 ---
 # CAPD manages a HAProxy load-balancer container in front of the control plane.
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-kind: DockerCluster
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: DevCluster
 metadata:
   name: dev-cluster
   namespace: default
-spec: {}
+spec:
+  backend:
+    docker: {}
 ---
 # Infrastructure template for the control-plane Machine(s).
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-kind: DockerMachineTemplate
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: DevMachineTemplate
 metadata:
   name: dev-cluster-control-plane
   namespace: default
 spec:
   template:
     spec:
-      # Pin the image so the workshop is reproducible. Match your kind version.
-      customImage: kindest/node:v1.31.0
+      backend:
+        docker:
+          # Pin the image so the workshop is reproducible. Match your kind version.
+          customImage: kindest/node:v1.31.0
 ---
-apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
 kind: KubeadmControlPlane
 metadata:
   name: dev-cluster-control-plane
@@ -74,10 +79,11 @@ spec:
   replicas: 1
   version: v1.31.0
   machineTemplate:
-    infrastructureRef:
-      apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-      kind: DockerMachineTemplate
-      name: dev-cluster-control-plane
+    spec:
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: DevMachineTemplate
+        name: dev-cluster-control-plane
   kubeadmConfigSpec:
     # Standard CAPD control-plane settings (mirrors the clusterctl "docker"
     # development flavor).
@@ -86,16 +92,19 @@ spec:
         certSANs: [localhost, 127.0.0.1, 0.0.0.0, host.docker.internal]
       controllerManager:
         extraArgs:
-          enable-hostpath-provisioner: "true"
+          - name: enable-hostpath-provisioner
+            value: "true"
     initConfiguration:
       nodeRegistration:
         criSocket: unix:///var/run/containerd/containerd.sock
         kubeletExtraArgs:
           # kind nodes run on a shared host; relax disk-pressure eviction so the
           # kubelet does not evict everything under normal laptop disk usage.
-          eviction-hard: nodefs.available<0%,nodefs.inodesFree<0%,imagefs.available<0%
+          - name: eviction-hard
+            value: nodefs.available<0%,nodefs.inodesFree<0%,imagefs.available<0%
     joinConfiguration:
       nodeRegistration:
         criSocket: unix:///var/run/containerd/containerd.sock
         kubeletExtraArgs:
-          eviction-hard: nodefs.available<0%,nodefs.inodesFree<0%,imagefs.available<0%
+          - name: eviction-hard
+            value: nodefs.available<0%,nodefs.inodesFree<0%,imagefs.available<0%

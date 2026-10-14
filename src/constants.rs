@@ -294,7 +294,37 @@ pub const DEFAULT_GRACE_PERIOD_SECS: u64 = 300;
 pub const DEFAULT_NODE_DRAIN_TIMEOUT_SECS: u64 = 300;
 
 /// Timeout for Kubernetes API operations (30 seconds)
+///
+/// Applied as the client's `read_timeout`, which is an idle timeout on every
+/// connection the client opens, **watches included**. That is why every watch
+/// must use [`WATCH_TIMEOUT_SECS`] (via `stream::watch_config`): a watch left at
+/// kube-runtime's 290s default is killed client-side after 30 quiet seconds.
 pub const K8S_API_TIMEOUT_SECS: u64 = 30;
+
+/// Server-side timeout for every list/watch call (`timeoutSeconds`).
+///
+/// Must be lower than [`K8S_API_TIMEOUT_SECS`]: the apiserver then ends each
+/// watch cleanly before the client's read timeout can fire, and kube-runtime
+/// resumes from the last `resourceVersion` with no error, no backoff and no
+/// lost events. Left at the 290s default, every watch with 30 quiet seconds
+/// was killed client-side, the reflector backed off, and events waited minutes
+/// for the next relist (bug-008, found by the k0smotron e2e tier, ADR 0019).
+/// `stream_tests.rs` pins the inequality.
+pub const WATCH_TIMEOUT_SECS: u32 = 20;
+
+/// Headroom kept between [`WATCH_TIMEOUT_SECS`] and [`K8S_API_TIMEOUT_SECS`].
+///
+/// kube-runtime adds its own idle guard of `WATCH_TIMEOUT_SECS + 5s`; this
+/// margin keeps that guard, and apiserver latency in closing the watch, inside
+/// the client read timeout.
+pub const WATCH_TIMEOUT_MARGIN_SECS: u64 = 10;
+
+// Compile-time guards for bug-008: a zero timeout means "no timeout" to the
+// apiserver (the 290s default comes back), and a watch timeout at or above the
+// client read timeout lets the client kill quiet watches again.
+const _: () = assert!(WATCH_TIMEOUT_SECS > 0);
+const _: () =
+    assert!(WATCH_TIMEOUT_SECS as u64 + WATCH_TIMEOUT_MARGIN_SECS <= K8S_API_TIMEOUT_SECS);
 
 /// Maximum backoff time for exponential retry (5 minutes)
 pub const MAX_BACKOFF_SECS: u64 = 300;

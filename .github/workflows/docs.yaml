@@ -145,16 +145,14 @@ jobs:
           cd docs
           poetry install --no-interaction --no-ansi
 
-      - name: Cache cargo build
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # rust-cache keys on the job id, not the workflow, and build.yaml also
+      # has a job called `build`; `key: docs` keeps the rustdoc cache apart
+      # from the release build's.
+      - name: Cache cargo dependencies
+        uses: firestoned/github-actions/rust/cache-cargo@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-docs-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-docs-
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: docs
 
       - name: Build documentation
         # CALM diagrams were rendered by the calm-diagrams job and downloaded

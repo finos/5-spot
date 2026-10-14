@@ -30,6 +30,7 @@ Every `ScheduledMachine` references **exactly one** provider object in **its own
 namespace** via the required `spec.schedule`:
 
 ```yaml
+# validate-examples: fragment (only spec.schedule is shown)
 apiVersion: 5spot.finos.org/v1beta1
 kind: ScheduledMachine
 metadata:

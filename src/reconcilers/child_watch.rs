@@ -184,7 +184,7 @@ async fn run_node_watcher(
         secret = %key.secret_name,
         "child-cluster Node watcher starting"
     );
-    let mut stream = watcher::watcher(api, watcher::Config::default()).boxed();
+    let mut stream = watcher::watcher(api, crate::stream::watch_config()).boxed();
     while let Some(evt) = stream.next().await {
         match evt {
             Ok(watcher::Event::Apply(node) | watcher::Event::InitApply(node)) => {

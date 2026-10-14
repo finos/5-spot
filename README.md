@@ -90,40 +90,37 @@ kubectl apply -f examples/scheduledmachine-basic.yaml
 ## Example
 
 ```yaml
-apiVersion: 5spot.finos.org/v1alpha1
+apiVersion: 5spot.finos.org/v1beta1
 kind: ScheduledMachine
 metadata:
-  name: business-hours-machine
+  name: business-hours-worker
   namespace: default
 spec:
-  schedule:
-    daysOfWeek:
-      - mon-fri
-    hoursOfDay:
-      - 9-17
-    timezone: America/New_York
-    enabled: true
-
-  machine:
-    address: 192.168.1.100
-    user: admin
-    port: 22
-    files: []
-
-  bootstrapRef:
-    apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
-    kind: KubeadmConfigTemplate
-    name: worker-bootstrap-config
-
-  infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
-    kind: MachineTemplate
-    name: worker-machine-template
-
   clusterName: my-k0s-cluster
-
+  enabled: true
+  # The active/inactive decision belongs to a spot-schedule provider object
+  # in the same namespace (see examples/timebasedspotschedule.yaml).
+  schedule:
+    apiVersion: spotschedules.5spot.finos.org/v1alpha1
+    kind: TimeBasedSpotSchedule
+    name: business-hours
+  # Created when the window opens, deleted when it closes. The Machine is made
+  # at the contract version declared here (ADR 0017).
+  bootstrapSpec:
+    apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+    kind: K0sWorkerConfig
+    spec:
+      version: v1.30.0+k0s.0
+  infrastructureSpec:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+    kind: RemoteMachine
+    spec:
+      address: 192.168.1.100
+      port: 22
+      user: admin
   priority: 50
   gracefulShutdownTimeout: 5m
+  nodeDrainTimeout: 5m
 ```
 
 ## Development

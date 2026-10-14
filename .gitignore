@@ -13,3 +13,6 @@ __pycache__/
 /docs/src/architecture/
 
 .DS_Store
+
+# Pinned kind/clusterctl for the k0smotron e2e tier (make e2e-tools)
+/.e2e-bin/

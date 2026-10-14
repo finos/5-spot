@@ -106,3 +106,8 @@ description: chronological action log per session, consolidated weekly
 | 15:22 | Created src/yaml.rs | — | ~781 |
 | 15:23 | Created src/yaml_tests.rs | — | ~1357 |
 | 15:34 | Created docs/adr/0018-replace-serde-yaml-with-serde-saphyr.md | — | ~1538 |
+| 20:26 | Created docs/adr/0019-k0smotron-end-to-end-tier-in-kind.md | — | ~1920 |
+| 20:28 | Created .github/scripts/e2e-k0smotron.sh | — | ~2843 |
+| 20:28 | Created .github/scripts/k0smotron-e2e.bats | — | ~1973 |
+| 20:30 | Created .github/scripts/validate-examples.py | — | ~2590 |
+| 21:03 | Created .github/workflows/e2e.yaml | — | ~949 |

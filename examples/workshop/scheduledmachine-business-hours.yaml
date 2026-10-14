@@ -2,9 +2,9 @@
 #
 # When the schedule window is OPEN, 5-Spot creates three objects on the
 # management cluster, all named after this ScheduledMachine (business-hours-worker):
-#   1. KubeadmConfig  (bootstrap.cluster.x-k8s.io)      — generates the kubeadm join
-#   2. DockerMachine  (infrastructure.cluster.x-k8s.io) — the worker container
-#   3. Machine        (cluster.x-k8s.io)                — ties the two to the Cluster
+#   1. KubeadmConfig  (bootstrap.cluster.x-k8s.io):      generates the kubeadm join
+#   2. DevMachine     (infrastructure.cluster.x-k8s.io): the worker container
+#   3. Machine        (cluster.x-k8s.io):                ties the two to the Cluster
 # When the window CLOSES (or spec.enabled:false / killSwitch), 5-Spot drains the
 # Node (via the auto-discovered dev-cluster-kubeconfig Secret) and deletes all
 # three.
@@ -50,14 +50,15 @@ spec:
   # Bootstrap: a kubeadm worker join config. 5-Spot creates this as a concrete
   # KubeadmConfig (not a template) named business-hours-worker.
   bootstrapSpec:
-    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
     kind: KubeadmConfig
     spec:
       joinConfiguration:
         nodeRegistration:
           criSocket: unix:///var/run/containerd/containerd.sock
           kubeletExtraArgs:
-            eviction-hard: nodefs.available<0%,nodefs.inodesFree<0%,imagefs.available<0%
+            - name: eviction-hard
+              value: nodefs.available<0%,nodefs.inodesFree<0%,imagefs.available<0%
 
   # Infrastructure: a CAPD worker container.
   #
@@ -65,10 +66,12 @@ spec:
   # CAPD cannot derive the node image from the Kubernetes version — you must pin
   # it. Use the SAME tag as the control plane in workload-cluster.yaml.
   infrastructureSpec:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-    kind: DockerMachine
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+    kind: DevMachine
     spec:
-      customImage: kindest/node:v1.31.0
+      backend:
+        docker:
+          customImage: kindest/node:v1.31.0
 
   # Optional labels/annotations stamped on the CAPI Machine (and, separately,
   # any embedded-resource labels via bootstrapSpec.metadata / infrastructureSpec.metadata).

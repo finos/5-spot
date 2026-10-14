@@ -130,6 +130,53 @@
         "drift",
         "roadmap-06"
       ]
+    },
+    {
+      "id": "bug-008",
+      "date": "2026-10-13",
+      "error_message": "Watch events reached the controller minutes late: a ScheduledMachine created at 00:41:41 was first reconciled at 00:44:22. Every watch failed on a fixed cadence (the ScheduledMachine reflector every 30s exactly) with 'ServiceError: error reading a body from connection' / hyper Body TimedOut, logged as 'kube-runtime will reconnect'.",
+      "root_cause": "src/main.rs and src/reconcilers/child_client.rs set read_timeout = K8S_API_TIMEOUT_SECS (30s) on the shared kube Client for NIST SC-5, and every watch used watcher::Config::default(), whose server-side timeoutSeconds is 290. read_timeout is an idle timeout on every connection, watches included, so any watch with 30 quiet seconds was killed client-side; the reflector then backed off and events waited for the next relist. kube-runtime's contract is that the watch timeout must be lower than the client read timeout (kube-client 4.2 defaults read_timeout to None for exactly this reason). Present since the first commit. Misdiagnosed on 2026-10-09 as routine churn, and the 'demote to debug' change made on 2026-10-13 classed WatchFailed as routine, which would have hidden it.",
+      "fix": "stream::watch_config() sets the server-side timeout to constants::WATCH_TIMEOUT_SECS (20s, with WATCH_TIMEOUT_MARGIN_SECS=10 under the 30s read timeout), and all 12 watch sites use it, so the apiserver closes each watch cleanly first and kube-runtime resumes from the last resourceVersion. Compile-time guards in constants.rs fail the build if the inequality is broken or the timeout is zero. is_routine_watch_restart() no longer treats WatchFailed as routine: a healthy watch never produces one. Tests in stream_tests.rs pin the config and the classification.",
+      "lesson": "A symptom that recurs on a fixed cadence is a timer, not churn. 'Several times a minute on a healthy cluster' was the evidence for the defect and was read as the evidence against it. Before classifying a recurring error as routine, find the clock that produces it. Only a tier with a real apiserver and real timing (ADR 0019) could see the delay.",
+      "files": [
+        "src/main.rs",
+        "src/reconcilers/child_client.rs",
+        "src/stream.rs",
+        "src/stream_tests.rs",
+        "src/constants.rs",
+        "src/reconcilers/child_watch.rs",
+        "src/reconcilers/dynamic_ref_watch.rs",
+        "src/reconcilers/scheduled_capacity.rs",
+        "src/providers/time_based.rs",
+        "src/providers/capital_markets.rs",
+        "src/bin/reclaim_agent.rs"
+      ],
+      "tags": [
+        "kube-runtime",
+        "watch",
+        "timeout",
+        "latency",
+        "found-by-e2e",
+        "adr-0019"
+      ]
+    },
+    {
+      "id": "bug-009",
+      "date": "2026-10-14",
+      "error_message": "cargo-deny (License + Advisory + Sources) and Security Vulnerability Scan (cargo audit) failed on main: RUSTSEC-2026-0346, -0347, -0348, -0349 against rustls 0.23.45.",
+      "root_cause": "New upstream advisories against the transitive rustls 0.23.45 (via kube-client / hyper-rustls). Not a code change: the lockfile pinned an affected version when the advisories were published.",
+      "fix": "cargo update -p rustls --precise 0.23.46 (patched for all four). Lockfile-only diff; deny and audit clean afterwards.",
+      "lesson": "An advisory failure on a branch that changed no dependencies is a new advisory, not a regression in the branch. Check which crate and which patched version, update only that crate with --precise, and confirm the lockfile diff is that crate alone. cargo-deny takes --all-features BEFORE the subcommand: `cargo deny --all-features check`; after `check` it is an argument error (exit 2) that looks like a failed check.",
+      "files": [
+        "Cargo.lock"
+      ],
+      "tags": [
+        "cargo-deny",
+        "cargo-audit",
+        "rustsec",
+        "rustls",
+        "dependencies"
+      ]
     }
   ]
 }

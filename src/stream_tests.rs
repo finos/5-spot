@@ -86,11 +86,13 @@ mod tests {
     }
 
     #[test]
-    fn test_stream_recycle_is_routine() {
-        // The apiserver ends every watch when its timeout elapses, and any
-        // transport hiccup ends it the same way. kube-runtime reconnects, so
-        // this must not be logged as a fault.
-        assert!(is_routine_watch_restart(&watch_failed()));
+    fn test_watch_failed_is_not_routine() {
+        // A healthy watch ends cleanly when its server-side timeout elapses and
+        // produces no error at all. WatchFailed means the stream broke instead:
+        // a dropped connection or a client-side read timeout. The latter was a
+        // real defect (a 30s client read timeout under a 290s watch) that was
+        // misread as routine churn, so it must stay visible at warn.
+        assert!(!is_routine_watch_restart(&watch_failed()));
     }
 
     #[test]
@@ -132,5 +134,53 @@ mod tests {
         )));
         assert!(!is_routine_watch_restart(&list));
         assert!(!is_routine_watch_restart(&start));
+    }
+
+    // ========================================================================
+    // watch_config: the server-side watch timeout must undercut the client's
+    // read timeout, or every quiet watch is killed client-side (bug-008).
+    // ========================================================================
+
+    #[test]
+    fn test_watch_config_sets_a_server_side_timeout() {
+        assert_eq!(
+            watch_config().timeout,
+            Some(crate::constants::WATCH_TIMEOUT_SECS)
+        );
+    }
+
+    #[test]
+    fn test_watch_config_timeout_is_below_the_client_read_timeout() {
+        // The value the watches actually receive, not just the constant (the
+        // constant's inequality is also a compile-time guard in constants.rs).
+        // kube-runtime adds its own idle guard of `timeout + 5s` on top; both
+        // must fire after the server has closed the watch, never before.
+        let timeout = watch_config().timeout.expect("watch_config sets a timeout");
+        assert!(
+            timeout > 0,
+            "timeoutSeconds=0 means no timeout to the apiserver"
+        );
+        assert!(
+            u64::from(timeout) + crate::constants::WATCH_TIMEOUT_MARGIN_SECS
+                <= crate::constants::K8S_API_TIMEOUT_SECS,
+            "watch timeout {timeout}s plus margin must not exceed the {}s client read timeout",
+            crate::constants::K8S_API_TIMEOUT_SECS
+        );
+    }
+
+    #[test]
+    fn test_watch_config_overrides_the_kube_runtime_default() {
+        // kube-runtime's default (None, meaning 290s) is what caused bug-008.
+        assert_ne!(watch_config().timeout, watcher::Config::default().timeout);
+    }
+
+    #[test]
+    fn test_watch_config_keeps_the_other_defaults() {
+        // Only the timeout changes: no selector narrowing, bookmarks still on.
+        let config = watch_config();
+        let default = watcher::Config::default();
+        assert_eq!(config.label_selector, default.label_selector);
+        assert_eq!(config.field_selector, default.field_selector);
+        assert_eq!(config.bookmarks, default.bookmarks);
     }
 }

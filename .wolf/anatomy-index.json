@@ -1,13 +1,13 @@
 {
   "version": 1,
   "meta": {
-    "lastScanned": "2026-10-13T13:34:34.283Z",
-    "fileCount": 325,
+    "lastScanned": "2026-10-14T01:03:08.143Z",
+    "fileCount": 330,
     "hits": 0,
     "misses": 0,
-    "renderedHash": "2518627134a59efb576aa822238211c55f8eb6bf9229463b911d14209c1cc95e",
-    "storeUpdatedAt": "2026-10-13T13:34:34.289Z",
-    "rootHash": "adc0cbf24b96bc5b"
+    "renderedHash": "f536fab60d03b4a27027c7c5e6ad6e2a0eb95eb1c7daa64b3aa7d168c71d1a47",
+    "storeUpdatedAt": "2026-10-14T01:03:08.149Z",
+    "rootHash": "531326a15ee4ca7f"
   },
   "files": {
     ".github/actions/extract-version/action.yml": {
@@ -6966,6 +6966,116 @@
       "size": 5767,
       "mtimeMs": 1791898474246.8381,
       "updatedAt": "2026-10-13T13:34:34.282Z",
+      "source": "hook"
+    },
+    "docs/adr/0019-k0smotron-end-to-end-tier-in-kind.md": {
+      "description": "0019: A k0smotron end-to-end tier in kind, with strict example validation",
+      "tokens": 1800,
+      "hash": "3ab56b81ec588edc",
+      "size": 7198,
+      "mtimeMs": 1791937601768.5195,
+      "updatedAt": "2026-10-14T00:26:41.813Z",
+      "source": "hook"
+    },
+    ".github/scripts/e2e-k0smotron.sh": {
+      "description": "SPDX-License-Identifier: Apache-2.0",
+      "tokens": 2843,
+      "hash": "c8c63c18d37ea64e",
+      "size": 10894,
+      "mtimeMs": 1791937690503.3604,
+      "updatedAt": "2026-10-14T00:28:10.549Z",
+      "source": "hook"
+    },
+    ".github/scripts/k0smotron-e2e.bats": {
+      "description": "shellcheck shell=bats",
+      "tokens": 1973,
+      "hash": "e74123db9143de22",
+      "size": 7397,
+      "mtimeMs": 1791937737071.6958,
+      "updatedAt": "2026-10-14T00:28:57.114Z",
+      "source": "hook"
+    },
+    ".github/scripts/validate-examples.py": {
+      "description": "/*.yaml\"), recursive=True)):",
+      "tokens": 2590,
+      "hash": "003d211971a13d8e",
+      "size": 9063,
+      "mtimeMs": 1791937802474.1482,
+      "updatedAt": "2026-10-14T00:30:02.535Z",
+      "source": "hook",
+      "symbols": [
+        {
+          "name": "Item",
+          "kind": "class",
+          "startLine": 67,
+          "endLine": 74,
+          "tokens": 28
+        },
+        {
+          "name": "Report",
+          "kind": "class",
+          "startLine": 75,
+          "endLine": 80,
+          "tokens": 51
+        },
+        {
+          "name": "group_of",
+          "kind": "fn",
+          "startLine": 81,
+          "endLine": 84,
+          "tokens": 32
+        },
+        {
+          "name": "not_validated_reason",
+          "kind": "fn",
+          "startLine": 85,
+          "endLine": 90,
+          "tokens": 63
+        },
+        {
+          "name": "is_complete",
+          "kind": "fn",
+          "startLine": 91,
+          "endLine": 100,
+          "tokens": 80
+        },
+        {
+          "name": "embedded_objects",
+          "kind": "fn",
+          "startLine": 101,
+          "endLine": 121,
+          "tokens": 213
+        },
+        {
+          "name": "collect",
+          "kind": "fn",
+          "startLine": 122,
+          "endLine": 159,
+          "tokens": 552
+        },
+        {
+          "name": "dry_run",
+          "kind": "fn",
+          "startLine": 160,
+          "endLine": 169,
+          "tokens": 140
+        },
+        {
+          "name": "main",
+          "kind": "fn",
+          "startLine": 170,
+          "endLine": 220,
+          "tokens": 520
+        }
+      ]
+    },
+    ".github/workflows/e2e.yaml": {
+      "description": "SPDX-License-Identifier: Apache-2.0",
+      "tokens": 949,
+      "hash": "45fbd55345484fa3",
+      "size": 3325,
+      "mtimeMs": 1791939788093.864,
+      "updatedAt": "2026-10-14T01:03:08.143Z",
       "source": "hook"
     }
   },

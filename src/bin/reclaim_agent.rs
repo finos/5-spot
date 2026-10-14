@@ -300,7 +300,7 @@ async fn run_config_watcher(
 ) {
     let cms: Api<ConfigMap> =
         Api::namespaced(client, five_spot::constants::RECLAIM_AGENT_NAMESPACE);
-    let wc = watcher::Config::default().fields(&format!("metadata.name={cm_name}"));
+    let wc = five_spot::stream::watch_config().fields(&format!("metadata.name={cm_name}"));
     let mut stream = watcher(cms, wc).boxed();
     loop {
         match stream.next().await {

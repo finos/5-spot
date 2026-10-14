@@ -85,6 +85,15 @@ budget_tokens: 2000
 <!-- Mistakes made and corrected. Each entry prevents the same mistake recurring. -->
 <!-- Format: [YYYY-MM-DD] Description of what went wrong and what to do instead. -->
 
+- **[2026-10-13] An error that recurs on a fixed cadence is a timer, not
+  churn.** Watch failures logged "several times a minute on a healthy cluster"
+  were classed as routine and demoted to `debug`. The cadence was the defect: a
+  30s client `read_timeout` killing every quiet watch under a 290s server-side
+  watch timeout (bug-008), delaying every reconcile by minutes. Before calling a
+  recurring error noise, find the clock that produces it and check the library's
+  documented timeout contract (kube-rs: watch timeout < client read timeout).
+  Lowering a log level is a claim that nothing is wrong; it needs evidence.
+
 - **[2026-10-13] A blanket `sed` over a version string corrupts prose that
   contrasts versions.** Sweeping `v1beta1` to `v1beta2` across docs rewrote two
   sentences into nonsense: a passthrough explanation became "declare v1beta2 and

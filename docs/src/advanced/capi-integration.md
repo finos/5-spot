@@ -26,23 +26,31 @@ flowchart TB
 apiVersion: cluster.x-k8s.io/v1beta2
 kind: Machine
 metadata:
-  name: scheduled-machine-worker-xyz
+  # The Machine, the bootstrap object and the infrastructure object are all
+  # named after the ScheduledMachine.
+  name: scheduled-machine
   namespace: default
+  labels:
+    cluster.x-k8s.io/cluster-name: my-cluster
+    5spot.finos.org/scheduled-machine: scheduled-machine
   ownerReferences:
     - apiVersion: 5spot.finos.org/v1beta1
       kind: ScheduledMachine
       name: scheduled-machine
+      uid: 6f1c2b8e-0d4a-4c1e-9b7a-2f3e4d5c6b7a   # the ScheduledMachine's own uid
+      controller: true
+      blockOwnerDeletion: true
 spec:
   clusterName: my-cluster
   bootstrap:
     configRef:
       apiGroup: bootstrap.cluster.x-k8s.io
       kind: KubeadmConfig
-      name: worker-bootstrap
+      name: scheduled-machine
   infrastructureRef:
     apiGroup: infrastructure.cluster.x-k8s.io
     kind: BareMetalMachine
-    name: worker-infra
+    name: scheduled-machine
 ```
 
 The reference **shape** follows the contract version, not just the version
@@ -190,7 +198,10 @@ spec:
     kind: KubeadmConfig
     spec:
       joinConfiguration:
-        nodeRegistration: {}
+        # v1beta2 requires nodeRegistration to set at least one field; an
+        # empty object is rejected.
+        nodeRegistration:
+          name: "{{ ds.meta_data.name }}"
   infrastructureSpec:
     apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
     kind: Metal3Machine

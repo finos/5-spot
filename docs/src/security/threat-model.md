@@ -1,9 +1,27 @@
 # Threat Model: 5-Spot ScheduledMachine Controller
 
-**Version:** 1.8  
+**Version:** 1.9  
 **Date:** 2026-10-13  
 **Status:** Active — living document  
-**Covers:** ADR-0001 … ADR-0018 (the 1.8 pass covers ADR-0018, which replaces
+**Covers:** ADR-0001 … ADR-0019 (the 1.9 pass covers ADR-0019, the k0smotron
+end-to-end tier in kind, and **bug-008**, which that tier found on its first run.
+Every section walked. The ADR adds no runtime component, identity, credential or
+boundary: the tier deploys the existing system unchanged into a throwaway
+cluster. What it adds is on the CI side of TB0, a job with a read-only token, no
+secrets and no published output, that fetches pinned tools, images and provider
+manifests; recorded in §7 (supply chain) and, for the provider manifests that are
+pinned by version rather than digest, in §8. **bug-008 is the security content
+of this pass.** Every watch in the controller ran under a 30-second client read
+timeout against a 290-second server timeout, so a quiet watch was killed
+client-side and events waited for a backoff and a relist. The reactive controls
+were therefore slower than this document claimed: a `killSwitch` flip, a schedule
+closing, or an emergency-reclaim annotation on a Node could take a requeue
+interval or longer to act on, where "immediately" was written. Fixed by setting
+every watch's server-side timeout below the client's, with a compile-time guard;
+recorded as D6 (§6.2), a §7 control row, and a correction to the §8 kill-switch
+entry. §§1-5 and 9 unchanged.
+
+The 1.8 pass covers ADR-0018, which replaces
 `serde_yaml` with `serde-saphyr`. Every section walked. The trigger that fires is
 "new external dependency in the build or boot path", and the effect is in the
 **reducing** direction: a C-derived YAML parser over the unmaintained
@@ -412,6 +430,7 @@ namespaces. Everything in §6.5 follows from that.
 | ID | Threat | Likelihood | Impact | Status |
 |---|---|---|---|---|
 | D5 | Pod eviction during drain exhausts Kubernetes API rate limits (`429` responses from PDB) | Medium | Medium | **Mitigated** — `evict_pod` handles 429 gracefully and logs a warning rather than crashing |
+| D6 | **Delayed reaction to reactive controls**: watch events reach the controller minutes late, so a `killSwitch`, a closing schedule, or an emergency-reclaim annotation is acted on only at the next requeue or relist | Was certain (every quiet watch, on a fixed 30s cadence) | High | **Mitigated (2026-10-13, bug-008)**: every watch uses `stream::watch_config()`, whose server-side `timeoutSeconds` (`WATCH_TIMEOUT_SECS`, 20s) is below the client read timeout (`K8S_API_TIMEOUT_SECS`, 30s), so the apiserver ends each watch cleanly and kube-runtime resumes from the last `resourceVersion` without loss. Compile-time guards in `src/constants.rs` fail the build if the inequality is broken; `src/stream_tests.rs` pins the config; the k0smotron e2e tier (ADR 0019) measures it end to end. The defect was invisible to every lower tier and had been misread as routine reconnect noise |
 
 ---
 
@@ -560,6 +579,8 @@ removed rather than quietly dropped.
 | `checked_mul` + `MAX_DURATION_SECS` cap | `src/reconcilers/helpers.rs` | T7 — duration overflow |
 | Timezone `maxLength` + character pattern in CRD | `src/crd.rs` | T6 — log injection |
 | `tokio::time::timeout(600s)` in finalizer cleanup | `src/reconcilers/helpers.rs` | D2 — finalizer hang |
+| Server-side watch timeout below the client read timeout, on every watch, with a compile-time guard | `src/stream.rs` (`watch_config`), `src/constants.rs` | D6: watch events delayed by client-side read timeouts (bug-008) |
+| A real-Cluster-API end-to-end tier and strict example validation, run on every relevant change | `.github/workflows/e2e.yaml`, `.github/scripts/k0smotron-e2e.bats`, `.github/scripts/validate-examples.py` (ADR 0019) | Regression of the CAPI contract (ADR 0017), of the owned label the watches select on (T12, bug-007), and of watch timeliness (D6); provider fields silently dropped from an embedded `bootstrapSpec` / `infrastructureSpec` because the provider renamed them |
 | k0smotron.io RBAC narrowed to explicit resources | `deploy/deployment/rbac/clusterrole.yaml` | E2 — over-privileged SA |
 | Non-root container, read-only root filesystem, all caps dropped | `deploy/deployment/deployment.yaml` | E3 — token theft |
 | CPU/memory resource limits | `deploy/deployment/deployment.yaml` | D1 — resource exhaustion |
@@ -597,6 +618,7 @@ them run in `.github/workflows/`.
 | Scanning: CodeQL, Trivy (image + IaC), grype, `cargo audit`, `cargo deny`, gitleaks, Semgrep | `.github/workflows/` | Known-vulnerable dependency, leaked credential |
 | Advisories are fixed, not suppressed: `deny.toml` keeps `ignore = []` | `deny.toml`, `.github/workflows/build.yaml` (`cargo-deny`) | A known advisory being silenced instead of resolved. ADR 0018 is the worked example: RUSTSEC-2024-0449 was closed by replacing `serde_yaml` with the safe-Rust `serde-saphyr`, not by adding an ignore entry |
 | No `pull_request_target`, no `issue_comment`; untrusted event fields reach `run:` only through `env:` | `.github/workflows/` | Workflow script injection from a fork |
+| The e2e job holds `contents: read` only, uses no secrets and publishes nothing; its tools are pinned by SHA-256 (`kind`, `clusterctl`) and its images by digest (`kindest/node`, the bootloose worker) | `.github/workflows/e2e.yaml`, `Makefile` (`e2e-tools`), `.github/scripts/e2e-k0smotron.sh` (ADR 0019) | A compromised test input reaching a credential or an artifact. At worst it can falsify a test result; see §8 for the inputs pinned by version only |
 
 ### Deployment-Layer Controls (operator responsibility)
 
@@ -651,7 +673,9 @@ x-kubernetes-validations:
 
 ### LOW — Kill switch audit trail
 
-**Threat:** Activating `spec.killSwitch: true` immediately removes a machine. The only record is the Kubernetes API audit log (if enabled). No Kubernetes Event is emitted by the controller.
+**Threat:** Activating `spec.killSwitch: true` removes a machine on the next reconcile, which follows the watch event within seconds. The only record is the Kubernetes API audit log (if enabled). No Kubernetes Event is emitted by the controller.
+
+**Correction (1.9):** until bug-008 was fixed on 2026-10-13, "within seconds" did not hold. Watches were killed client-side every 30 seconds, so the flip could wait for the next requeue or relist. See D6.
 
 **Recommendation:** Emit a Kubernetes Event with `reason: KillSwitchActivated` and `type: Warning` when the kill switch fires, so it appears in `kubectl describe scheduledmachine` and feeds into alerting pipelines.
 
@@ -807,6 +831,27 @@ field manager is the only expected writer.
 
 ---
 
+### LOW: e2e provider manifests are pinned by version, not by digest
+
+**Threat:** `make e2e-k0smotron-up` installs cert-manager, Cluster API and
+k0smotron through `clusterctl init` at pinned **versions** (Cluster API v1.14.3,
+k0smotron v2.2.0). `clusterctl` fetches those providers' release manifests and
+images by tag, and the k0smotron worker downloads k0s itself. A re-tagged or
+substituted upstream release would run inside the e2e job.
+
+**Why it is LOW:** the job holds a read-only token, no secrets, and publishes
+nothing, so the worst outcome is a false test result, not a compromised artifact
+or credential (§7, supply chain). The tools that drive it, `kind` and
+`clusterctl`, are checksum-verified, and the cluster and worker images are
+pinned by digest.
+
+**Revisit when:** the e2e job gains any write permission or secret, or its
+output starts feeding a release decision automatically. At that point pin the
+provider component manifests by checksum (`clusterctl` supports a local
+repository override) and mirror the k0s binary.
+
+---
+
 ### LOW — Multi-instance hash distribution weakness
 
 **Threat:** The consistent hash function adds `priority * 1000` to a 64-bit hash, which provides negligible differentiation. High-priority resources may cluster on one instance.
@@ -840,3 +885,4 @@ The following conditions are assumed to be true for this threat model to hold:
   — a repository file, not a site page
 - [API Reference](../reference/api.md)
 - [Developer Guide](../development/index.md) — the ADD cycle and the decision log
+- [Testing](../development/testing.md): the test tiers, including the k0smotron end-to-end tier (ADR 0019)

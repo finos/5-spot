@@ -1,3 +1,7 @@
+# validate-examples: expect-reject
+#   (machine-readable: .github/scripts/validate-examples.py fails if the API
+#   server ever ACCEPTS this file)
+#
 # Example ScheduledMachine with INVALID nodeTaints — intentionally rejected
 # by the ValidatingAdmissionPolicy (see deploy/admission/validatingadmissionpolicy.yaml).
 #

@@ -1016,7 +1016,7 @@ pub async fn run(client: Client, is_leader: Arc<AtomicBool>) -> anyhow::Result<(
     // them from cluster state, so nothing is stored outside Kubernetes.
     let reflector_api = Api::<ScheduledCapacity>::all(client);
     tokio::spawn(async move {
-        let mut stream = watcher::watcher(reflector_api, watcher::Config::default()).boxed();
+        let mut stream = watcher::watcher(reflector_api, crate::stream::watch_config()).boxed();
         while let Some(event) = stream.next().await {
             match event {
                 Ok(watcher::Event::Apply(obj) | watcher::Event::InitApply(obj)) => {
@@ -1040,7 +1040,7 @@ pub async fn run(client: Client, is_leader: Arc<AtomicBool>) -> anyhow::Result<(
     });
 
     info!("Starting ScheduledCapacity controller");
-    Controller::new(api, watcher::Config::default())
+    Controller::new(api, crate::stream::watch_config())
         .reconcile_on(crate::stream::ReceiverStream::new(schedule_rx))
         .reconcile_on(crate::stream::ReceiverStream::new(target_rx))
         .shutdown_on_signal()
