@@ -34,7 +34,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
-use clap::Parser;
 use kube::Client;
 use tracing::info;
 
@@ -53,50 +52,44 @@ use five_spot::reconcilers::scheduled_capacity;
 const DEFAULT_CAPACITY_LEASE_NAME: &str = "5spot-capacity-controller";
 
 /// CLI / environment configuration for the capacity controller.
-#[derive(Debug, Parser)]
-#[command(
-    name = "5spot-capacity-controller",
-    about = "Gates one numeric capacity field on a foreign object from a spot-schedule verdict (ADR 0011)"
-)]
-struct Cli {
+#[derive(clap::Args, Debug)]
+pub(crate) struct Args {
     /// Port for the Prometheus `/metrics` endpoint.
     #[arg(long, env = "METRICS_PORT", default_value_t = METRICS_PORT)]
-    metrics_port: u16,
+    pub(crate) metrics_port: u16,
 
     /// Port for the `/healthz` and `/readyz` endpoints.
     #[arg(long, env = "HEALTH_PORT", default_value_t = HEALTH_PORT)]
-    health_port: u16,
+    pub(crate) health_port: u16,
 
     /// Enable leader election; only the lease holder reconciles.
     #[arg(long, env = "ENABLE_LEADER_ELECTION", default_value_t = false)]
-    enable_leader_election: bool,
+    pub(crate) enable_leader_election: bool,
 
     /// Name of the `Lease` used for leader election.
     #[arg(long, env = "LEASE_NAME", default_value = DEFAULT_CAPACITY_LEASE_NAME)]
-    lease_name: String,
+    pub(crate) lease_name: String,
 
     /// Namespace holding the `Lease`.
     #[arg(long, env = "LEASE_NAMESPACE", default_value = DEFAULT_LEASE_NAMESPACE)]
-    lease_namespace: String,
+    pub(crate) lease_namespace: String,
 
     /// Lease duration in seconds.
     #[arg(long, env = "LEASE_DURATION_SECS", default_value_t = DEFAULT_LEASE_DURATION_SECS)]
-    lease_duration_secs: u64,
+    pub(crate) lease_duration_secs: u64,
 
     /// Renew deadline in seconds; the leader must renew before this elapses.
     #[arg(long, env = "LEASE_RENEW_DEADLINE_SECS", default_value_t = DEFAULT_LEASE_RENEW_DEADLINE_SECS)]
-    lease_renew_deadline_secs: u64,
+    pub(crate) lease_renew_deadline_secs: u64,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+pub(crate) async fn run(cli: Args) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
-    let cli = Cli::parse();
     info!(
         metrics_port = cli.metrics_port,
         health_port = cli.health_port,
@@ -134,5 +127,5 @@ async fn main() -> Result<()> {
 }
 
 #[cfg(test)]
-#[path = "scheduled_capacity_controller_tests.rs"]
+#[path = "capacity_controller_tests.rs"]
 mod tests;

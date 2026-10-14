@@ -48,7 +48,10 @@ spec:
           # Pin to a released version tag; NEVER use :latest (Trivy KSV-0013).
           image: ghcr.io/finos/5-spot:v0.3.0
           imagePullPolicy: IfNotPresent
-          command: ["/5spot-capacity-controller"]
+          # One image for every component; the subcommand selects it (ADR 0020).
+          # Separation from the machine controller is this Deployment's own
+          # ServiceAccount and RBAC, not a separate binary (ADR 0011).
+          args: ["capacity-controller"]
           env:
             - name: RUST_LOG
               value: "info"

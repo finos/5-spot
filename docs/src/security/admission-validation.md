@@ -259,7 +259,7 @@ The two 5-Spot node agents deliberately exceed the Pod Security Standards
 
 | Attribute | kata-config agent | reclaim agent |
 |---|---|---|
-| `privileged` | ✅ (nsenter k0s restart, ADR 0003) | — |
+| `privileged` | ✅ (setns into host PID 1 for the k0s restart, ADR 0003, 0020) | (none) |
 | `hostPID` | ✅ | ✅ (scan host `/proc`) |
 | root (`runAsUser: 0`) | ✅ | ✅ |
 | `hostPath` | `/` (RW) | `/proc`, `/etc/machine-id` (RO) |

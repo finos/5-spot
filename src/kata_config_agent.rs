@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 //! # Kata config agent — host-filesystem sync engine
 //!
-//! Core logic for the node-side `5spot-kata-config-agent` binary (ADR 0002 /
+//! Core logic for the node-side Kata-config agent, `5spot agent kata-config` (ADR 0002 /
 //! ADR 0003, roadmap `completed-5spot-kata-config-per-node.md`, Phase 3). This module is
-//! I/O-light around the filesystem and fully unit-testable; the binary entry
-//! point in `src/bin/kata_config_agent.rs` wires it to a poll loop.
+//! I/O-light around the filesystem and fully unit-testable; the subcommand in
+//! `src/cmd/kata_config_agent.rs` wires it to a poll loop (ADR 0020).
 //!
 //! ## Sync contract
 //!
@@ -484,8 +484,10 @@ pub fn sync_once(source_path: &Path, dest_path: &Path) -> io::Result<SyncOutcome
 /// transition.
 pub const ABSENT_HASH_MARKER: &str = "absent";
 
-/// `nsenter` binary — entered to run a command in the host's namespaces.
-const NSENTER_BIN: &str = "nsenter";
+/// The hidden `5spot` subcommand that enters another process's namespaces and
+/// runs a command there (ADR 0020). It replaces an external `nsenter` binary,
+/// which the shared image does not contain, and takes the same flags.
+pub const NSENTER_SUBCOMMAND: &str = "nsenter";
 /// Host init PID. `nsenter -t 1` targets systemd (PID 1) on the host; requires
 /// `hostPID: true` on the pod so PID 1 resolves to the host's init, not the
 /// container's.
@@ -509,19 +511,28 @@ const MAX_UNIT_NAME_LEN: usize = 255;
 /// The only unit type the agent restarts.
 const UNIT_SUFFIX: &str = ".service";
 
-/// Build the exact argv for the in-pod host-service restart (ADR 0003):
+/// Build the exact argv for the in-pod host-service restart (ADR 0003, as
+/// changed by ADR 0020):
 ///
 /// ```text
-/// nsenter -t 1 -m -u -i -n -p -- systemctl restart -- <service>
+/// <self_exe> nsenter -t 1 -m -u -i -n -p -- systemctl restart -- <service>
 /// ```
 ///
+/// `self_exe` is the agent's own executable: the restart re-executes it as the
+/// hidden `nsenter` subcommand, a fresh single-threaded process that can enter
+/// a mount namespace, rather than relying on an `nsenter` binary in the image.
 /// `-t 1` targets host PID 1 (systemd); `-m -u -i -n -p` enter the host mount,
 /// UTS, IPC, network, and PID namespaces so `systemctl` and its D-Bus socket
 /// resolve to the host's, matching an operator shell on the node.
+///
+/// # Arguments
+/// * `self_exe` - path of the running agent binary (normally `/proc/self/exe`)
+/// * `service` - the systemd unit to restart
 #[must_use]
-pub fn nsenter_restart_argv(service: &str) -> Vec<String> {
+pub fn nsenter_restart_argv(self_exe: &str, service: &str) -> Vec<String> {
     [
-        NSENTER_BIN,
+        self_exe,
+        NSENTER_SUBCOMMAND,
         "-t",
         HOST_INIT_PID,
         "-m",
@@ -534,7 +545,7 @@ pub fn nsenter_restart_argv(service: &str) -> Vec<String> {
         SYSTEMCTL_RESTART,
         // The second terminator is the load-bearing one (ADR 0012): it ends
         // *systemctl's* option parsing, so a unit name beginning with `-` is a
-        // unit and not a flag. The first ends nsenter's.
+        // unit and not a flag. The first ends the nsenter subcommand's.
         OPTION_TERMINATOR,
         service,
     ]

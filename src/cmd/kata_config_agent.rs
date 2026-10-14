@@ -23,7 +23,6 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
-use clap::Parser;
 use k8s_openapi::api::core::v1::{ConfigMap, Node, Secret};
 use kube::api::{Patch, PatchParams};
 use kube::{Api, Client};
@@ -46,33 +45,29 @@ use five_spot::metrics;
 const DEFAULT_METRICS_PORT: u16 = 8080;
 
 /// CLI / environment configuration for the kata-config agent.
-#[derive(Debug, Parser)]
-#[command(
-    name = "5spot-kata-config-agent",
-    about = "Delivers a Kata containerd drop-in to the host filesystem"
-)]
-struct Cli {
+#[derive(clap::Args, Debug)]
+pub(crate) struct Args {
     /// Name of the Node this pod runs on (downward API `spec.nodeName`). The
     /// agent reads this Node's `5spot.finos.org/kata-config-ref` annotation.
     #[arg(long, env = "NODE_NAME")]
-    node_name: String,
+    pub(crate) node_name: String,
 
-    /// Host filesystem mount root inside the pod. The drop-in's absolute
-    /// `destPath` is written under here (e.g. `/host` + `/etc/k0s/...`).
+    /// Host filesystem mount root inside the pod. The drop-in is written to the
+    /// fixed path `/etc/k0s/containerd.d/kata.toml` under it (ADR 0005).
     #[arg(long, env = "HOST_ROOT", default_value = "/host")]
-    host_root: PathBuf,
+    pub(crate) host_root: PathBuf,
 
     /// Seconds between drift-watch sweeps.
     #[arg(long, env = "POLL_INTERVAL_SECS", default_value_t = DEFAULT_POLL_INTERVAL_SECS)]
-    poll_interval_secs: u64,
+    pub(crate) poll_interval_secs: u64,
 
     /// Port for the Prometheus `/metrics` endpoint.
     #[arg(long, env = "METRICS_PORT", default_value_t = DEFAULT_METRICS_PORT)]
-    metrics_port: u16,
+    pub(crate) metrics_port: u16,
 
     /// Run a single reconcile and exit (smoke-test / one-shot use).
     #[arg(long, env = "ONESHOT", default_value_t = false)]
-    oneshot: bool,
+    pub(crate) oneshot: bool,
 }
 
 /// The two kata annotations the agent reads off its own Node: the controller's
@@ -116,20 +111,27 @@ async fn record_applied(nodes: &Api<Node>, node_name: &str, hash: &str) -> Resul
     Ok(())
 }
 
+/// The running binary, re-executed as `5spot nsenter` for the restart. The
+/// procfs link always names this process's own executable, even if the file on
+/// disk has since been replaced.
+const SELF_EXE: &str = "/proc/self/exe";
+
 /// Concrete [`RestartExecutor`] that restarts the host k0s service by entering
-/// host PID 1's namespaces via `nsenter` and running `systemctl restart` (ADR
-/// 0003). Requires the pod to run `privileged: true` + `hostPID: true`.
+/// host PID 1's namespaces and running `systemctl restart` (ADR 0003). It
+/// re-executes this binary as the hidden `nsenter` subcommand (ADR 0020), so the
+/// image needs no `nsenter`. Requires the pod to run `privileged: true` +
+/// `hostPID: true`.
 struct NsenterRestartExecutor;
 
 impl RestartExecutor for NsenterRestartExecutor {
     fn restart(&self, service: &str) -> std::io::Result<()> {
-        let argv = nsenter_restart_argv(service);
+        let argv = nsenter_restart_argv(SELF_EXE, service);
         let status = std::process::Command::new(&argv[0])
             .args(&argv[1..])
             .status()?;
         if !status.success() {
             return Err(std::io::Error::other(format!(
-                "`nsenter … systemctl restart {service}` exited with {status}"
+                "`5spot nsenter … systemctl restart {service}` exited with {status}"
             )));
         }
         Ok(())
@@ -189,7 +191,7 @@ async fn fetch_content(client: &Client, kref: &KataRef) -> Result<Option<String>
 ///   (if any), then clear the applied annotation and remove the opt-in label so
 ///   the DaemonSet deschedules. Doing the unlink here — while still scheduled —
 ///   is what closes the descheduled-before-cleanup gap (ADR 0002).
-async fn reconcile_once(client: &Client, cli: &Cli, executor: &dyn RestartExecutor) -> Result<()> {
+async fn reconcile_once(client: &Client, cli: &Args, executor: &dyn RestartExecutor) -> Result<()> {
     let nodes: Api<Node> = Api::all(client.clone());
     let state = read_node_state(&nodes, &cli.node_name).await?;
 
@@ -261,15 +263,13 @@ async fn reconcile_once(client: &Client, cli: &Cli, executor: &dyn RestartExecut
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+pub(crate) async fn run(cli: Args) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
-    let cli = Cli::parse();
     info!(
         node = %cli.node_name,
         host_root = %cli.host_root.display(),
@@ -307,3 +307,7 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "kata_config_agent_tests.rs"]
+mod tests;

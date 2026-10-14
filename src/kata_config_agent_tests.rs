@@ -420,17 +420,25 @@ mod tests {
     // ========================================================================
 
     // ---- nsenter_restart_argv: the host-service restart command line ----
+    //
+    // ADR 0020: the agent no longer execs an external `nsenter` (the shared
+    // image has none). It re-executes its OWN binary as the hidden
+    // `5spot nsenter` subcommand, which takes the same flags. Only argv[0..2]
+    // changed; everything from `-t` on is ADR 0003 / ADR 0012 as before.
+
+    /// The executable the tests pass as "the agent's own binary".
+    const SELF_EXE: &str = "/5spot";
 
     #[test]
     fn test_nsenter_restart_argv_exact_command_line() {
-        // Pin the exact argv: enter host PID 1's mount/uts/ipc/net/pid
-        // namespaces, then `systemctl restart -- <service>`. The FIRST `--`
-        // terminates nsenter's options; the SECOND terminates systemctl's
-        // (ADR 0012 decision 1). Without the second one, a unit name beginning
-        // with `-` is parsed by systemctl as an option.
+        // Pin the exact argv: re-exec self as `nsenter`, enter host PID 1's
+        // mount/uts/ipc/net/pid namespaces, then `systemctl restart -- <unit>`.
+        // The FIRST `--` terminates nsenter's options; the SECOND terminates
+        // systemctl's (ADR 0012 decision 1).
         assert_eq!(
-            nsenter_restart_argv("k0sworker.service"),
+            nsenter_restart_argv(SELF_EXE, "k0sworker.service"),
             vec![
+                "/5spot",
                 "nsenter",
                 "-t",
                 "1",
@@ -449,6 +457,19 @@ mod tests {
     }
 
     #[test]
+    fn test_nsenter_restart_argv_runs_the_given_executable_not_an_external_nsenter() {
+        // The program is whatever path the agent is running from, and the
+        // namespace entry is a subcommand of it, never a binary on PATH.
+        let argv = nsenter_restart_argv("/proc/self/exe", "k0sworker.service");
+        assert_eq!(argv[0], "/proc/self/exe");
+        assert_eq!(argv[1], "nsenter");
+        assert!(
+            !argv[0].ends_with("/nsenter") && argv[0] != "nsenter",
+            "must not depend on an nsenter binary: {argv:?}"
+        );
+    }
+
+    #[test]
     fn test_nsenter_restart_argv_terminates_systemctl_options() {
         // ADR 0012 decision 1, stated as the property rather than the literal:
         // whatever the unit name is, it is the LAST argument and it is preceded
@@ -458,7 +479,7 @@ mod tests {
             "k0s-worker.service",
             "-Hbar.example.com.service",
         ] {
-            let argv = nsenter_restart_argv(unit);
+            let argv = nsenter_restart_argv(SELF_EXE, unit);
             assert_eq!(
                 argv.last().unwrap(),
                 unit,
@@ -474,7 +495,7 @@ mod tests {
 
     #[test]
     fn test_nsenter_restart_argv_threads_service_name() {
-        let argv = nsenter_restart_argv("k0scontroller.service");
+        let argv = nsenter_restart_argv(SELF_EXE, "k0scontroller.service");
         assert_eq!(argv.last().unwrap(), "k0scontroller.service");
     }
 

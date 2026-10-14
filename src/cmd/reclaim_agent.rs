@@ -40,7 +40,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context as _, Result};
-use clap::{Parser, ValueEnum};
+use clap::ValueEnum;
 use five_spot::netlink_proc::{NetlinkError, ProcEvent, Subscriber as NetlinkSubscriber};
 use five_spot::reclaim_agent::{
     already_requested, build_patch_body, compare_machine_ids, configmap_to_config, match_pid,
@@ -79,7 +79,7 @@ const IDLE_WAKEUP_SECS: u64 = 30;
 /// CLI value for `--detector`. Resolved to a [`Detector`] via
 /// [`DetectorFlag::resolve`] so `auto` is platform-aware.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-enum DetectorFlag {
+pub(crate) enum DetectorFlag {
     /// Pick `netlink` on Linux, `poll` elsewhere.
     Auto,
     /// Subscribe to the netlink proc connector (Linux only).
@@ -114,32 +114,27 @@ enum Detector {
     Poll,
 }
 
-#[derive(Parser, Debug)]
-#[clap(
-    name = "5spot-reclaim-agent",
-    about = "Node-side emergency reclaim trigger for 5-Spot",
-    version
-)]
-struct Cli {
+#[derive(clap::Args, Debug)]
+pub(crate) struct Args {
     /// Filesystem root mapped to `/proc` (override for testing / sandboxes).
     #[clap(long, env = "RECLAIM_PROC_ROOT", default_value = DEFAULT_PROC_ROOT)]
-    proc_root: PathBuf,
+    pub(crate) proc_root: PathBuf,
 
     /// Name of the Node to annotate. Required — supply via the downward
     /// API (`spec.nodeName`) on the `DaemonSet` pod.
     #[clap(long, env = "NODE_NAME")]
-    node_name: String,
+    pub(crate) node_name: String,
 
     /// If set, run the detector once and exit instead of looping. Useful
     /// for one-shot invocations and for smoke tests.
     #[clap(long)]
-    oneshot: bool,
+    pub(crate) oneshot: bool,
 
     /// Path to the host machine-id file. Default `/etc/machine-id`. Mounted
     /// into the DaemonSet via a single-file hostPath; override only for
     /// tests / sandboxes where the file lives elsewhere.
     #[clap(long, env = "MACHINE_ID_PATH", default_value = DEFAULT_MACHINE_ID_PATH)]
-    machine_id_path: PathBuf,
+    pub(crate) machine_id_path: PathBuf,
 
     /// Process-event source. `netlink` (default on Linux) subscribes
     /// to the kernel's proc connector for sub-10 ms detection. `poll`
@@ -154,7 +149,7 @@ struct Cli {
     /// See `docs/src/concepts/emergency-reclaim.md` for the full
     /// comparison.
     #[clap(long, env = "RECLAIM_DETECTOR", default_value = "auto", value_enum)]
-    detector: DetectorFlag,
+    pub(crate) detector: DetectorFlag,
 
     /// Skip the host-identity cross-check before patching the Node.
     ///
@@ -171,18 +166,16 @@ struct Cli {
     /// `status.nodeInfo.machineID`). The strict default is the safe
     /// posture for production.
     #[clap(long, env = "SKIP_HOST_ID_CHECK", default_value_t = false)]
-    skip_host_id_check: bool,
+    pub(crate) skip_host_id_check: bool,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+pub(crate) async fn run(cli: Args) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
-    let cli = Cli::parse();
     let client = Client::try_default()
         .await
         .context("build in-cluster kube client")?;
@@ -606,3 +599,7 @@ async fn annotate_node(
     info!(node = %node_name, "reclaim annotation written");
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "reclaim_agent_tests.rs"]
+mod tests;

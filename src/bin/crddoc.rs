@@ -423,8 +423,10 @@ fn scheduled_capacity() {
     println!("field is reversible and bounded; deleting a consumer's pool with live claims");
     println!("would destroy in-flight work using knowledge this controller does not have.");
     println!();
-    println!("Reconciled by the separate `5spot-capacity-controller` binary under its own");
-    println!("ServiceAccount, so compromising it cannot delete a CAPI `Machine` and");
+    println!("Reconciled by the capacity controller (`5spot capacity-controller`) under its");
+    println!(
+        "own Deployment and ServiceAccount, so compromising it cannot delete a CAPI `Machine` and"
+    );
     println!("compromising the machine controller cannot write capacity. A cluster with no");
     println!("capacity consumer installs none of it.");
     println!();

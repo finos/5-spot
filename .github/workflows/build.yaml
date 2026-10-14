@@ -293,8 +293,6 @@ jobs:
           name: ${{ matrix.platform.artifact_name }}
           path: |
             target/release/${{ matrix.platform.binary_name }}
-            target/release/spot-schedule-time-based
-            target/release/spot-schedule-capital-markets
             target/release/*.cdx.json
           retention-days: 1
 
@@ -306,8 +304,6 @@ jobs:
           name: ${{ matrix.platform.artifact_name }}
           path: |
             target/release/${{ matrix.platform.binary_name }}
-            target/release/spot-schedule-time-based
-            target/release/spot-schedule-capital-markets
             target/release/*.cdx.json
 
   # ─────────────────────────────────────────────────────────────────────────────

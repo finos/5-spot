@@ -82,7 +82,7 @@ KIND_NODE_IMAGE ?= kindest/node:v1.31.0
 KIND_IMAGE ?= ghcr.io/finos/5-spot:local-dev
 # Every binary the Dockerfile COPYs from binaries/<arch>/. A target that stages
 # fewer produces an image build that fails on the missing COPY source.
-IMAGE_BINARIES := 5spot spot-schedule-time-based spot-schedule-capital-markets
+IMAGE_BINARIES := 5spot
 
 # Python/Poetry package index configuration (for corporate environments)
 # Set PYPI_INDEX_URL to use a custom PyPI mirror (e.g., Artifactory)
@@ -183,18 +183,14 @@ prepare-binaries-linux-amd64: build-linux-amd64 ## Build and prepare Linux x86_6
 	@echo "Preparing Linux x86_64 binaries for Docker build..."
 	@mkdir -p binaries/amd64
 	@cp target/x86_64-unknown-linux-gnu/release/5spot binaries/amd64/
-	@cp target/x86_64-unknown-linux-gnu/release/spot-schedule-time-based binaries/amd64/
-	@cp target/x86_64-unknown-linux-gnu/release/spot-schedule-capital-markets binaries/amd64/
-	@echo "✓ Binaries ready: 5spot, spot-schedule-time-based, spot-schedule-capital-markets"
+	@echo "✓ Binary ready: 5spot (every component is a subcommand, ADR 0020)"
 	@ls -lh binaries/amd64/
 
 prepare-binaries-linux-arm64: build-linux-arm64 ## Build and prepare Linux ARM64 binaries
 	@echo "Preparing Linux ARM64 binaries for Docker build..."
 	@mkdir -p binaries/arm64
 	@cp target/aarch64-unknown-linux-gnu/release/5spot binaries/arm64/
-	@cp target/aarch64-unknown-linux-gnu/release/spot-schedule-time-based binaries/arm64/
-	@cp target/aarch64-unknown-linux-gnu/release/spot-schedule-capital-markets binaries/arm64/
-	@echo "✓ Binaries ready: 5spot, spot-schedule-time-based, spot-schedule-capital-markets"
+	@echo "✓ Binary ready: 5spot (every component is a subcommand, ADR 0020)"
 	@ls -lh binaries/arm64/
 
 test: ## Run all tests
@@ -239,10 +235,9 @@ crddoc: ## Generate API documentation from CRD types
 	@echo "✓ API documentation generated: docs/src/reference/api.md"
 
 # Pin every 5-Spot image tag under deploy/ to VERSION so the shipped manifests
-# match the image actually built/pushed at release. The controller and both
-# spot-schedule providers share the main `ghcr.io/finos/5-spot` image; the
-# reclaim- and kata-config agents use their own `ghcr.io/finos/5-spot-*` repos —
-# all carry the same release tag. The regex replaces only the tag suffix, so it
+# match the image actually built/pushed at release. Every component runs the one
+# `ghcr.io/finos/5-spot` image (ADR 0020), selected by `args`, so they all carry
+# the same release tag. The regex replaces only the tag suffix, so it
 # is independent of whatever tag is committed in git. Used by the release
 # `package-deploy-manifests` CI job; safe to run locally to preview the diff.
 set-image-version: ## Pin deploy/ image tags to VERSION (e.g. make set-image-version VERSION=v0.2.0)
@@ -437,8 +432,7 @@ docker-buildx-chainguard: prepare-binaries-linux-amd64 ## Build and push Chaingu
 #   make docker-image ARCH=amd64 PUSH=true \           # build + push
 #     REGISTRY=<registry> ORG= IMAGE_TAG=local-dev     # -> <registry>/5spot:local-dev
 # Stages binaries/$(ARCH) first (prepare-binaries-linux-$(ARCH), which copies
-# all three binaries the Dockerfile COPYs: 5spot, spot-schedule-time-based,
-# spot-schedule-capital-markets), then buildx-builds $(IMAGE_REF).
+# the one binary the Dockerfile COPYs, 5spot), then buildx-builds $(IMAGE_REF).
 .PHONY: docker-image
 docker-image: ## Generic $(ARCH) image build of $(IMAGE_REF); PUSH=true to push instead of --load
 	@case "$(ARCH)" in \

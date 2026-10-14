@@ -88,10 +88,13 @@ consumer, not something 5-Spot can enforce.
 
 ## Its own identity
 
-`ScheduledCapacity` is reconciled by a **separate binary**,
-`5spot-capacity-controller`, with its own Deployment and ServiceAccount
+`ScheduledCapacity` is reconciled by the capacity controller, the
+`5spot capacity-controller` subcommand, running as its own Deployment
+(`5spot-capacity-controller`) under its own ServiceAccount
 (`deploy/capacity-controller/`). The main controller's `ClusterRole` is not
-extended.
+extended. It shares the binary and image with every other component (ADR 0020);
+the separation that matters is the identity, since code in an image grants no
+permission.
 
 That separation is the point: compromising the capacity controller cannot delete
 a CAPI `Machine`, and compromising the machine controller cannot write capacity.

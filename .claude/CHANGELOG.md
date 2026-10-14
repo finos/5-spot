@@ -9,6 +9,104 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-10-14 23:30] - ADR-0020: one `5spot` binary with subcommands, one image; in-process host namespace entry
+
+**Author:** Erick Bourgeois
+
+### Changed
+
+- `src/main.rs`, `src/cli.rs` (**new**), `src/cmd/` (**new**): one runtime
+  binary. `5spot controller` (also bare `5spot`, for compatibility),
+  `5spot capacity-controller`, `5spot provider time-based`,
+  `5spot provider capital-markets`, `5spot agent reclaim`,
+  `5spot agent kata-config`, and a hidden `5spot nsenter`. Each former binary's
+  `main` is now `src/cmd/<component>.rs::run`, its `Cli` the subcommand's
+  `Args`, with every flag, environment variable and default unchanged. `main`
+  builds the async runtime by hand so `nsenter` runs before any thread exists.
+- `src/cmd/nsenter.rs` (**new**): enters `/proc/<pid>/ns/*` with
+  `nix::sched::setns` (opening all first, mount last) and runs the command,
+  refusing rather than running in its own namespaces if any entry fails. No
+  `unsafe`. `Cargo.toml`: `nix` gains the `sched` feature.
+- `src/kata_config_agent.rs`: `nsenter_restart_argv(self_exe, service)` builds
+  `<self_exe> nsenter -t 1 -m -u -i -n -p -- systemctl restart -- <unit>`; the
+  agent passes `/proc/self/exe`. ADR 0012's two terminators are unchanged.
+- `Cargo.toml`: the `spot-schedule-time-based`, `spot-schedule-capital-markets`,
+  `5spot-reclaim-agent`, `5spot-kata-config-agent` and
+  `5spot-capacity-controller` `[[bin]]` targets are removed. The build-time
+  tools stay separate.
+- Tests: `src/cli_tests.rs`, `src/cmd/{controller,nsenter,provider_time_based,provider_capital_markets,reclaim_agent,kata_config_agent}_tests.rs`
+  (**new**); `src/cmd/capacity_controller_tests.rs` (moved; now parses through
+  the real CLI); `src/kata_config_agent_tests.rs` (restart argv). The empty
+  `src/main_tests.rs` placeholder is gone.
+- `Dockerfile`, `Dockerfile.chainguard`: copy only `/5spot`.
+  `Makefile`: `IMAGE_BINARIES := 5spot`; `prepare-binaries-*` stage one binary.
+  `.github/workflows/build.yaml`, `.github/actions/prepare-docker-binaries`:
+  one binary per artifact.
+- `deploy/`: every manifest uses `ghcr.io/finos/5-spot` and selects its
+  component with `args`. The reclaim and Kata agent DaemonSets move off the
+  never-built `5-spot-reclaim-agent` and `5-spot-kata-config-agent` images.
+  Resource names, ServiceAccounts, RBAC and admission policies are unchanged.
+- `src/cmd/kata_config_agent.rs`: `--host-root` help no longer mentions the
+  `destPath` field ADR 0005 removed.
+- `src/crd.rs`, `src/bin/crddoc.rs`: the capacity controller is described as a
+  subcommand under its own Deployment and ServiceAccount; CRDs and `api.md`
+  regenerated.
+- `docs/adr/0020-one-binary-one-image-with-subcommands.md`: **new, Accepted.**
+  ADR 0003 and ADR 0011 marked superseded in part; both ADR indexes updated.
+- `docs/architecture/calm/architecture.json`: the Kata agent's controls, flow
+  and relationship describe in-process namespace entry; ADR 0020 listed.
+- `docs/src/reference/cli.md`: rewritten from the real `--help` output for every
+  subcommand. It had documented a nonexistent `--lease-duration` flag and said
+  environment variables override flags (clap does the reverse).
+- `docs/src/operations/configuration.md`, `guides/time-based-schedule.md`,
+  `guides/capital-markets-schedule.md`, `concepts/scheduled-capacity.md`,
+  `concepts/kata-config-delivery.md`, `operations/monitoring.md`,
+  `security/admission-validation.md`, `development/building.md`,
+  `.github/community/01-decisions.md`: binary, image and `nsenter` references.
+- `docs/src/security/threat-model.md`: 1.10 pass (see Verification).
+
+### Why
+
+Three of the six components in `deploy/` could not start from any release: the
+Dockerfiles never copied the capacity controller's binary, and no workflow
+built the two agent images. Separate binaries in separate images had drifted
+across `Cargo.toml`, two Dockerfiles, the Makefile, the workflows and the
+manifests. One binary in one image removes the drift by construction. The Kata
+agent's dependency on an `nsenter` binary was the one obstacle; entering the
+namespaces in safe Rust removes it without putting a namespace-entering tool
+into every component's image.
+
+### Impact
+
+- [x] Breaking change (hand-written manifests that run
+  `/spot-schedule-time-based`, `/spot-schedule-capital-markets` or
+  `/5spot-capacity-controller`, or the two agent images, must switch to `args`;
+  a bare `5spot` controller is unaffected)
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+
+- `cargo fmt`, `cargo clippy --all-targets --all-features -D warnings`,
+  `cargo test`: 880 library and 47 binary tests pass, on macOS and Linux.
+- The restart path on a real Linux host, inside the actual Distroless base,
+  privileged with the host PID namespace: host `systemctl` reachable only
+  through namespace entry, hostname switched by `-u` (with a control), exit
+  status 4 passed through, a `-`-leading unit treated as a unit, and an
+  unprivileged run refused without running anything.
+- `make calm-validate`: no issues. `make crds` / `make crddoc` regenerated.
+- Threat model 1.10: every section walked. No identity or boundary change;
+  T9 corrected (two `unsafe` blocks already existed in `src/netlink_proc.rs`);
+  K6 (the `nsenter` subcommand in every image) mitigated by `CAP_SYS_ADMIN` and
+  fail-closed entry; one new LOW residual (privileged agent pods carry every
+  component's code).
+- **Not run locally:** an image build and the e2e tier against it (this host
+  does not build images). The e2e workflow builds the image from the checkout
+  and runs the providers through their new `args`.
+
+---
+
 ## [2026-10-14 19:30] - CI: restore image publishing on main; one variant per image tag
 
 **Author:** Erick Bourgeois

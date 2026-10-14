@@ -1,0 +1,457 @@
+// Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
+// SPDX-License-Identifier: Apache-2.0
+//! # 5-Spot Machine Scheduler — Entry Point
+//!
+//! This binary starts the controller process. It:
+//!
+//! 1. Parses CLI flags and environment variables via [`Args`]
+//! 2. Initialises structured logging (tracing)
+//! 3. Creates a Kubernetes client with explicit read/write timeouts
+//! 4. Verifies the [`ScheduledMachine`] CRD is installed
+//! 5. Spawns the Prometheus metrics server and the HTTP health/readiness server
+//! 6. Runs the `kube-rs` [`Controller`] loop, distributing reconciliation work
+//!    across all active instances via consistent hashing
+
+use std::sync::Arc;
+
+use anyhow::Result;
+use five_spot::constants::{
+    capi_machine_api_version, set_capi_machine_api_version, CAPI_GROUP, CAPI_RESOURCE_MACHINES,
+    CHILD_NODE_EVENT_CHANNEL_CAP, DEFAULT_LEASE_DURATION_SECS, DEFAULT_LEASE_NAME,
+    DEFAULT_LEASE_NAMESPACE, DEFAULT_LEASE_RENEW_DEADLINE_SECS, DEFAULT_LEASE_RETRY_PERIOD_SECS,
+    HEALTH_PORT, K8S_API_TIMEOUT_SECS, METRICS_PORT, SPOT_SCHEDULE_EVENT_CHANNEL_CAP,
+};
+use five_spot::crd::ScheduledMachine;
+use five_spot::health::{start_health_server, HealthState};
+use five_spot::labels::LABEL_SCHEDULED_MACHINE;
+use five_spot::leader::{start_leader_election, LeaderElectionConfig};
+use five_spot::metrics::init_controller_info;
+use five_spot::reconcilers::{
+    error_policy, machine_to_scheduled_machine, node_to_scheduled_machines_via_machine,
+    provider_key_for, reconcile_scheduled_machine, ChildNodeWatchManager, Context,
+    SpotScheduleWatchManager, WATCH_LABEL_SPOT_SCHEDULE,
+};
+use five_spot::stream::watch_config;
+use futures::{StreamExt, TryStreamExt};
+use k8s_openapi::api::core::v1::Node;
+use kube::{
+    api::{ApiResource, GroupVersionKind, ListParams},
+    core::DynamicObject,
+    runtime::{reflector, watcher, Controller, WatchStreamExt},
+    Api, Client,
+};
+use tracing::{debug, error, info, warn};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+/// Command-line interface for the 5-Spot operator.
+///
+/// All fields can also be set via the corresponding environment variables,
+/// which is the recommended approach for Kubernetes deployments.
+#[derive(clap::Args, Debug)]
+pub(crate) struct Args {
+    /// Operator instance ID for multi-instance deployments
+    #[clap(long, env = "OPERATOR_INSTANCE_ID", default_value = "0")]
+    pub(crate) instance_id: u32,
+
+    /// Total number of operator instances
+    #[clap(long, env = "OPERATOR_INSTANCE_COUNT", default_value = "1")]
+    pub(crate) instance_count: u32,
+
+    /// Metrics server port
+    #[clap(long, env = "METRICS_PORT", default_value_t = METRICS_PORT)]
+    pub(crate) metrics_port: u16,
+
+    /// Health check server port
+    #[clap(long, env = "HEALTH_PORT", default_value_t = HEALTH_PORT)]
+    pub(crate) health_port: u16,
+
+    /// Enable verbose logging
+    #[clap(short, long)]
+    pub(crate) verbose: bool,
+
+    /// Log format: "json" for structured JSON (SIEM/production), "text" for human-readable (local dev)
+    #[clap(long, env = "RUST_LOG_FORMAT", default_value = "json")]
+    pub(crate) log_format: String,
+
+    // -----------------------------------------------------------------------
+    // Leader election (Basel III HA)
+    // -----------------------------------------------------------------------
+    /// Enable leader election — only the lease holder reconciles resources.
+    /// Required for multi-replica deployments (Basel III HA / NIST SI-2).
+    #[clap(long, env = "ENABLE_LEADER_ELECTION", default_value = "false")]
+    pub(crate) enable_leader_election: bool,
+
+    /// Kubernetes Lease resource name used for leader election
+    #[clap(long, env = "LEASE_NAME", default_value = DEFAULT_LEASE_NAME)]
+    pub(crate) lease_name: String,
+
+    /// Namespace in which to create the leader election Lease
+    #[clap(long, env = "POD_NAMESPACE", default_value = DEFAULT_LEASE_NAMESPACE)]
+    pub(crate) lease_namespace: String,
+
+    /// Lease validity duration in seconds — how long the Lease is considered held
+    #[clap(long, env = "LEASE_DURATION_SECONDS", default_value_t = DEFAULT_LEASE_DURATION_SECS)]
+    pub(crate) lease_duration_secs: u64,
+
+    /// Renew deadline in seconds — the leader must renew before this many seconds elapse
+    #[clap(long, env = "LEASE_RENEW_DEADLINE_SECONDS", default_value_t = DEFAULT_LEASE_RENEW_DEADLINE_SECS)]
+    pub(crate) lease_renew_deadline_secs: u64,
+
+    /// Retry period in seconds — documented for ops parity; not a direct `LeaseManager` parameter
+    #[clap(long, env = "LEASE_RETRY_PERIOD_SECONDS", default_value_t = DEFAULT_LEASE_RETRY_PERIOD_SECS)]
+    pub(crate) _lease_retry_period_secs: u64,
+
+    /// On finalizer-cleanup timeout, force-remove the finalizer so namespace
+    /// deletion is unblocked (default). Set to `false` for strict-cleanup
+    /// mode where the SM stays stuck until cleanup succeeds — operators
+    /// then need an external sweep to garbage-collect stalled SMs. The
+    /// `fivespot_finalizer_cleanup_timeouts_total` metric and the
+    /// `FinalizerCleanupTimedOut` Warning event fire in both modes.
+    #[clap(long, env = "FORCE_FINALIZER_ON_TIMEOUT", default_value_t = true)]
+    pub(crate) force_finalizer_on_timeout: bool,
+}
+
+/// Async entry point.
+///
+/// Initialises the controller and blocks until the process receives a shutdown
+/// signal (SIGTERM / SIGINT).  Returns an error if:
+/// - The Kubernetes client cannot be configured
+/// - The `ScheduledMachine` CRD is not present in the cluster
+#[allow(clippy::too_many_lines)]
+pub(crate) async fn run(cli: Args) -> Result<()> {
+    // Initialize tracing/logging
+    let log_level = if cli.verbose {
+        "debug,kube=info,hyper=info,tower=info"
+    } else {
+        "info,kube=warn,hyper=warn,tower=warn"
+    };
+
+    let env_filter =
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| log_level.into());
+
+    if cli.log_format.eq_ignore_ascii_case("json") {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(tracing_subscriber::fmt::layer().json())
+            .init();
+    } else {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(tracing_subscriber::fmt::layer())
+            .init();
+    }
+
+    info!(
+        instance_id = cli.instance_id,
+        instance_count = cli.instance_count,
+        metrics_port = cli.metrics_port,
+        health_port = cli.health_port,
+        "Starting 5-Spot Machine Scheduler"
+    );
+
+    // Initialize health state
+    let health_state = HealthState::new();
+
+    // Initialize controller info metric
+    init_controller_info(env!("CARGO_PKG_VERSION"), cli.instance_id);
+
+    // Create Kubernetes client with explicit timeouts (NIST SC-5, Basel III)
+    let mut kube_config = kube::Config::infer().await?;
+    kube_config.read_timeout = Some(std::time::Duration::from_secs(K8S_API_TIMEOUT_SECS));
+    kube_config.write_timeout = Some(std::time::Duration::from_secs(K8S_API_TIMEOUT_SECS));
+    let client = Client::try_from(kube_config)?;
+    info!(
+        timeout_secs = K8S_API_TIMEOUT_SECS,
+        "Connected to Kubernetes API"
+    );
+
+    // Mark Kubernetes as connected
+    health_state.set_k8s_connected(true);
+
+    // Resolve the CAPI Machine API version the cluster actually serves (v1beta1 on
+    // CAPI ≤ v1.10, v1beta2 on v1.11+ / modern k0smotron), so we create and watch
+    // Machines at the version downstream controllers expect. Env override wins;
+    // discovery otherwise. MANDATORY — if it can't be resolved the controller errors
+    // out (and is restarted by Kubernetes) rather than guessing a version.
+    let capi_machine_version = resolve_capi_machine_version(&client).await?;
+    info!(version = %capi_machine_version, "Using CAPI Machine API version");
+    set_capi_machine_api_version(capi_machine_version);
+
+    // Create shared context
+    let context = Arc::new(
+        Context::new(client.clone(), cli.instance_id, cli.instance_count)
+            .with_force_finalizer_on_timeout(cli.force_finalizer_on_timeout),
+    );
+
+    // Leader election (Basel III HA — P2-4)
+    //
+    // The lease dance itself lives in `five_spot::leader` so this binary and
+    // the capacity controller cannot drift on what "leader" means. All
+    // replicas start as non-leaders; `reconcile_guarded` returns
+    // Action::await_change() immediately for non-leaders, so standby replicas
+    // react instantly once they acquire the lease, without polling.
+    if cli.enable_leader_election {
+        let leader_config = LeaderElectionConfig {
+            lease_name: cli.lease_name.clone(),
+            lease_namespace: cli.lease_namespace.clone(),
+            lease_duration_secs: cli.lease_duration_secs,
+            lease_renew_deadline_secs: cli.lease_renew_deadline_secs,
+            fallback_identity: format!("5spot-{}", cli.instance_id),
+        };
+        start_leader_election(
+            client.clone(),
+            &leader_config,
+            Arc::clone(&context.is_leader),
+        )
+        .await?;
+    } else {
+        info!("Leader election disabled — this instance will reconcile all resources");
+    }
+
+    // Create API for ScheduledMachine resources
+    let scheduled_machines = Api::<ScheduledMachine>::all(client.clone());
+
+    // Verify CRD is installed before starting controller
+    if let Err(e) = check_crd_installed(&scheduled_machines).await {
+        error!(
+            error = %e,
+            "ScheduledMachine CRD is not installed. Please install the CRD first:"
+        );
+        error!("  kubectl apply -f deploy/crds/scheduledmachine.yaml");
+        error!("Or generate and apply: cargo run --bin crdgen | kubectl apply -f -");
+        return Err(anyhow::anyhow!(
+            "Required CRD 'scheduledmachines.5spot.finos.org' is not installed in the cluster"
+        ));
+    }
+    info!("ScheduledMachine CRD verified");
+
+    // Start health and metrics servers
+    let health_state_clone = health_state.clone();
+    tokio::spawn(async move {
+        start_health_server(cli.health_port, health_state_clone).await;
+    });
+    tokio::spawn(five_spot::metrics::serve_metrics(cli.metrics_port));
+
+    // Mark controller as ready
+    health_state.set_ready(true);
+
+    info!("Starting controller for ScheduledMachine resources");
+
+    // Secondary watches — event-driven reactivity without polling.
+    //
+    // 1. CAPI Machine (dynamic GVK), filtered by the scheduled-machine label
+    //    we stamp on every Machine we create. Reverse-mapped via that label
+    //    (`machine_to_scheduled_machine`). The `Controller::watches_with`
+    //    call below maintains its own internal reflector for this watch.
+    //
+    // 2. Kubernetes Node, mapped to owning ScheduledMachines via the
+    //    canonical CAPI Machine ownership chain
+    //    (`node_to_scheduled_machines_via_machine`). This requires its own
+    //    Machine reflector store, separate from #1's internal one — kube-rs
+    //    `watches_with` does not expose its internal store. The doubled
+    //    watch traffic is minor: same kind, same label selector. Routing
+    //    via the canonical Machine instead of the tenant-writable
+    //    `SM.status.nodeRef.name` closes the watch-amplification vector
+    //    documented in Phase 3 of the 2026-04-25 security audit roadmap.
+    let machine_ar = ApiResource::from_gvk_with_plural(
+        &GroupVersionKind::gvk(CAPI_GROUP, capi_machine_api_version(), "Machine"),
+        CAPI_RESOURCE_MACHINES,
+    );
+    let machines_api: Api<DynamicObject> = Api::all_with(client.clone(), &machine_ar);
+    let nodes_api: Api<Node> = Api::all(client.clone());
+
+    // Standalone Machine reflector for the Node→SM mapper. We build its
+    // store here, spawn the watcher in the background, and clone the
+    // reader handle into the Node closure below. The store starts empty
+    // and fills as Machine watch events arrive — Node events that fire
+    // during the warmup window will see an empty store and enqueue
+    // nothing, which is correct (no Machine yet ⇒ no SM owns this Node).
+    let machine_writer: reflector::store::Writer<DynamicObject> =
+        reflector::store::Writer::new(machine_ar.clone());
+    let machine_store = machine_writer.as_reader();
+    let machine_reflector_machines_api = machines_api.clone();
+    tokio::spawn(async move {
+        let stream = watcher::watcher(
+            machine_reflector_machines_api,
+            watch_config().labels(LABEL_SCHEDULED_MACHINE),
+        )
+        .reflect(machine_writer)
+        .applied_objects();
+        if let Err(e) = stream.try_for_each(|_| async { Ok(()) }).await {
+            error!(error = %e, "Machine reflector for Node→SM mapping terminated");
+        }
+    });
+
+    // Child-cluster Node-watch plumbing.
+    //
+    // Per-child-cluster Node events (cordon, NotReady, taint drift) must
+    // trigger a reconcile of the owning ScheduledMachine. We build one
+    // `ChildNodeWatchManager` shared across all child clusters; the
+    // cache (`Context.child_clients`) drives it via the `ChildWatchHook`
+    // trait, spawning one Tokio task per `CacheKey`. Mapped
+    // `ObjectRef<ScheduledMachine>`s flow over this mpsc into the
+    // Controller's `reconcile_on` stream.
+    //
+    // The buffer size (`CHILD_NODE_EVENT_CHANNEL_CAP`) is sized for
+    // burst tolerance, not steady-state. See the constant's rustdoc.
+    let (child_node_tx, child_node_rx) = tokio::sync::mpsc::channel(CHILD_NODE_EVENT_CHANNEL_CAP);
+    let child_watch_manager = ChildNodeWatchManager::new(child_node_tx, machine_store.clone());
+    // Install the manager on the cache *after* `Context::new` so the
+    // first `resolve()` call from any reconcile already sees a live
+    // hook. Cheap clone — only the inner `Arc` is moved.
+    context
+        .child_clients
+        .set_hook(Arc::new(child_watch_manager));
+
+    // Dynamic spot-schedule provider watches (ADR 0006, Phase 3) — event-driven,
+    // not polling. A standalone ScheduledMachine reflector feeds every SM
+    // apply/delete into the manager, which maintains a reverse index
+    // ((gvk, ns, name) → SMs) and lazily runs one `kube::runtime::watcher`
+    // stream per referenced provider GVK. Provider `status.active` flips arrive
+    // as watch events, are mapped back to the referencing SMs, and flow over
+    // this mpsc into the Controller's second `reconcile_on` below. On restart
+    // the reflector's initial list rebuilds the index from cluster state.
+    let (spot_schedule_tx, spot_schedule_rx) =
+        tokio::sync::mpsc::channel(SPOT_SCHEDULE_EVENT_CHANNEL_CAP);
+    let spot_schedule_watch = SpotScheduleWatchManager::new(
+        client.clone(),
+        spot_schedule_tx,
+        provider_key_for,
+        WATCH_LABEL_SPOT_SCHEDULE,
+    );
+    let spot_schedule_reflector_api = Api::<ScheduledMachine>::all(client.clone());
+    tokio::spawn(async move {
+        let mut stream = watcher::watcher(spot_schedule_reflector_api, watch_config()).boxed();
+        while let Some(event) = stream.next().await {
+            match event {
+                Ok(watcher::Event::Apply(sm) | watcher::Event::InitApply(sm)) => {
+                    spot_schedule_watch.observe(&sm);
+                }
+                Ok(watcher::Event::Delete(sm)) => {
+                    spot_schedule_watch.forget(&sm);
+                }
+                Ok(watcher::Event::Init | watcher::Event::InitDone) => {}
+                Err(e) => {
+                    if five_spot::stream::is_routine_watch_restart(&e) {
+                        debug!(error = %e, "ScheduledMachine reflector (spot-schedule index) stream recycled; kube-runtime will reconnect");
+                    } else {
+                        warn!(error = %e, "ScheduledMachine reflector (spot-schedule index) error; kube-runtime will reconnect");
+                    }
+                }
+            }
+        }
+        error!("ScheduledMachine reflector for spot-schedule index terminated");
+    });
+
+    let controller = Controller::new(scheduled_machines, watch_config());
+
+    controller
+        .watches_with(
+            machines_api,
+            machine_ar.clone(),
+            watch_config().labels(LABEL_SCHEDULED_MACHINE),
+            |machine: DynamicObject| machine_to_scheduled_machine(&machine),
+        )
+        .watches(nodes_api, watch_config(), move |node: Node| {
+            // Snapshot the standalone Machine reflector's store. Each
+            // entry is an Arc<DynamicObject>; deref through AsRef to feed
+            // the pure mapper.
+            let machines_snapshot = machine_store.state();
+            node_to_scheduled_machines_via_machine(
+                &node,
+                machines_snapshot.iter().map(std::convert::AsRef::as_ref),
+            )
+        })
+        .reconcile_on(five_spot::stream::ReceiverStream::new(child_node_rx))
+        .reconcile_on(five_spot::stream::ReceiverStream::new(spot_schedule_rx))
+        .shutdown_on_signal()
+        .run(reconcile_scheduled_machine, error_policy, context)
+        .for_each(|res| async move {
+            match res {
+                Ok((obj_ref, action)) => {
+                    info!(
+                        resource = %obj_ref.name,
+                        namespace = ?obj_ref.namespace,
+                        next_action = ?action,
+                        "Reconciliation completed"
+                    );
+                }
+                Err(e) => {
+                    warn!(error = %e, "Reconciliation error");
+                }
+            }
+        })
+        .await;
+
+    info!("Controller shut down");
+    Ok(())
+}
+
+/// Resolve which `cluster.x-k8s.io` Machine API version this cluster serves.
+///
+/// Precedence: the `CAPI_MACHINE_API_VERSION` env var (explicit operator pin) →
+/// API discovery of the group's recommended/served version. Discovery is
+/// **mandatory** — there is no compile-time default. If the version can't be
+/// determined (Cluster API not installed / not yet ready) this returns an error and
+/// the controller exits, to be restarted by Kubernetes — we never guess a version.
+/// One binary works against CAPI lines serving `v1beta1` (≤ v1.10) or `v1beta2`
+/// (v1.11+ / modern k0smotron) with no config.
+async fn resolve_capi_machine_version(client: &Client) -> Result<String> {
+    if let Ok(pinned) = std::env::var("CAPI_MACHINE_API_VERSION") {
+        let pinned = pinned.trim();
+        if !pinned.is_empty() {
+            info!(version = %pinned, "CAPI Machine API version pinned via env");
+            return Ok(pinned.to_string());
+        }
+    }
+    // Retry briefly so a controller that starts moments before CAPI finishes
+    // installing converges instead of crash-looping on the first probe.
+    const ATTEMPTS: u32 = 6;
+    let mut last_reason = String::from("discovery not attempted");
+    for attempt in 1..=ATTEMPTS {
+        match kube::discovery::group(client, CAPI_GROUP).await {
+            Ok(apigroup) => match apigroup.recommended_kind("Machine") {
+                Some((ar, _caps)) => {
+                    info!(version = %ar.version, "Discovered CAPI Machine API version");
+                    return Ok(ar.version);
+                }
+                None => {
+                    last_reason =
+                        format!("group '{CAPI_GROUP}' is served but exposes no Machine kind");
+                }
+            },
+            Err(error) => {
+                last_reason = format!("discovery of '{CAPI_GROUP}' failed: {error}");
+            }
+        }
+        warn!(
+            attempt,
+            max = ATTEMPTS,
+            reason = %last_reason,
+            "CAPI Machine API version not resolved yet; retrying"
+        );
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    }
+    Err(anyhow::anyhow!(
+        "could not resolve the CAPI Machine API version after {ATTEMPTS} attempts ({last_reason}); \
+         is Cluster API installed? set the CAPI_MACHINE_API_VERSION env var to override discovery"
+    ))
+}
+
+/// Check if the `ScheduledMachine` CRD is installed in the cluster
+async fn check_crd_installed(api: &Api<ScheduledMachine>) -> Result<()> {
+    // Try to list resources with limit 0 - this will fail if CRD doesn't exist
+    api.list(&ListParams::default().limit(1))
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to access ScheduledMachine resources: {e}. \
+                 This usually means the CRD is not installed."
+            )
+        })?;
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "controller_tests.rs"]
+mod tests;

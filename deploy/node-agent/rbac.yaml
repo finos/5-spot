@@ -1,7 +1,7 @@
 # 5-Spot Reclaim Agent RBAC
 #
 # Separate identity from the main controller (field manager name
-# `5spot-reclaim-agent` — see src/bin/reclaim_agent.rs) so audit logs
+# `5spot-reclaim-agent`; see src/cmd/reclaim_agent.rs) so audit logs
 # unambiguously attribute each PATCH to the node-side agent vs the
 # controller.
 #

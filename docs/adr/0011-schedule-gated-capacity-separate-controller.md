@@ -4,7 +4,7 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0011 — Schedule-gated capacity: a `ScheduledCapacity` CRD and its own controller
 
-- **Status:** Accepted, with decisions 1, 2 and 5 superseded by ADR-0016
+- **Status:** Accepted, with decisions 1, 2 and 5 superseded by ADR-0016, and decision 3 in part by ADR-0020
 - **Date:** 2026-09-27 (proposed), 2026-10-02 (accepted, field names and the
   handback decision settled), 2026-10-08 (actuation superseded by ADR-0016)
 - **Deciders:** Erick Bourgeois
@@ -17,6 +17,7 @@ SPDX-License-Identifier: Apache-2.0
   that deleting a pool would pull the rug on claim holders, was checked against
   the consumer's code and is false: it re-parents claimed members to their
   claim. Decisions 3, 4, 6, 7 and 8 stand, 7 as amended by ADR-0014.
+  Also ADR [0020](./0020-one-binary-one-image-with-subcommands.md): decision 3's separate *binary* only; its Deployment, ServiceAccount and RBAC stand.
 - **Related:** ADR [0006](./0006-pluggable-spot-schedule-provider-contract.md)
   (provider contract), ADR [0009](./0009-unify-schedule-as-provider-reference.md)
   (`spec.schedule` as a provider reference), ADR

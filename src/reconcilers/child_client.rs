@@ -449,7 +449,7 @@ impl ChildClientCache {
             reason: format!("kubeconfig is not usable to build a Config: {e}"),
         })?;
         // Apply the same wire timeouts the management client uses (see
-        // src/main.rs Client construction). Without these a hung child API
+        // src/cmd/controller.rs Client construction). Without these a hung child API
         // would stall reconciliation indefinitely.
         config.read_timeout = Some(std::time::Duration::from_secs(K8S_API_TIMEOUT_SECS));
         config.write_timeout = Some(std::time::Duration::from_secs(K8S_API_TIMEOUT_SECS));

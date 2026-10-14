@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 //! # Reclaim agent — process-match detector
 //!
-//! Core logic for the node-side `5spot-reclaim-agent` binary (roadmap
+//! Core logic for the node-side reclaim agent, `5spot agent reclaim` (roadmap
 //! `5spot-emergency-reclaim-by-process-match.md`, Phase 2). This module is
-//! I/O-light and fully unit-testable; the binary entry point in
-//! `src/bin/reclaim_agent.rs` wires it to a real kube client and a real
+//! I/O-light and fully unit-testable; the subcommand in
+//! `src/cmd/reclaim_agent.rs` wires it to a real kube client and a real
 //! `/proc`.
 //!
 //! ## Detection contract

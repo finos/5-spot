@@ -1,6 +1,6 @@
 [package]
 name = "five_spot"
-version = "0.3.0"
+version = "0.3.3"
 edition = "2021"
 rust-version = "1.90"
 authors = ["Erick Bourgeois <erick@jeb.ca>"]
@@ -14,6 +14,11 @@ repository = "https://github.com/finos/5-spot"
 # (rules/testing.md) could not previously be applied to bin targets.
 autobins = false
 
+# The one runtime binary (ADR 0020). The controller, capacity controller, both
+# spot-schedule providers and both node agents are subcommands of it, so a
+# single image runs every component. Isolation between components comes from
+# each one's own ServiceAccount and RBAC, not from separate binaries (the
+# capacity controller still cannot delete a CAPI Machine; ADR 0011).
 [[bin]]
 name = "5spot"
 path = "src/main.rs"
@@ -34,16 +39,7 @@ path = "src/bin/auto_vex_presence.rs"
 name = "auto-vex-reachability"
 path = "src/bin/auto_vex_reachability.rs"
 
-# First-party spot-schedule providers (ADR 0009). Declared explicitly so the binary
-# names are hyphenated (matching the `command:` in their deploy manifests) rather than
-# the auto-discovered underscore names. Shipped IN the main 5-Spot image.
-[[bin]]
-name = "spot-schedule-time-based"
-path = "src/bin/spot_schedule_time_based.rs"
 
-[[bin]]
-name = "spot-schedule-capital-markets"
-path = "src/bin/spot_schedule_capital_markets.rs"
 
 [dependencies]
 # `unstable-runtime` is opt-in for `Controller::reconcile_on`, which we
@@ -82,7 +78,7 @@ prometheus = { version = "0.14", default-features = false, features = ["process"
 http = "1"
 # warp 0.4 made every previously-default feature opt-in. We use
 # `warp::serve` for the metrics + health/readiness HTTP servers
-# (src/main.rs and src/health.rs), so the `server` feature must be
+# (src/cmd/controller.rs and src/health.rs), so the `server` feature must be
 # enabled explicitly.
 warp = { version = "0.4", default-features = false, features = ["server"] }
 toml = "1.1"
@@ -96,22 +92,12 @@ sha2 = "0.11"
 # dance does. Non-Linux builds compile the module's `Subscriber::new` to
 # a stub that returns `NetlinkError::Unsupported`.
 [target.'cfg(target_os = "linux")'.dependencies]
-nix = { version = "0.31", default-features = false, features = ["socket", "net", "uio"] }
+# `sched` is `setns(2)`, for the hidden `5spot nsenter` subcommand the
+# Kata-config agent uses to restart the host k0s service (ADR 0020).
+nix = { version = "0.31", default-features = false, features = ["socket", "net", "uio", "sched"] }
 
-[[bin]]
-name = "5spot-reclaim-agent"
-path = "src/bin/reclaim_agent.rs"
 
-[[bin]]
-name = "5spot-kata-config-agent"
-path = "src/bin/kata_config_agent.rs"
 
-# Schedule-gated capacity controller (ADR 0011). Its own binary, image and
-# ServiceAccount on purpose: compromising it cannot delete a CAPI Machine, and
-# compromising the machine controller cannot write capacity.
-[[bin]]
-name = "5spot-capacity-controller"
-path = "src/bin/scheduled_capacity_controller.rs"
 
 [dev-dependencies]
 tokio-test = "0.4"

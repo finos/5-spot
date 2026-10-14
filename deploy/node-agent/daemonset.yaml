@@ -86,13 +86,12 @@ spec:
           type: RuntimeDefault
       containers:
         - name: agent
-          # Pin to a released version tag — NEVER use :latest in production
-          # manifests (Trivy KSV-0013). Update the tag via the CI/CD release
-          # workflow. The agent binary is the `5spot-reclaim-agent` bin
-          # target in this crate; the image is built from the same release
-          # as the controller.
-          image: ghcr.io/finos/5-spot-reclaim-agent:v0.1.0
+          # Pin to a released version tag, never :latest in production
+          # manifests (Trivy KSV-0013); the release workflow sets it. The agent
+          # is the `agent reclaim` subcommand of the one 5-Spot image (ADR 0020).
+          image: ghcr.io/finos/5-spot:v0.3.0
           imagePullPolicy: IfNotPresent
+          args: ["agent", "reclaim"]
           # The agent no longer reads its config from a mounted file.
           # Instead it watches the per-node ConfigMap
           # `reclaim-agent-<NODE_NAME>` in the 5spot-system namespace and
@@ -192,6 +191,6 @@ spec:
             type: File
         # No ConfigMap volume. The agent uses the kube API directly to watch
         # its per-node ConfigMap (reclaim-agent-<NODE_NAME>) and reloads
-        # live on every change — see src/bin/reclaim_agent.rs. This sidesteps
+        # live on every change; see src/cmd/reclaim_agent.rs. This sidesteps
         # the Kubernetes limitation that `configMap.name` in a volume spec
         # cannot be templated by the downward API per replica.

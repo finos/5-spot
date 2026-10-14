@@ -47,9 +47,10 @@ kubectl apply -k deploy/spot-schedule-providers/capital-markets/
     Like every spot-schedule provider, this is its **own controller**
     (`spot-schedule-capital-markets`) — the only writer of
     `CapitalMarketsSchedule.status.active`. If it is not running, no
-    `ScheduledMachine` referencing a `CapitalMarketsSchedule` activates. The binary
-    ships **inside the main 5-Spot image** (multi-binary); the Deployment uses the
-    `ghcr.io/finos/5-spot` image with `command: ["/spot-schedule-capital-markets"]`.
+    `ScheduledMachine` referencing a `CapitalMarketsSchedule` activates. It is a
+    subcommand of the one 5-Spot binary; the Deployment uses the
+    `ghcr.io/finos/5-spot` image with `args: ["provider", "capital-markets"]`
+    (ADR 0020).
 
 The provider runs with a least-privilege ClusterRole: `get;list;watch` on
 `capitalmarketsschedules` and `update;patch` on **only** their `/status`

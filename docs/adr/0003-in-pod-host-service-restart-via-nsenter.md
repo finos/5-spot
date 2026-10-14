@@ -8,6 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 - **Date:** 2026-06-08
 - **Deciders:** Erick Bourgeois
 - **Supersedes:** —
+- **Superseded in part by:** ADR [0020](./0020-one-binary-one-image-with-subcommands.md) (the restart now re-executes `5spot nsenter` instead of an external `nsenter`; privileged + hostPID unchanged)
 - **Related:** ADR [0002](./0002-kata-config-delivery-via-spec-kata.md) (the `spec.kata` CRD contract + workload-cluster resolution this builds on); the reclaim agent (`src/bin/reclaim_agent.rs`, `deploy/node-agent/daemonset.yaml`) as the DaemonSet shape to mirror; `.trivyignore` (reclaim-agent suppression block); `docs/src/security/threat-model.md`.
 
 ## Context

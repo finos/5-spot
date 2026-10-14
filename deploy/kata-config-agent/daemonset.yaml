@@ -68,9 +68,13 @@ spec:
           type: RuntimeDefault
       containers:
         - name: agent
-          # Pin a released tag — never :latest in production (KSV-0013).
-          image: ghcr.io/finos/5-spot-kata-config-agent:v0.1.0
+          # Pin a released tag, never :latest in production (KSV-0013). The
+          # agent is the `agent kata-config` subcommand of the one 5-Spot image
+          # (ADR 0020); it restarts the host k0s service by re-executing itself
+          # as `5spot nsenter`, so the image needs no nsenter binary.
+          image: ghcr.io/finos/5-spot:v0.3.0
           imagePullPolicy: IfNotPresent
+          args: ["agent", "kata-config"]
           env:
             - name: RUST_LOG
               value: "info"

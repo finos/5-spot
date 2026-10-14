@@ -169,7 +169,7 @@
 //! us from the multicast group. The reclaim-agent uses
 //! `tokio::task::spawn_blocking` to host the synchronous `recv`
 //! loop, and cancels via the existing per-node ConfigMap watch
-//! channel — see `src/bin/reclaim_agent.rs::run_netlink_scanner`.
+//! channel; see `src/cmd/reclaim_agent.rs::run_netlink_scanner`.
 //!
 //! [proc connector]: https://www.kernel.org/doc/html/latest/driver-api/connector.html
 
