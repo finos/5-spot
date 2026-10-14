@@ -9,6 +9,300 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-10-14 10:30] - Bump rustls to 0.23.46 (RUSTSEC-2026-0346 to 0349)
+
+**Author:** Erick Bourgeois
+
+### Changed
+
+- `Cargo.lock`: `rustls` 0.23.45 to 0.23.46 (`cargo update -p rustls --precise
+  0.23.46`). No other crate moved.
+
+### Why
+
+Four rustls advisories published against 0.23.45, all patched in 0.23.46:
+RUSTSEC-2026-0346 (`Debug` on client session values exposes TLS secrets),
+-0347 (application data sent to the outer server after an ECH rejection), -0348
+and -0349. `cargo-deny` and `cargo audit` fail closed on them, as they should
+(`deny.toml` keeps `ignore = []`); the same advisories failed banlieue's `main`.
+
+### Impact
+
+- [ ] Breaking change
+- [x] Requires cluster rollout (rustls ships in the controller image)
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+
+`cargo deny --all-features check`: four advisories before, `advisories ok, bans
+ok, licenses ok, sources ok` after. `cargo audit`: clean. `cargo clippy -D
+warnings` and `cargo test` pass.
+
+---
+
+## [2026-10-14 01:50] - ADR-0019: k0smotron e2e tier; fix bug-008 (watches killed by the client read timeout); workshop to v1beta2
+
+**Author:** Erick Bourgeois
+
+### Changed
+
+- `src/stream.rs`: new `watch_config()`, kube-runtime's watcher defaults with the
+  server-side timeout set to `WATCH_TIMEOUT_SECS`. `is_routine_watch_restart`
+  no longer classes `WatchFailed` as routine; only HTTP 410 Gone is. This
+  reverses part of the 18:40 entry, whose premise was wrong (see Why).
+- `src/constants.rs`: `WATCH_TIMEOUT_SECS = 20` and
+  `WATCH_TIMEOUT_MARGIN_SECS = 10`, documented against `K8S_API_TIMEOUT_SECS`,
+  with compile-time guards that fail the build if the watch timeout is zero or
+  reaches the client read timeout.
+- `src/main.rs`, `src/reconcilers/{child_watch,dynamic_ref_watch,scheduled_capacity}.rs`,
+  `src/providers/{time_based,capital_markets}.rs`, `src/bin/reclaim_agent.rs`:
+  all twelve watch sites use `watch_config()`.
+- `src/stream_tests.rs`: `test_watch_failed_is_not_routine` replaces the
+  routine test; four new tests pin the watch config (timeout set, below the read
+  timeout, overriding the kube-runtime default, other defaults unchanged).
+- `docs/adr/0019-k0smotron-end-to-end-tier-in-kind.md`: **new, Accepted.**
+  Indexed in `docs/adr/README.md` and `docs/src/development/index.md`.
+- `.github/scripts/e2e-k0smotron.sh`, `.github/scripts/k0smotron-e2e.bats`,
+  `.github/scripts/validate-examples.py`, `.github/workflows/e2e.yaml`: **new.**
+  The environment driver (kind, Cluster API v1.14.3, k0smotron v2.2.0, hosted
+  child control plane, SSH-provisioned worker container), the seven-test
+  lifecycle suite, the strict example and docs validator, and the workflow.
+- `Makefile`: `e2e-tools` (pinned kind v0.33.0 and clusterctl v1.14.3 into
+  `.e2e-bin/`, SHA-256 verified), `e2e-k0smotron-up`, `e2e-k0smotron`,
+  `validate-examples`, `e2e-k0smotron-logs`, `e2e-k0smotron-down`.
+  `.gitignore`: `/.e2e-bin/`.
+- `Makefile` `kind-load` (pre-existing defect, found by the first CI run of the
+  e2e workflow): it staged only `5spot`, while the Dockerfile also copies
+  `spot-schedule-time-based` and `spot-schedule-capital-markets`, so every image
+  build failed; and because the recipe is one shell line without `set -e`, it
+  still printed "image loaded" and exited 0. It now stages `IMAGE_BINARIES` (all
+  three, defined once) and fails fast. This also broke `kind-setup` and the
+  workshop. The e2e harness additionally refuses to deploy unless the image is
+  present in the kind node (`crictl inspecti`) and sets
+  `imagePullPolicy: Never`: on that CI run the controller fell back to the
+  manifest's published image, and a pullable tag of the same name would have
+  been tested in place of the checkout.
+- `examples/workshop/*`: moved to the `v1beta2` contract and CAPD's `Dev*` kinds
+  (`Docker*` is deprecated in Cluster API v1.14), with the shapes taken from
+  Cluster API's own conversion and validated against the providers' webhooks.
+  The README's prerequisites now require kind v0.28+ and say why.
+- `examples/scheduledmachine-bad-taint.yaml`: `validate-examples: expect-reject`
+  marker.
+- `README.md`: the example was a `5spot.finos.org/v1alpha1` resource the current
+  CRD rejects; replaced with the validated basic example.
+- `docs/src/advanced/capi-integration.md`: the `Machine` example now matches
+  what `src/reconcilers/helpers.rs` creates (name, labels, owner reference with
+  `uid`); the Metal3 `KubeadmConfig` had `nodeRegistration: {}`, which `v1beta2`
+  rejects.
+- `docs/src/operations/multi-instance.md`: `Lease` times in MicroTime format.
+- `docs/src/advanced/ha.md`, `docs/src/operations/configuration.md`,
+  `docs/src/guides/create-your-own-provider.md`,
+  `docs/src/reference/spot-schedule-contract.md`: partial snippets marked
+  `validate-examples: fragment`.
+- `docs/src/development/testing.md`: the CI and end-to-end sections described a
+  `cargo test --features e2e` that does not exist; rewritten for what runs.
+  `.claude/rules/testing.md`: the new tier in the tier table.
+- `examples/scheduledmachine-basic.yaml`: the API-version note no longer says
+  both specs *must* share a version (only `bootstrapSpec` decides the Machine's)
+  and names the k0smotron release actually verified.
+- `docs/src/security/threat-model.md`: 1.9 pass (D6, two §7 controls, a §8
+  correction to the kill-switch entry, a new LOW residual for e2e manifests
+  pinned by version).
+- `.github/community/06-k0smotron-e2e-and-worker-confinement.md`, `ROADMAPS.md`:
+  second round closed, the first round's `WatchFailed` claim corrected, two new
+  open threads.
+- `.wolf/buglog.json`: bug-008. `.wolf/cerebrum.md`: two Do-Not-Repeat entries.
+
+### Why
+
+Doing roadmap 06's open items. The end-to-end tier's first run found **bug-008**:
+`src/main.rs` and `src/reconcilers/child_client.rs` give the kube client a
+30-second `read_timeout` (an idle timeout that applies to watches too) while
+every watch used kube-runtime's 290-second server-side default. Every watch
+with 30 quiet seconds was killed client-side, the reflector backed off, and a
+newly created `ScheduledMachine` waited 2m41s to be reconciled. kube-rs
+documents that the watch timeout must be below the client read timeout. The
+symptom, "error reading a body from connection" several times a minute, had been
+recorded as routine noise, and the 18:40 change demoted it to `debug`, which
+would have hidden the defect. It is security-relevant because the kill switch
+and emergency reclaim are reactive controls.
+
+The example validator's first run found seven docs problems, one of them
+(`nodeRegistration: {}`) introduced by the earlier `v1beta2` sweep.
+
+### Impact
+
+- [ ] Breaking change
+- [x] Requires cluster rollout (the watch fix ships in the controller image)
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+
+- `cargo fmt --all`, `cargo clippy --all-targets --all-features -- -D warnings`,
+  `cargo test`: 879 lib tests plus integration, 0 failures.
+- e2e under rootful podman with the controller built from this change: **7 of 7
+  pass**. With the fixed binary the controller logged no watch failures (the
+  published image logged one every 30 seconds); its only warnings were ten
+  deletion-time "not found" reconciles, now an open thread.
+- `make validate-examples`: 77 passed, 0 failed, 7 not validated with reasons.
+- `make e2e-tools` verified on darwin/arm64 and linux/amd64; a wrong digest is
+  rejected.
+- `make crds` / `make crddoc` idempotent; `mkdocs build --strict` passes;
+  shellcheck and actionlint clean on the new scripts and workflow.
+- **Not run:** the GitHub workflow itself (it needs the branch pushed), and an
+  actual CAPD walkthrough of the workshop (it needs a Docker daemon).
+
+---
+
+## [2026-10-13 21:30] - CI: stop every Rust job restoring one 4.4 GB cache; run tests beside the build
+
+**Author:** Erick Bourgeois
+
+### Changed
+
+- `.github/workflows/build.yaml`: `test` now `needs: [format]` instead of
+  `[build]`, so it runs beside the release build rather than after it. It
+  shared nothing with that job: `cargo test` compiles the `dev` profile with
+  dev-dependencies, the release build compiles `release`, and cargo cannot reuse
+  artifacts across profiles. The downloaded `5spot-linux-amd64` artifact was
+  unused (no test reads `target/release/`) and is removed. `docker` still
+  needs `test`, so nothing is published untested.
+- `.github/workflows/build.yaml` (7 jobs), `dependabot-auto-merge.yaml`,
+  `fuzz.yaml`: every `rust/cache-cargo` step passes
+  `save-if: github.ref == 'refs/heads/main'`, so pull requests restore from
+  `main` without spending the repository's cache quota.
+- `.github/workflows/fuzz.yaml`: the cache now covers `fuzz/target` (the fuzz
+  crate is its own workspace; the old step cached the root `target/`, which the
+  fuzz run never uses) and is restored before `cargo install cargo-fuzz`, so the
+  cached `~/.cargo/bin` makes that install a no-op.
+- `.github/workflows/docs.yaml`: the inline `actions/cache` for cargo is
+  replaced by `rust/cache-cargo` with `key: docs`, per
+  `rules/github-workflows.md`. The key is needed because rust-cache keys on the
+  job id, and `build.yaml` also has a job called `build`.
+
+### Why
+
+Measured on run 38487967550: the 3m40s Test job spent **2m42s restoring a
+4.4 GB `target/` cache**, 41s compiling (38 crates rebuilt despite the hit),
+and about 3s running tests. The cause was in `rust/cache-cargo` v1.3.9: one
+`Linux-cargo-build-target-<Cargo.lock hash>` key shared by all ten Rust jobs
+across four workflows (and by the ARM64 runner, since `runner.os` is `Linux`
+there too), each restoring whatever another job happened to save first, plus a
+prefix restore-key that carried old artifacts forward without pruning. The
+repository stood at 9.85 GB of GitHub's 10 GB cache limit, so entries were
+being evicted.
+
+The cache fix itself belongs in `firestoned/github-actions`
+(`rules/github-workflows.md`), where `rust/cache-cargo` is rebuilt on the
+already-pinned `Swatinem/rust-cache` v2.9.1 with per-job, per-toolchain,
+per-architecture keys and pruning. Released as `firestoned/github-actions`
+v1.4.0 (`f52366c`); all eleven `rust/cache-cargo` pins here, across
+`build.yaml`, `fuzz.yaml`, `dependabot-auto-merge.yaml`, `docs.yaml` and
+`e2e.yaml`, now point at that SHA.
+
+### Impact
+
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (CI)
+- [ ] Documentation only
+
+### Verification
+
+- `actionlint` over the four workflows: the same six pre-existing shellcheck
+  findings before and after, none in changed lines.
+- Not yet run in CI: the first run after the pin bump is cold by design (new
+  keys), so the speed-up shows from the second `main` run onward.
+
+---
+
+## [2026-10-13 18:40] - Demote routine watch restarts to debug; move examples to the CAPI v1beta2 contract
+
+**Author:** Erick Bourgeois
+
+### Changed
+
+- `src/stream.rs`: added `is_routine_watch_restart`, which classifies a
+  `kube::runtime::watcher::Error` as a routine stream recycle or a real fault.
+  `WatchFailed` (the connection dropped) and `WatchError` carrying HTTP 410 Gone
+  (the requested `resourceVersion` has aged out of the apiserver's watch cache)
+  are routine, because `kube-runtime` reconnects on its own.
+  `InitialListFailed`, `WatchStartFailed` and `NoResourceVersion` stay
+  non-routine: those three mean the watch never started. The module doc widened
+  from "small async adapters" to cover watch-stream helpers.
+- `src/stream_tests.rs`: five tests, one per variant group, pinning the
+  classification (10 tests in the file now).
+- `src/main.rs`, `src/reconcilers/child_watch.rs`,
+  `src/reconcilers/dynamic_ref_watch.rs`,
+  `src/reconcilers/scheduled_capacity.rs`: all four watch call sites branch on
+  the classifier, logging `debug!` with "stream recycled" for a routine restart
+  and keeping `warn!` for the rest. `main.rs` gained `debug` in its `tracing`
+  imports.
+- `examples/scheduledmachine-{basic,tainted,kata,child-cluster,spot-schedule,bad-taint,weekend}.yaml`:
+  `bootstrapSpec.apiVersion` and `infrastructureSpec.apiVersion` moved from
+  `v1beta1` to `v1beta2`. `basic.yaml` carries an inline note on why, and on
+  what to declare instead when running older Cluster API.
+- `docs/src/advanced/capi-integration.md`: the `Machine` example now shows the
+  v1beta2 `ContractVersionedObjectReference` shape (`apiGroup` + `kind` +
+  `name`) with the v1beta1 `ObjectReference` beside it, so ADR 0017's behaviour
+  is visible in the published docs rather than only in the ADR.
+- `docs/src/index.md`, `docs/src/installation/quickstart.md`,
+  `docs/src/concepts/{scheduled-machine,machine-lifecycle,emergency-reclaim,child-cluster-kubeconfig}.md`,
+  `README.md`: example `apiVersion` strings moved to `v1beta2` to match
+  `examples/`.
+- `src/crd.rs`, `src/bin/crddoc.rs`, `src/reconcilers/helpers.rs`,
+  `deploy/admission/validatingadmissionpolicy.yaml`: the `e.g.` version in
+  field descriptions and validation messages moved to `v1beta2`. Regenerated
+  `deploy/crds/scheduledmachine.yaml` and `docs/src/reference/api.md`; both
+  generators are idempotent.
+- `examples/workshop/README.md`, `examples/workshop/workload-cluster.yaml`:
+  removed the instruction to pin `clusterctl` to the v1.8 or v1.9 line "because
+  5-Spot emits v1beta1 Machines". That stopped being true with ADR 0017, and
+  every CAPI release through the v1.14 line still serves `v1beta1`, so no
+  pinning is needed. The workshop manifests themselves stay on `v1beta1` on
+  purpose, with the reason recorded in the file.
+- `.github/community/06-k0smotron-e2e-and-worker-confinement.md`, `ROADMAPS.md`:
+  both threads closed, with the two items that remain open called out.
+
+### Why
+
+Two leftovers from the k0smotron end-to-end run (roadmap 06).
+
+A watch that the apiserver recycles is normal operation, but every one produced
+a `warn`-level line indistinguishable from a real failure, which trains an
+operator to ignore the level that matters.
+
+The examples all declared the deprecated `v1beta1` contract, so the forward path
+ADR 0017 added was not demonstrated anywhere a reader would copy from.
+`v1beta2` is the right default rather than merely the newer option: k0smotron
+v2.2.0 serves both versions for all four of its CRDs and has `v1beta2` as the
+**storage** version, so `v1beta1` is the one being converted away from. The
+workshop is the deliberate exception, because kubeadm and CAPD need structural
+changes beyond the version string and no cluster available here can verify them.
+
+### Impact
+
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (plus log-level changes; no behavior change)
+
+### Verification
+
+- `cargo fmt --all`, `cargo clippy --all-targets --all-features -- -D warnings`,
+  `cargo test`: all pass, 875 lib tests plus integration, 0 failures.
+- `make crds` and `make crddoc` rerun to a byte-identical diff (idempotent).
+- All ten `examples/*.yaml` accepted by server-side dry-run against a live
+  apiserver running Cluster API v1.14.3 and k0smotron v2.2.0, plus the workshop
+  `ScheduledMachine`. Nothing was persisted. Four manifests needed their
+  namespace retargeted only because their namespaces do not exist on that
+  cluster.
+- `mkdocs build --strict`: exit 0, no warnings.
+
+---
+
 ## [2026-10-13 16:20] - ADR-0018: replace serde_yaml with serde-saphyr; bump CI action pins
 
 **Author:** Erick Bourgeois

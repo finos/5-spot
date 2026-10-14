@@ -182,17 +182,17 @@ status:
   inSchedule: true
   message: Machine is healthy and running
   machineRef:
-    apiVersion: cluster.x-k8s.io/v1beta1
+    apiVersion: cluster.x-k8s.io/v1beta2
     kind: Machine
     name: business-hours-worker-machine
     namespace: default
   bootstrapRef:
-    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
     kind: K0sWorkerConfig
     name: business-hours-worker-bootstrap
     namespace: default
   infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
     kind: RemoteMachine
     name: business-hours-worker-infra
     namespace: default

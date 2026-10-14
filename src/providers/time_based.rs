@@ -31,7 +31,7 @@ use chrono_tz::Tz;
 use futures::StreamExt;
 use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::controller::Action;
-use kube::runtime::{watcher, Controller};
+use kube::runtime::Controller;
 use kube::{Client, ResourceExt};
 use serde_json::json;
 use tracing::{info, warn};
@@ -268,7 +268,7 @@ pub async fn run(client: Client) -> anyhow::Result<()> {
     let ctx = Arc::new(TimeBasedContext { client });
 
     info!("Starting TimeBasedSpotSchedule provider controller");
-    Controller::new(api, watcher::Config::default())
+    Controller::new(api, crate::stream::watch_config())
         .shutdown_on_signal()
         .run(reconcile, error_policy, ctx)
         .for_each(|res| async move {

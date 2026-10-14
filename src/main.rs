@@ -32,19 +32,16 @@ use five_spot::reconcilers::{
     provider_key_for, reconcile_scheduled_machine, ChildNodeWatchManager, Context,
     SpotScheduleWatchManager, WATCH_LABEL_SPOT_SCHEDULE,
 };
+use five_spot::stream::watch_config;
 use futures::{StreamExt, TryStreamExt};
 use k8s_openapi::api::core::v1::Node;
 use kube::{
     api::{ApiResource, GroupVersionKind, ListParams},
     core::DynamicObject,
-    runtime::{
-        reflector,
-        watcher::{self, Config},
-        Controller, WatchStreamExt,
-    },
+    runtime::{reflector, watcher, Controller, WatchStreamExt},
     Api, Client,
 };
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Command-line interface for the 5-Spot operator.
@@ -285,7 +282,7 @@ async fn main() -> Result<()> {
     tokio::spawn(async move {
         let stream = watcher::watcher(
             machine_reflector_machines_api,
-            watcher::Config::default().labels(LABEL_SCHEDULED_MACHINE),
+            watch_config().labels(LABEL_SCHEDULED_MACHINE),
         )
         .reflect(machine_writer)
         .applied_objects();
@@ -333,7 +330,7 @@ async fn main() -> Result<()> {
     );
     let spot_schedule_reflector_api = Api::<ScheduledMachine>::all(client.clone());
     tokio::spawn(async move {
-        let mut stream = watcher::watcher(spot_schedule_reflector_api, Config::default()).boxed();
+        let mut stream = watcher::watcher(spot_schedule_reflector_api, watch_config()).boxed();
         while let Some(event) = stream.next().await {
             match event {
                 Ok(watcher::Event::Apply(sm) | watcher::Event::InitApply(sm)) => {
@@ -344,23 +341,27 @@ async fn main() -> Result<()> {
                 }
                 Ok(watcher::Event::Init | watcher::Event::InitDone) => {}
                 Err(e) => {
-                    warn!(error = %e, "ScheduledMachine reflector (spot-schedule index) error; kube-runtime will reconnect");
+                    if five_spot::stream::is_routine_watch_restart(&e) {
+                        debug!(error = %e, "ScheduledMachine reflector (spot-schedule index) stream recycled; kube-runtime will reconnect");
+                    } else {
+                        warn!(error = %e, "ScheduledMachine reflector (spot-schedule index) error; kube-runtime will reconnect");
+                    }
                 }
             }
         }
         error!("ScheduledMachine reflector for spot-schedule index terminated");
     });
 
-    let controller = Controller::new(scheduled_machines, Config::default());
+    let controller = Controller::new(scheduled_machines, watch_config());
 
     controller
         .watches_with(
             machines_api,
             machine_ar.clone(),
-            Config::default().labels(LABEL_SCHEDULED_MACHINE),
+            watch_config().labels(LABEL_SCHEDULED_MACHINE),
             |machine: DynamicObject| machine_to_scheduled_machine(&machine),
         )
-        .watches(nodes_api, Config::default(), move |node: Node| {
+        .watches(nodes_api, watch_config(), move |node: Node| {
             // Snapshot the standalone Machine reflector's store. Each
             // entry is an Arc<DynamicObject>; deref through AsRef to feed
             // the pure mapper.

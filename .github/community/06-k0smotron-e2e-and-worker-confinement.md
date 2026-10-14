@@ -324,11 +324,119 @@ does not make the pool a cluster-wide default.
   signature, and the `Delegate=` advice is split by driver. The macvtap
   hypothesis is withdrawn: the substrate was never implicated.
 
-- **No automated e2e covers this path.** The run was driven by hand. The
-  manifests are recorded well enough here to script against a disposable VM, and
-  the v1beta2 shapes above are the ones worth scripting, since `v1beta1` is
-  deprecated.
-- **Watch-stream reconnects log at ERROR/WARN.** Normal watch timeouts surface
-  as `ServiceError: error reading a body from connection` with an `ERROR`-level
-  "reflector terminated" line, which reads as a fault during routine operation.
-  Worth demoting to `debug`/`info` with a distinct message for genuine failures.
+- **No automated e2e covers this path.** Closed by ADR 0019: see
+  "Closed 2026-10-13 (second round)" below.
+- **`ScheduledMachine.status.machineRef`, `bootstrapRef` and
+  `infrastructureRef` are never written.** Found by the e2e tier. The CRD
+  declares all three and `docs/src/concepts/machine-lifecycle.md` shows them
+  populated, but no code path sets them; only `providerID` and `nodeRef` are
+  patched (`patch_machine_refs_status` in `src/reconcilers/helpers.rs`). The
+  suite asserts on the Machine found by its owned label instead. **Open, and a
+  decision rather than a typo:** either the controller populates them on create
+  and clears them on removal, or they leave the CRD and the docs. Either way it
+  is an API change that wants its own ADR.
+- **Deletion-time reconcile noise.** Minor, found by the same run: in the 20
+  seconds after a `ScheduledMachine` is deleted, Machine and Node events still
+  map to it and its reconciles log ten `WARN`/`ERROR` lines ("not found in local
+  store", a 404 on the status patch) with exponential back-off. Harmless, but it
+  is the same kind of false alarm that hid bug-008. **Open.**
+
+### Closed 2026-10-13
+
+- **Watch-stream reconnects logged at ERROR/WARN.** Closed the first time on a
+  wrong premise, then corrected the same day; see bug-008 in the second round
+  below. The first fix added `is_routine_watch_restart` to `src/stream.rs` and
+  classed `WatchFailed` as routine, because it appeared several times a minute
+  on a healthy cluster. That cadence was the defect, not noise: a 30-second
+  client read timeout was killing every quiet watch. `WatchFailed` is now
+  **not** routine and stays at `warn`; only HTTP 410 Gone is demoted to
+  `debug`. The four call sites still branch on the classifier.
+
+- **The repo's examples were all on the deprecated `v1beta1` contract**, so the
+  forward path ADR 0017 added was documented nowhere a reader would copy from.
+  Closed. The seven `examples/scheduledmachine-*.yaml` files now declare
+  `v1beta2` for both `bootstrapSpec` and `infrastructureSpec`, which matches
+  reality on this cluster: k0smotron v2.2.0 serves `v1beta1` and `v1beta2` for
+  all four of its CRDs and has **`v1beta2` as the storage version**, so
+  `v1beta1` is the one being converted away from. `examples/scheduledmachine-basic.yaml`
+  carries the reasoning inline, including which version to declare on older
+  Cluster API, since 5-Spot passes the version through rather than choosing it.
+
+  `docs/src/advanced/capi-integration.md` now shows the `Machine` 5-Spot creates
+  in the v1beta2 shape (`apiGroup` + `kind` + `name`) with the v1beta1
+  `ObjectReference` beside it, which is the ADR 0017 behaviour and was not
+  previously written down anywhere in the published docs.
+
+  **The workshop stayed on `v1beta1` in the first round**, because the kubeadm
+  and CAPD v1beta2 shapes could not be verified without a CAPI v1.11+ cluster
+  with those providers. That is superseded: see the second round below.
+
+  What *was* wrong in the workshop is now fixed: both `README.md` and
+  `workload-cluster.yaml` told the reader to pin `clusterctl` to the v1.8 or
+  v1.9 line "because 5-Spot emits v1beta1 Machines". That claim was false after
+  ADR 0017 and it steered people onto a two-year-old CAPI for no reason.
+
+  `examples/scheduledmachine-bad-taint.yaml` keeps its deliberate defect, and
+  `docs/src/security/admission-validation.md` is unchanged: its rejection
+  examples exercise the admission rules (duration format, the API-group
+  allowlist), use the allowlisted `k0smotron.io` group for the bootstrap side,
+  and no rule they demonstrate depends on the contract version.
+
+  **Still open from this item in the first round:** nothing in CI validated
+  `examples/` against a schema. Closed in the second round below.
+
+### Closed 2026-10-13 (second round)
+
+- **An automated end-to-end tier now covers this path (ADR 0019).** A kind
+  management cluster with Cluster API v1.14.3 and k0smotron v2.2.0, a hosted
+  `K0smotronControlPlane`, and a worker container (systemd + sshd, pinned by
+  digest) provisioned over SSH as a `RemoteMachine`. `.github/scripts/k0smotron-e2e.bats`
+  drives one `ScheduledMachine` through activate, deactivate, reactivate and
+  delete, and asserts the two contracts that escaped before: the Machine written
+  at `v1beta2` (proved from its `managedFields`, since conversion would mask a
+  read-back) with `apiGroup` references (ADR 0017), and the controller-owned
+  label the watches select on (bug-007). Runs in `.github/workflows/e2e.yaml`
+  through `make e2e-k0smotron-up`, `make validate-examples`, `make e2e-k0smotron`.
+  The worker needs a rootful container engine: under rootless podman, k0s cannot
+  load its eBPF device filter or find the `cpuset` controller. Two more
+  environment traps are handled by the harness: containerd's overlay snapshots
+  need `/var/lib/k0s` on a volume, and podman's default 2048-pid cap kills the
+  hosted control plane. **Result, 2026-10-13, controller built from this
+  change: 7 of 7 pass** (join 69s, removal 163s, return 79s, deletion 21s).
+
+- **bug-008, found on the tier's first run.** A `ScheduledMachine` created at
+  00:41:41 was first reconciled at 00:44:22. Every watch in the controller failed
+  on a fixed cadence (the `ScheduledMachine` reflector every 30 seconds exactly):
+  `src/main.rs` and `src/reconcilers/child_client.rs` set a 30-second
+  `read_timeout` on the client, an idle timeout that applies to watches too,
+  while every watch used kube-runtime's 290-second server-side default. kube-rs
+  documents that the watch timeout must be below the client's read timeout.
+  Present since the first commit, and it is the same "error reading a body from
+  connection" this roadmap had recorded as routine noise. Fixed with
+  `stream::watch_config()` (server-side timeout 20s) on all twelve watch sites,
+  compile-time guards in `src/constants.rs`, and the classifier correction
+  above. With the fixed binary, the Machine appeared in the same second as the
+  `ScheduledMachine`, and the controller logged no watch failures at all where
+  the old one logged one every 30 seconds. Security-relevant, since the kill
+  switch and emergency reclaim are reactive: threat model 1.9, D6.
+
+- **Examples and docs are validated in CI against the real schemas.**
+  `.github/scripts/validate-examples.py` dry-runs every `examples/` document and
+  every complete object in `docs/src` with `--validate=strict` against the e2e
+  cluster, and validates each embedded `bootstrapSpec` / `infrastructureSpec` as
+  the standalone provider object 5-Spot creates. Its first run found seven real
+  problems in the docs: an invalid `nodeRegistration: {}` that the `v1beta2`
+  sweep had produced, a `Lease` with the wrong time format, a `Machine` example
+  that did not match what `src/reconcilers/helpers.rs` creates, a README example
+  still on `5spot.finos.org/v1alpha1`, and four deliberately partial snippets,
+  now marked `validate-examples: fragment` so they are listed, not skipped.
+  Result: 77 passed, 0 failed, 7 not validated, each with its reason.
+
+- **The workshop moved to `v1beta2`, verified rather than guessed.** The shapes
+  were taken from Cluster API's own conversion of the old manifests on a live
+  v1.14.3 cluster, then validated with the providers' webhooks. It also moved
+  off the `Docker*` kinds, which CAPI v1.14 deprecates, to the `Dev*` kinds with
+  the docker backend. The prerequisites now say why kind v0.28 is the minimum:
+  Cluster API v1.14 needs a management cluster of Kubernetes v1.33 or later.
+  **Not verified:** an actual CAPD walkthrough run; CAPD needs a Docker daemon.
+

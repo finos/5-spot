@@ -47,7 +47,7 @@ spec:
                   This resource will be created when the schedule is active
                 properties:
                   apiVersion:
-                    description: API version of the resource (e.g., 'bootstrap.cluster.x-k8s.io/v1beta1')
+                    description: API version of the resource (e.g., 'bootstrap.cluster.x-k8s.io/v1beta2')
                     type: string
                   kind:
                     description: Kind of the resource (e.g., 'K0sWorkerConfig', 'RemoteMachine')
@@ -111,7 +111,7 @@ spec:
                   This resource will be created when the schedule is active
                 properties:
                   apiVersion:
-                    description: API version of the resource (e.g., 'bootstrap.cluster.x-k8s.io/v1beta1')
+                    description: API version of the resource (e.g., 'bootstrap.cluster.x-k8s.io/v1beta2')
                     type: string
                   kind:
                     description: Kind of the resource (e.g., 'K0sWorkerConfig', 'RemoteMachine')

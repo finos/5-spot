@@ -36,13 +36,13 @@ spec:
     kind: TimeBasedSpotSchedule
     name: weekdays-9-5
   bootstrapSpec:
-    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
     kind: K0sWorkerConfig
     spec:
       version: v1.32.8+k0s.0
       downloadURL: https://github.com/k0sproject/k0s/releases/download/v1.32.8+k0s.0/k0s-v1.32.8+k0s.0-amd64
   infrastructureSpec:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
     kind: RemoteMachine
     spec:
       address: 192.168.1.100
@@ -128,7 +128,7 @@ loop-breaker the emergency-reclaim flow sets. Distinct from the provider's own
 (required, object) Inline bootstrap configuration that will be created when the schedule is active.
 This is a fully unstructured object that must contain:
 
-- **apiVersion** (required, string): API version of the bootstrap resource (e.g., `bootstrap.cluster.x-k8s.io/v1beta1`)
+- **apiVersion** (required, string): API version of the bootstrap resource (e.g., `bootstrap.cluster.x-k8s.io/v1beta2`)
 - **kind** (required, string): Kind of the bootstrap resource (e.g., `K0sWorkerConfig`, `KubeadmConfig`)
 - **spec** (required, object): Provider-specific configuration for the bootstrap resource
 
@@ -149,7 +149,7 @@ namespace. Labels/annotations using reserved prefixes (`5spot.finos.org/`,
 (required, object) Inline infrastructure configuration that will be created when the schedule is active.
 This is a fully unstructured object that must contain:
 
-- **apiVersion** (required, string): API version of the infrastructure resource (e.g., `infrastructure.cluster.x-k8s.io/v1beta1`)
+- **apiVersion** (required, string): API version of the infrastructure resource (e.g., `infrastructure.cluster.x-k8s.io/v1beta2`)
 - **kind** (required, string): Kind of the infrastructure resource (e.g., `RemoteMachine`, `AWSMachine`)
 - **spec** (required, object): Provider-specific configuration for the infrastructure resource
 

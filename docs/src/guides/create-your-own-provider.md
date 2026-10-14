@@ -195,6 +195,7 @@ for a template you can copy.
 ## 5. Reference it from a ScheduledMachine
 
 ```yaml
+# validate-examples: fragment (only spec.schedule is shown)
 apiVersion: 5spot.finos.org/v1beta1
 kind: ScheduledMachine
 metadata:

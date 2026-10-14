@@ -32,6 +32,7 @@ sequenceDiagram
 Use a standard Deployment (not StatefulSet) with leader election:
 
 ```yaml
+# validate-examples: fragment (only the fields that change for HA)
 apiVersion: apps/v1
 kind: Deployment
 metadata:

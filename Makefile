@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, RBC Capital Markets
 # SPDX-License-Identifier: Apache-2.0
 
-.PHONY: help install build build-debug build-linux-amd64 build-linux-arm64 build-macos-arm64 prepare-binaries-linux-amd64 prepare-binaries-linux-arm64 test test-lib lint format clean crds crddoc docs docs-serve docs-clean docs-rustdoc calm-diagrams calm-validate run-local docker-build docker-build-amd64 docker-build-arm64 docker-build-chainguard docker-image docker-push docker-buildx docker-buildx-chainguard gitleaks gitleaks-install install-git-hooks security-scan-local sbom audit vexctl-install vex-validate vex-assemble vex-auto-presence vex-auto-reachability vex-auto vex-auto-check set-image-version kind-install kind-create kind-delete kind-load kind-deploy kind-example kind-setup kind-status kind-verify-admission
+.PHONY: help install build build-debug build-linux-amd64 build-linux-arm64 build-macos-arm64 prepare-binaries-linux-amd64 prepare-binaries-linux-arm64 test test-lib lint format clean crds crddoc docs docs-serve docs-clean docs-rustdoc calm-diagrams calm-validate run-local docker-build docker-build-amd64 docker-build-arm64 docker-build-chainguard docker-image docker-push docker-buildx docker-buildx-chainguard gitleaks gitleaks-install install-git-hooks security-scan-local sbom audit vexctl-install vex-validate vex-assemble vex-auto-presence vex-auto-reachability vex-auto vex-auto-check set-image-version kind-install kind-create kind-delete kind-load kind-deploy kind-example kind-setup kind-status kind-verify-admission e2e-tools e2e-fetch-kind e2e-fetch-clusterctl e2e-k0smotron-up e2e-k0smotron validate-examples e2e-k0smotron-logs e2e-k0smotron-down
 
 # CALM (FINOS Common Architecture Language Model) configuration
 CALM_CLI_VERSION ?= 1.37.0
@@ -80,6 +80,9 @@ KIND_NODE_IMAGE ?= kindest/node:v1.31.0
 # ghcr.io/finos/5-spot:v0.1.0) and then overrides the container image to
 # $(KIND_IMAGE) via `kubectl set image` so the locally loaded image is used.
 KIND_IMAGE ?= ghcr.io/finos/5-spot:local-dev
+# Every binary the Dockerfile COPYs from binaries/<arch>/. A target that stages
+# fewer produces an image build that fails on the missing COPY source.
+IMAGE_BINARIES := 5spot spot-schedule-time-based spot-schedule-capital-markets
 
 # Python/Poetry package index configuration (for corporate environments)
 # Set PYPI_INDEX_URL to use a custom PyPI mirror (e.g., Artifactory)
@@ -829,7 +832,9 @@ kind-load: ## Build image for host arch (native cross-compile, bypassing cross) 
 		echo "ERROR: kind cluster '$(KIND_CLUSTER_NAME)' does not exist. Run: make kind-create"; \
 		exit 1; \
 	fi
-	@HOST_ARCH=$$(uname -m); \
+	@# set -e: this recipe is one shell line, and without it a failed image
+	@# build or load still ended in "image loaded" and exit 0.
+	@set -e; HOST_ARCH=$$(uname -m); \
 		case "$$HOST_ARCH" in \
 			arm64|aarch64) TRIPLE=aarch64-unknown-linux-gnu; DOCKER_ARCH=arm64; LINKER=aarch64-unknown-linux-gnu-gcc; ALT_LINKER=aarch64-linux-gnu-gcc ;; \
 			x86_64|amd64)  TRIPLE=x86_64-unknown-linux-gnu;  DOCKER_ARCH=amd64; LINKER=x86_64-unknown-linux-gnu-gcc;  ALT_LINKER=x86_64-linux-gnu-gcc ;; \
@@ -859,9 +864,11 @@ kind-load: ## Build image for host arch (native cross-compile, bypassing cross) 
 		fi; \
 		echo "Compiling 5spot for $$TRIPLE..."; \
 		env $$LINKER_ENV cargo build --release --target "$$TRIPLE"; \
-		echo "Staging binary at binaries/$$DOCKER_ARCH/5spot..."; \
+		echo "Staging $(IMAGE_BINARIES) in binaries/$$DOCKER_ARCH/..."; \
 		mkdir -p "binaries/$$DOCKER_ARCH"; \
-		cp "target/$$TRIPLE/release/5spot" "binaries/$$DOCKER_ARCH/5spot"; \
+		for bin in $(IMAGE_BINARIES); do \
+			cp "target/$$TRIPLE/release/$$bin" "binaries/$$DOCKER_ARCH/$$bin"; \
+		done; \
 		echo "Building docker image $(KIND_IMAGE) (linux/$$DOCKER_ARCH)..."; \
 		$(CONTAINER_TOOL) build \
 			--build-arg TARGETARCH=$$DOCKER_ARCH \
@@ -969,6 +976,97 @@ kind-verify-admission: kind-install ## Verify the admission policies actually DE
 	@kind get clusters 2>/dev/null | grep -qx $(KIND_CLUSTER_NAME) || { 	  echo "kind cluster '$(KIND_CLUSTER_NAME)' does not exist. Run: make kind-create"; 	  exit 1; 	}
 	@echo "Verifying admission denial against kind-$(KIND_CLUSTER_NAME)..."
 	@KUBECTL_CONTEXT=kind-$(KIND_CLUSTER_NAME) bats .github/scripts/admission-deny.bats
+
+# ============================================================
+# k0smotron end-to-end tier (ADR 0019)
+# ============================================================
+#
+# A kind management cluster with Cluster API and k0smotron, a hosted child
+# control plane, and a worker container provisioned over SSH as a RemoteMachine.
+# Separate pins from the kind-* targets above: Cluster API v1.14 needs a
+# management cluster of Kubernetes v1.32 or later, which kind v0.24 cannot run.
+#
+#   make e2e-k0smotron-up        # environment (builds the image unless E2E_IMAGE is set)
+#   make validate-examples       # examples/ and docs/src against real schemas
+#   make e2e-k0smotron           # the lifecycle suite
+#   make e2e-k0smotron-down
+#
+# Local hosts that do not build images can test a published image instead:
+#   make e2e-k0smotron-up E2E_IMAGE=ghcr.io/finos/5-spot@sha256:<digest> CONTAINER_TOOL=podman
+
+E2E_CLUSTER ?= 5spot-e2e
+E2E_IMAGE ?=
+E2E_BIN ?= $(CURDIR)/.e2e-bin
+E2E_KIND_VERSION ?= v0.33.0
+E2E_KIND_NODE_IMAGE ?= kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+E2E_CLUSTERCTL_VERSION ?= v1.14.3
+# GitHub's recorded SHA-256 for each release asset (neither project publishes a
+# checksum file for these). Re-take them from the release API when bumping a pin.
+E2E_KIND_SHA256_linux_amd64 := aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+E2E_KIND_SHA256_linux_arm64 := 20022bee6cfcd5086cb7234d218e3454e6090022f2a8f55d1fa7fcf42c3867a2
+E2E_KIND_SHA256_darwin_amd64 := 5a99f26f57246dc9319dd294803313197a0f34d33c525b3ea8b655db5916ece0
+E2E_KIND_SHA256_darwin_arm64 := 0c8c7dbe5e23594a198b786c4bc13dacc101fa6196b0cb0b23a1ca44e61f4b4f
+E2E_CLUSTERCTL_SHA256_linux_amd64 := e56f397f55c6fdde6ee8c0fead4fb21270a50e05111180bf68c8ae6c82dfd917
+E2E_CLUSTERCTL_SHA256_linux_arm64 := eea3a3ecc64ae155c57eea35378d833285a92cb549c3298a18765bc40a7a3f7b
+E2E_CLUSTERCTL_SHA256_darwin_amd64 := decec263200ff5790593fcff64a0f9d42799410b91b1e23c86ec1437607bb1fd
+E2E_CLUSTERCTL_SHA256_darwin_arm64 := 5915523f13949884d29d5254445b8d294ba314b5dacb3e8eff9e42f1c9d2e684
+
+E2E_OS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
+E2E_ARCH := $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
+E2E_ENV = PATH="$(E2E_BIN):$$PATH" E2E_CLUSTER=$(E2E_CLUSTER) E2E_IMAGE=$(E2E_IMAGE) \
+	KIND_IMAGE=$(KIND_IMAGE) KIND_NODE_IMAGE=$(E2E_KIND_NODE_IMAGE) CONTAINER_TOOL=$(CONTAINER_TOOL)
+
+# Download $(1) from $(2) to $(E2E_BIN)/$(3) and verify it against $(4).
+define e2e_fetch
+	@mkdir -p "$(E2E_BIN)"
+	@curl -sSLf -o "$(E2E_BIN)/$(3).tmp" "$(2)"
+	@ACTUAL=$$( (command -v sha256sum >/dev/null && sha256sum "$(E2E_BIN)/$(3).tmp" || shasum -a 256 "$(E2E_BIN)/$(3).tmp") | awk '{print $$1}'); \
+	if [ "$$ACTUAL" != "$(4)" ]; then \
+		echo "ERROR: $(1) checksum mismatch (expected $(4), got $$ACTUAL)"; \
+		rm -f "$(E2E_BIN)/$(3).tmp"; exit 1; \
+	fi
+	@chmod +x "$(E2E_BIN)/$(3).tmp" && mv "$(E2E_BIN)/$(3).tmp" "$(E2E_BIN)/$(3)"
+	@echo "✓ $(1) installed to $(E2E_BIN)/$(3)"
+endef
+
+e2e-tools: ## Install the pinned kind and clusterctl the e2e tier uses into .e2e-bin/ (checksum-verified)
+	@if [ -x "$(E2E_BIN)/kind" ] && "$(E2E_BIN)/kind" version | grep -q "$(E2E_KIND_VERSION) "; then \
+		echo "✓ kind $(E2E_KIND_VERSION) already in $(E2E_BIN)"; \
+	else \
+		$(MAKE) --no-print-directory e2e-fetch-kind; \
+	fi
+	@if [ -x "$(E2E_BIN)/clusterctl" ] && "$(E2E_BIN)/clusterctl" version -o short | grep -qx "$(E2E_CLUSTERCTL_VERSION)"; then \
+		echo "✓ clusterctl $(E2E_CLUSTERCTL_VERSION) already in $(E2E_BIN)"; \
+	else \
+		$(MAKE) --no-print-directory e2e-fetch-clusterctl; \
+	fi
+
+e2e-fetch-kind:
+	$(call e2e_fetch,kind $(E2E_KIND_VERSION),https://github.com/kubernetes-sigs/kind/releases/download/$(E2E_KIND_VERSION)/kind-$(E2E_OS)-$(E2E_ARCH),kind,$(E2E_KIND_SHA256_$(E2E_OS)_$(E2E_ARCH)))
+
+e2e-fetch-clusterctl:
+	$(call e2e_fetch,clusterctl $(E2E_CLUSTERCTL_VERSION),https://github.com/kubernetes-sigs/cluster-api/releases/download/$(E2E_CLUSTERCTL_VERSION)/clusterctl-$(E2E_OS)-$(E2E_ARCH),clusterctl,$(E2E_CLUSTERCTL_SHA256_$(E2E_OS)_$(E2E_ARCH)))
+
+e2e-k0smotron-up: e2e-tools ## Create the k0smotron e2e environment (builds and loads the image unless E2E_IMAGE is set)
+	@$(E2E_ENV) .github/scripts/e2e-k0smotron.sh cluster
+	@if [ -z "$(E2E_IMAGE)" ]; then \
+		PATH="$(E2E_BIN):$$PATH" $(MAKE) --no-print-directory kind-load KIND_CLUSTER_NAME=$(E2E_CLUSTER); \
+	fi
+	@$(E2E_ENV) .github/scripts/e2e-k0smotron.sh up
+
+e2e-k0smotron: ## Run the k0smotron lifecycle suite (bats; needs e2e-k0smotron-up)
+	@command -v bats >/dev/null || { echo "bats not found. Install bats-core: apt-get install bats | brew install bats-core"; exit 1; }
+	@bats --timing .github/scripts/k0smotron-e2e.bats
+
+validate-examples: ## Validate examples/ and docs/src manifests strictly against real schemas (needs e2e-k0smotron-up)
+	@python3 -c 'import yaml' 2>/dev/null || { echo "PyYAML not found. Install it: apt-get install python3-yaml | pip install pyyaml"; exit 1; }
+	@KUBECTL_CONTEXT=kind-$(E2E_CLUSTER) python3 .github/scripts/validate-examples.py
+
+e2e-k0smotron-logs: ## Dump controller, provider, child-cluster and worker diagnostics from the e2e environment
+	@$(E2E_ENV) .github/scripts/e2e-k0smotron.sh logs
+
+e2e-k0smotron-down: ## Delete the k0smotron e2e environment
+	@$(E2E_ENV) .github/scripts/e2e-k0smotron.sh down
 
 kind-setup: kind-create kind-load kind-deploy ## One-shot: create cluster, build+load image, deploy CRDs & controller
 	@echo ""

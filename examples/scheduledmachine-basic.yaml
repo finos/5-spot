@@ -30,8 +30,19 @@ spec:
 
   # Inline bootstrap specification (creates K0sWorkerConfig)
   # Name is auto-generated as: business-hours-worker
+  #
+  # ON THE API VERSION: 5-Spot passes the version component through. The CAPI
+  # Machine it creates is made at the same contract version declared here, and
+  # the Machine's bootstrap/infrastructure references take the shape that
+  # version requires (ADR 0017): `apiGroup` + `kind` + `name` for v1beta2 and
+  # newer, `apiVersion` + `kind` + `name` + `namespace` for v1beta1 and older.
+  # Declare a version your Cluster API AND your provider both serve: v1beta2
+  # needs CAPI v1.11+ and a provider release that serves it (k0smotron v2.2.0
+  # does, and stores v1beta2); use v1beta1 when either does not. Only
+  # bootstrapSpec's version decides the Machine's; keep infrastructureSpec on
+  # the same contract so the three objects read consistently.
   bootstrapSpec:
-    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
     kind: K0sWorkerConfig
     spec:
       version: v1.30.0+k0s.0
@@ -40,7 +51,7 @@ spec:
   # Inline infrastructure specification (creates RemoteMachine)
   # Name is auto-generated as: business-hours-worker
   infrastructureSpec:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
     kind: RemoteMachine
     spec:
       address: 192.168.1.100

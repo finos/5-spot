@@ -54,3 +54,4 @@ refactors) need neither. When unsure, **write the ADR.**
 | [0016](./0016-own-the-capacity-object.md) | 5-Spot creates and owns the capacity object it scales (supersedes ADR-0011 decisions 1, 2, 5) | Accepted |
 | [0017](./0017-machine-reference-shape-follows-capi-contract.md) | The Machine's bootstrap and infrastructure references are serialized in the shape the discovered CAPI contract requires | Accepted |
 | [0018](./0018-replace-serde-yaml-with-serde-saphyr.md) | Replace `serde_yaml` with `serde-saphyr`, behind one output-style wrapper | Accepted |
+| [0019](./0019-k0smotron-end-to-end-tier-in-kind.md) | A k0smotron end-to-end tier in kind, with strict example validation | Accepted |

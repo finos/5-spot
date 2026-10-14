@@ -71,13 +71,13 @@ fn main() {
     println!("    kind: TimeBasedSpotSchedule");
     println!("    name: weekdays-9-5");
     println!("  bootstrapSpec:");
-    println!("    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1");
+    println!("    apiVersion: bootstrap.cluster.x-k8s.io/v1beta2");
     println!("    kind: K0sWorkerConfig");
     println!("    spec:");
     println!("      version: v1.32.8+k0s.0");
     println!("      downloadURL: https://github.com/k0sproject/k0s/releases/download/v1.32.8+k0s.0/k0s-v1.32.8+k0s.0-amd64");
     println!("  infrastructureSpec:");
-    println!("    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1");
+    println!("    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2");
     println!("    kind: RemoteMachine");
     println!("    spec:");
     println!("      address: 192.168.1.100");
@@ -169,7 +169,7 @@ fn main() {
     println!("(required, object) Inline bootstrap configuration that will be created when the schedule is active.");
     println!("This is a fully unstructured object that must contain:");
     println!();
-    println!("- **apiVersion** (required, string): API version of the bootstrap resource (e.g., `bootstrap.cluster.x-k8s.io/v1beta1`)");
+    println!("- **apiVersion** (required, string): API version of the bootstrap resource (e.g., `bootstrap.cluster.x-k8s.io/v1beta2`)");
     println!("- **kind** (required, string): Kind of the bootstrap resource (e.g., `K0sWorkerConfig`, `KubeadmConfig`)");
     println!(
         "- **spec** (required, object): Provider-specific configuration for the bootstrap resource"
@@ -194,7 +194,7 @@ fn main() {
     println!("(required, object) Inline infrastructure configuration that will be created when the schedule is active.");
     println!("This is a fully unstructured object that must contain:");
     println!();
-    println!("- **apiVersion** (required, string): API version of the infrastructure resource (e.g., `infrastructure.cluster.x-k8s.io/v1beta1`)");
+    println!("- **apiVersion** (required, string): API version of the infrastructure resource (e.g., `infrastructure.cluster.x-k8s.io/v1beta2`)");
     println!("- **kind** (required, string): Kind of the infrastructure resource (e.g., `RemoteMachine`, `AWSMachine`)");
     println!("- **spec** (required, object): Provider-specific configuration for the infrastructure resource");
     println!();

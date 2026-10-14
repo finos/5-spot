@@ -173,43 +173,103 @@ cargo tarpaulin --out Html
 
 ### GitHub Actions
 
-```yaml
-test:
-  runs-on: ubuntu-latest
-  steps:
-    - uses: actions/checkout@v4
-    
-    - name: Run tests
-      run: cargo test --all-features
-      
-    - name: Run clippy
-      run: cargo clippy -- -D warnings
-      
-    - name: Check formatting
-      run: cargo fmt -- --check
-```
+Every workflow only installs tools and calls Makefile targets, so CI runs what a
+contributor runs locally.
+
+| Workflow | What it runs |
+| --- | --- |
+| `build.yaml` | formatting, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, release builds for x86_64 and ARM64, images, SBOMs and signing |
+| `admission-test.yaml` | `make kind-verify-admission`: proves the admission policies actually deny, on a bare kind cluster |
+| `e2e.yaml` | the k0smotron end-to-end tier below, plus `make validate-examples` |
 
 ## End-to-End Tests
 
-### With kind
+Each tier proves something the one below cannot: unit tests prove decisions as
+pure functions, integration tests prove reconciler flows against a mocked API,
+and only a real Cluster API proves the contract between them. Two defects
+shipped because a mock accepted what Cluster API rejects (ADR 0017, bug-007),
+and the first run of the tier below found a third (bug-008).
+
+### The k0smotron tier (ADR 0019)
+
+A kind management cluster with cert-manager, Cluster API and k0smotron at pinned
+versions; 5-Spot deployed from `deploy/`; a child cluster with a hosted
+`K0smotronControlPlane`; and a worker container running systemd and sshd,
+provisioned over SSH as a `RemoteMachine` exactly as a physical host would be.
 
 ```bash
-# Create test cluster
-kind create cluster --name e2e-test
-
-# Install dependencies
-kubectl apply -f deploy/crds/
-
-# Run E2E tests
-cargo test --features e2e -- --ignored
+make e2e-k0smotron-up      # builds and loads the image from your checkout
+make validate-examples     # every example and docs manifest against real schemas
+make e2e-k0smotron         # the lifecycle suite
+make e2e-k0smotron-logs    # diagnostics, if something failed
+make e2e-k0smotron-down
 ```
 
-### Test Scenarios
+`make e2e-tools` installs the pinned kind and clusterctl into `.e2e-bin/`,
+verifying each download against its recorded SHA-256. These pins are separate
+from the other `kind-*` targets because Cluster API v1.14 needs a management
+cluster of Kubernetes v1.33 or later.
 
-1. **Happy Path**: Create → Schedule Match → Active → Schedule End → Inactive
-2. **Kill Switch**: Active → Kill Switch → Immediate Removal
-3. **Error Recovery**: Error → Retry → Success
-4. **Multi-Instance**: Resource distribution across instances
+On a host that does not build images, test a published image instead:
+
+```bash
+make e2e-k0smotron-up E2E_IMAGE=ghcr.io/finos/5-spot@sha256:<digest>
+```
+
+The worker needs a **rootful** container engine. k0s refuses to start a worker
+when it cannot load its eBPF device filter or find the `cpuset` cgroup
+controller, and a rootless engine provides neither. GitHub's runners use
+rootful Docker; locally, run the targets as root with `CONTAINER_TOOL=podman`,
+or use Docker.
+
+### What the suite proves
+
+`.github/scripts/k0smotron-e2e.bats`, in order:
+
+1. **The schedule opens** and 5-Spot writes the `Machine` at `v1beta2`, read
+   from the Machine's `managedFields` (reading the object back cannot prove it,
+   because Cluster API's conversion serves any stored Machine at `v1beta2`).
+2. The Machine's references use the `v1beta2` `apiGroup` shape (ADR 0017).
+3. The Machine carries the controller-owned `5spot.finos.org/scheduled-machine`
+   label that the secondary watches select on (bug-007).
+4. **The worker joins** the child cluster and the `ScheduledMachine` goes
+   `Active`, with `status.nodeRef` naming the Node.
+5. **Closing the window** removes the Node, the Machine, and the bootstrap and
+   infrastructure objects, and the phase becomes `Inactive`.
+6. **Reopening it** brings the same host back as a Ready Node.
+7. **Deleting the `ScheduledMachine`** removes everything it created.
+
+The suite fails rather than skips when a prerequisite is missing: a test that
+skips reports success while proving nothing.
+
+### Example and docs validation
+
+`make validate-examples` runs `.github/scripts/validate-examples.py` against the
+same cluster. Every document under `examples/` and every complete object in a
+fenced YAML block under `docs/src/` goes through
+`kubectl apply --dry-run=server --validate=strict`, so an unknown field is an
+error and the Cluster API and k0smotron webhooks run. Each embedded
+`bootstrapSpec` and `infrastructureSpec` is also validated as the standalone
+provider object 5-Spot would create, which is the only check that catches a
+field a provider renamed between API versions.
+
+Two markers, written as YAML comments, control it:
+
+- `validate-examples: expect-reject`: the object **must** be rejected (for
+  example `examples/scheduledmachine-bad-taint.yaml`). Acceptance fails the run.
+- `validate-examples: fragment (reason)`: a docs block that deliberately shows
+  only part of an object. It is listed with its reason, never passed silently.
+
+Anything else that cannot be validated on this cluster (a provider that is not
+installed, a kind config file) is listed under `NOT VALIDATED` with a reason in
+the script.
+
+### Not covered
+
+The cgroup confinement in
+[Confining a Worker with cgroups](../guides/confining-a-worker-with-cgroups.md)
+needs a real kernel and host cgroup tree. A container worker cannot prove a CPU
+or memory ceiling, so that recipe is verified by hand on real hardware.
 
 ## Related
 

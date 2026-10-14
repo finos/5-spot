@@ -108,8 +108,8 @@ metadata:
 spec:
   holderIdentity: 5spot-controller-abc123
   leaseDurationSeconds: 15
-  acquireTime: "2024-01-15T10:00:00Z"
-  renewTime: "2024-01-15T10:00:05Z"
+  acquireTime: "2024-01-15T10:00:00.000000Z"
+  renewTime: "2024-01-15T10:00:05.000000Z"
 ```
 
 ## Scaling Considerations

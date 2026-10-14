@@ -200,6 +200,7 @@ data:
 ## Deployment Configuration
 
 ```yaml
+# validate-examples: fragment (only the fields that change for HA)
 apiVersion: apps/v1
 kind: Deployment
 metadata:

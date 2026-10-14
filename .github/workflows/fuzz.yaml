@@ -65,6 +65,15 @@ jobs:
         with:
           toolchain: nightly
 
+      # Restored before `cargo install cargo-fuzz` so the cached ~/.cargo/bin
+      # makes that install a no-op. The fuzz crate is its own workspace, so its
+      # build directory is fuzz/target, not target/.
+      - name: Cache cargo dependencies
+        uses: firestoned/github-actions/rust/cache-cargo@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          workspaces: fuzz -> target
+
       - name: Install cargo-fuzz
         # `--locked` would honour cargo-fuzz's bundled Cargo.lock, which
         # currently pins `rustix 0.36.5` — that version uses
@@ -75,9 +84,6 @@ jobs:
         # this only affects how the tool itself is built; the actual
         # fuzz run pins via `fuzz/Cargo.lock`.
         run: cargo install cargo-fuzz
-
-      - name: Cache cargo dependencies
-        uses: firestoned/github-actions/rust/cache-cargo@e034489c3a17ffaaaf7f8fb799156ce768d899d5 # v1.3.9
 
       - name: Run fuzz target (60 s)
         working-directory: fuzz

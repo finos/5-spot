@@ -142,7 +142,9 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (moving ref — re-pin quarterly)
 
       - name: Cache cargo dependencies
-        uses: firestoned/github-actions/rust/cache-cargo@e034489c3a17ffaaaf7f8fb799156ce768d899d5 # v1.3.9
+        uses: firestoned/github-actions/rust/cache-cargo@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build
         run: make build

@@ -729,7 +729,7 @@ fn embedded_resource_schema(_: &mut schemars::SchemaGenerator) -> schemars::Sche
         "properties": {
             "apiVersion": {
                 "type": "string",
-                "description": "API version of the resource (e.g., 'bootstrap.cluster.x-k8s.io/v1beta1')"
+                "description": "API version of the resource (e.g., 'bootstrap.cluster.x-k8s.io/v1beta2')"
             },
             "kind": {
                 "type": "string",

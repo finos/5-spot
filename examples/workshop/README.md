@@ -21,7 +21,7 @@ working hours. Paying for that worker 24/7 is wasteful. With 5-Spot you declare 
    │   ScheduledMachine "business-hours-worker"                │
    │        │  (window OPEN)                                   │
    │        ▼                                                  │
-   │   KubeadmConfig  +  DockerMachine  +  Machine ───────────┐│
+   │   KubeadmConfig  +  DevMachine     +  Machine ───────────┐│
    └──────────────────────────────────────────────────────────┘│
                                                                 ▼
             WORKLOAD CLUSTER "dev-cluster" (CAPD containers)
@@ -45,9 +45,9 @@ working hours. Paying for that worker 24/7 is wasteful. With 5-Spot you declare 
 | Tool        | Notes |
 |-------------|-------|
 | Docker      | Running, with enough headroom for ~4 small containers. |
-| `kind`      | ≥ v0.24. The CAPD node image tag must match — see below. |
+| `kind`      | v0.28 or later. Cluster API v1.14 needs a **management** cluster of Kubernetes v1.33 or later, and v0.28 is the first kind release whose default node image (v1.33.1) qualifies. The workload cluster's node image is pinned separately; see below. |
 | `kubectl`   | Any recent version. |
-| `clusterctl`| The Cluster API CLI. **Pin to a release that still serves `cluster.x-k8s.io/v1beta1`** (the v1.8 / v1.9 lines do — 5-Spot emits v1beta1 Machines). |
+| `clusterctl`| The Cluster API CLI, v1.11 or later: the manifests use the `v1beta2` contract and CAPD's `Dev*` kinds. Validated against v1.14.3. 5-Spot itself is version-agnostic (see the note in `workload-cluster.yaml`). |
 | `make`      | To build + load the 5-Spot image (you run this; the repo never pushes images). |
 
 > **Version pinning matters.** These manifests use `kindest/node:v1.31.0`
@@ -117,7 +117,7 @@ kubectl --context kind-5spot-mgmt -n 5spot-system \
 
 > The shipped 5-Spot ClusterRole already grants `create` on
 > `bootstrap.cluster.x-k8s.io/*`, `infrastructure.cluster.x-k8s.io/*`, and
-> `cluster.x-k8s.io/machines` — so `KubeadmConfig`, `DockerMachine`, and `Machine`
+> `cluster.x-k8s.io/machines`, so `KubeadmConfig`, `DevMachine`, and `Machine`
 > all pass 5-Spot's pre-flight permission check out of the box.
 
 Confirm the CRD is healthy:
@@ -184,7 +184,7 @@ kubectl --context kind-5spot-mgmt get sm business-hours-worker -o wide
 Watch 5-Spot create the three objects on the **management** cluster:
 
 ```bash
-kubectl --context kind-5spot-mgmt get kubeadmconfig,dockermachine,machine \
+kubectl --context kind-5spot-mgmt get kubeadmconfig,devmachine,machine \
   -l 5spot.finos.org/scheduled-machine=business-hours-worker
 ```
 
@@ -210,7 +210,7 @@ kubectl --kubeconfig dev-cluster.kubeconfig get node business-hours-worker \
 
 **4a. Close the window** by disabling the machine (the `spec.enabled` master
 switch, ADR 0009). 5-Spot cordons + drains the Node, then deletes the
-Machine/DockerMachine/KubeadmConfig:
+Machine/DevMachine/KubeadmConfig:
 
 ```bash
 kubectl --context kind-5spot-mgmt patch sm business-hours-worker \
@@ -262,12 +262,12 @@ kubectl --context kind-5spot-mgmt patch sm business-hours-worker \
 - **Worker stuck `Provisioning`** — check the bootstrap and infra objects:
   ```bash
   kubectl --context kind-5spot-mgmt describe machine business-hours-worker
-  kubectl --context kind-5spot-mgmt describe dockermachine business-hours-worker
+  kubectl --context kind-5spot-mgmt describe devmachine business-hours-worker
   kubectl --context kind-5spot-mgmt logs -n capd-system deploy/capd-controller-manager
   ```
 - **`ScheduledMachine` rejected at apply time** — the admission policy enforces
   that *you* (the applying user) can `create` the embedded `KubeadmConfig` /
-  `DockerMachine`, and forbids `metadata.name` / `metadata.namespace` on them.
+  `DevMachine`, and forbids `metadata.name` / `metadata.namespace` on them.
   Running as cluster-admin (the kind default) satisfies the permission check.
 - **Node never goes Ready** — you skipped the CNI (Part 2.2), or the
   `kindest/node` tag doesn't match your `kind` version.
@@ -294,7 +294,7 @@ The only things that change for a real environment are the **providers** behind
 
 | Workshop (here)            | Production examples                                  |
 |----------------------------|-----------------------------------------------------|
-| `DockerMachine` (CAPD)     | `AWSMachine`, `AzureMachine`, `Metal3Machine`, `RemoteMachine`, … |
+| `DevMachine` (CAPD)        | `AWSMachine`, `AzureMachine`, `Metal3Machine`, `RemoteMachine`, … |
 | `KubeadmConfig`            | `KubeadmConfig`, or another allowed bootstrap provider |
 | `kindest/node` customImage | a real AMI / image / bare-metal host                |
 

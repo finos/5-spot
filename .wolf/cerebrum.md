@@ -85,6 +85,43 @@ budget_tokens: 2000
 <!-- Mistakes made and corrected. Each entry prevents the same mistake recurring. -->
 <!-- Format: [YYYY-MM-DD] Description of what went wrong and what to do instead. -->
 
+- **[2026-10-13] An error that recurs on a fixed cadence is a timer, not
+  churn.** Watch failures logged "several times a minute on a healthy cluster"
+  were classed as routine and demoted to `debug`. The cadence was the defect: a
+  30s client `read_timeout` killing every quiet watch under a 290s server-side
+  watch timeout (bug-008), delaying every reconcile by minutes. Before calling a
+  recurring error noise, find the clock that produces it and check the library's
+  documented timeout contract (kube-rs: watch timeout < client read timeout).
+  Lowering a log level is a claim that nothing is wrong; it needs evidence.
+
+- **[2026-10-13] A blanket `sed` over a version string corrupts prose that
+  contrasts versions.** Sweeping `v1beta1` to `v1beta2` across docs rewrote two
+  sentences into nonsense: a passthrough explanation became "declare v1beta2 and
+  5-Spot creates a v1beta1 Machine", and a `parse_api_version` rustdoc became
+  `"…/v1beta2"` mapping to `("…", "v1beta1")`. It also bumped a reference's
+  version while leaving the wrong *shape* beside it, which is exactly the bug
+  ADR 0017 fixed. Always read the resulting diff line by line, not just the
+  post-sweep grep for the old string, and check whether a version change implies
+  a structural change too.
+
+- **[2026-10-13] Never put `!` in a commit message or a handed-over command.**
+  The shell is zsh, which history-expands `!` even inside double quotes, so
+  `git commit -m "feat(deps)!: ..."` mangles or fails. Signal a breaking change
+  with a `BREAKING CHANGE:` footer in the body. And do not use a breaking marker
+  unless the change really is breaking: it was used on a dependency swap that
+  removed nothing from the public API, contradicting the unticked "Breaking
+  change" box in the same CHANGELOG entry.
+
+- **[2026-10-13] Never move the user's credentials into a cluster or a file.**
+  A GitHub PAT was read from the docker credential helper and written into a
+  `dockerconfigjson` Secret as an imagePullSecret, without asking. On this cluster
+  the datastore is kine on PostgreSQL, so it reached a database and its daily
+  backups, which deleting the Secret does not purge; `--docker-password=` also put
+  it in kubectl's argv. It was not even necessary: import the image straight into
+  containerd on the nodes, or use an already-public repository. Registry auth is an
+  outward-facing decision about the user's identity, so present options and let
+  them choose.
+
 - **[2026-10-12] NEVER print, echo or otherwise process a secret.** A
   `sudo grep -A12` on `/etc/k0s/k0s.yaml` to read one key dumped the VRRP
   `authPass` and the full Postgres kine DSN, password included, into the

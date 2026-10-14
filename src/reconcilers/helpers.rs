@@ -1077,7 +1077,7 @@ pub fn validate_api_group(
 ) -> Result<(), ReconcilerError> {
     let group = api_version.rfind('/').map(|idx| &api_version[..idx]).ok_or_else(|| {
         ReconcilerError::ValidationError(format!(
-            "{resource_type} apiVersion '{api_version}' must use a namespaced API group (e.g. 'bootstrap.cluster.x-k8s.io/v1beta1')"
+            "{resource_type} apiVersion '{api_version}' must use a namespaced API group (e.g. 'bootstrap.cluster.x-k8s.io/v1beta2')"
         ))
     })?;
 
@@ -1156,7 +1156,7 @@ fn uses_legacy_object_reference(machine_api_version: &str) -> bool {
 /// # Arguments
 /// * `machine_api_version` - the `cluster.x-k8s.io` version the Machine is created at
 /// * `api_version` - the referenced object's full `apiVersion` (e.g.
-///   `bootstrap.cluster.x-k8s.io/v1beta1`)
+///   `bootstrap.cluster.x-k8s.io/v1beta2`)
 /// * `kind` - the referenced object's kind
 /// * `name` - the referenced object's name
 /// * `namespace` - the referenced object's namespace; used only by the legacy shape,
@@ -1640,7 +1640,7 @@ async fn create_dynamic_resource(
 
 /// Split a Kubernetes `apiVersion` string into `(group, version)`.
 ///
-/// `"bootstrap.cluster.x-k8s.io/v1beta1"` → `("bootstrap.cluster.x-k8s.io", "v1beta1")`
+/// `"bootstrap.cluster.x-k8s.io/v1beta2"` → `("bootstrap.cluster.x-k8s.io", "v1beta2")`
 ///
 /// Core API versions that contain no `/` (e.g., `"v1"`) return an empty
 /// group string: `("", "v1")`.  In practice these are always rejected before

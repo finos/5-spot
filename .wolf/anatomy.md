@@ -1,7 +1,7 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-10-13T13:34:34.283Z
-> Files: 325 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-10-14T01:03:08.143Z
+> Files: 330 tracked | Anatomy hits: 0 | Misses: 0
 
 > Project structure index. Auto-maintained by OpenWolf hooks and daemon.
 > Run `openwolf scan` to generate, or wait for the first Claude Code session.
@@ -94,6 +94,9 @@
 - `admission-deny.bats` — shellcheck shell=bats (~2542 tok)
 - `calm-args.bats` — SPDX-License-Identifier: Apache-2.0 (~1775 tok)
 - `calm-args.sh` — SPDX-License-Identifier: Apache-2.0 (~788 tok)
+- `e2e-k0smotron.sh` — SPDX-License-Identifier: Apache-2.0 (~2843 tok)
+- `k0smotron-e2e.bats` — shellcheck shell=bats (~1973 tok)
+- `validate-examples.py` — /*.yaml"), recursive=True)): (~2590 tok)
 
 ## .github/workflows/
 
@@ -104,6 +107,7 @@
 - `codeql.yaml` — /*.rs (beta in CodeQL; upstream (~866 tok)
 - `dependabot-auto-merge.yaml` — SPDX-License-Identifier: Apache-2.0 (~3017 tok)
 - `docs.yaml` — SPDX-License-Identifier: Apache-2.0 (~2126 tok)
+- `e2e.yaml` — SPDX-License-Identifier: Apache-2.0 (~949 tok)
 - `fuzz.yaml` — /*.rs' (~920 tok)
 - `sast.yaml` — SPDX-License-Identifier: Apache-2.0 (~589 tok)
 - `scorecard.yaml` — SPDX-License-Identifier: Apache-2.0 (~1019 tok)
@@ -222,6 +226,7 @@
 - `0011-schedule-gated-capacity-separate-controller.md` — 0011 — Schedule-gated capacity: a `ScheduledCapacity` CRD and its own controller (~4168 tok)
 - `0017-machine-reference-shape-follows-capi-contract.md` — 0017: The Machine's bootstrap and infrastructure references are serialized in the shape the discover (~1633 tok)
 - `0018-replace-serde-yaml-with-serde-saphyr.md` — 0018: Replace `serde_yaml` with `serde-saphyr`, behind one output-style wrapper (~1442 tok)
+- `0019-k0smotron-end-to-end-tier-in-kind.md` — 0019: A k0smotron end-to-end tier in kind, with strict example validation (~1800 tok)
 - `README.md` — Project documentation (~809 tok)
 - `template.md` — NNNN — <short decision title> (~251 tok)
 

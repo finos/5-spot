@@ -1,0 +1,102 @@
+# Copyright (c) 2026 Erick Bourgeois, 5-Spot
+# SPDX-License-Identifier: Apache-2.0
+#
+# k0smotron end-to-end tier (ADR 0019).
+#
+# Why this workflow exists: the unit and integration tiers prove 5-Spot's
+# decisions against a mocked kube API, and two defects shipped anyway because
+# the mock accepted what Cluster API rejects (ADR 0017's reference shape, and
+# bug-007's watch label). Its first run found a third: every watch was killed
+# by a 30s client read timeout, so events reached the controller minutes late
+# (bug-008). This job runs the real thing: Cluster API and k0smotron in kind, a
+# hosted child control plane, and a worker provisioned over SSH, driven through
+# activate, deactivate, reactivate and delete.
+#
+# It also validates every example and docs manifest against the real schemas
+# and webhooks, including each embedded bootstrapSpec / infrastructureSpec as
+# the standalone object 5-Spot creates.
+#
+# All logic lives in the Makefile and .github/scripts/, so a contributor runs
+# exactly what CI runs (rules/github-workflows.md).
+name: E2E (k0smotron)
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'deploy/**'
+      - 'examples/**'
+      - 'docs/src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Dockerfile'
+      - 'Makefile'
+      - '.github/scripts/e2e-k0smotron.sh'
+      - '.github/scripts/k0smotron-e2e.bats'
+      - '.github/scripts/validate-examples.py'
+      - '.github/workflows/e2e.yaml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'deploy/**'
+      - 'examples/**'
+      - 'docs/src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Dockerfile'
+      - 'Makefile'
+      - '.github/scripts/e2e-k0smotron.sh'
+      - '.github/scripts/k0smotron-e2e.bats'
+      - '.github/scripts/validate-examples.py'
+      - '.github/workflows/e2e.yaml'
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-k0smotron-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  k0smotron:
+    name: 🔁 k0smotron end to end (kind)
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (moving ref, re-pin quarterly)
+
+      - name: Cache cargo dependencies
+        uses: firestoned/github-actions/rust/cache-cargo@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # Tool install only. kind and clusterctl are installed by `make
+      # e2e-tools` (pinned, checksum-verified) as a prerequisite of
+      # e2e-k0smotron-up.
+      - name: Install bats-core and PyYAML
+        run: sudo apt-get update && sudo apt-get install -y bats python3-yaml
+
+      - name: Bring up the environment (builds and loads the image from this checkout)
+        run: make e2e-k0smotron-up
+
+      - name: Validate examples and docs manifests
+        run: make validate-examples
+
+      - name: Run the lifecycle suite
+        run: make e2e-k0smotron
+
+      - name: Diagnostics
+        if: failure()
+        run: make e2e-k0smotron-logs
+
+      - name: Tear down
+        if: always()
+        run: make e2e-k0smotron-down
