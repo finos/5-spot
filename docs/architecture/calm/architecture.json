@@ -303,7 +303,7 @@
           ]
         },
         "container-hardening": {
-          "description": "privileged=true and hostPID=true are unavoidable: setns() into host namespaces and nsenter -t 1 into host PID 1 (systemd) require them to restart the host k0s service. Compensating controls: opt-in only (lands solely on label-gated nodes), readOnlyRootFilesystem=true on the container, seccompProfile RuntimeDefault, and a node-scoped RBAC footprint. The privileged posture and its Trivy suppressions are documented with architectural rationale in .trivyignore and docs/src/security/threat-model.md.",
+          "description": "privileged=true and hostPID=true are unavoidable: setns() into host PID 1's namespaces (systemd), done in-process by the agent's own binary as a `5spot nsenter` subprocess (ADR 0020, no external nsenter in the image), requires them to restart the host k0s service. Compensating controls: opt-in only (lands solely on label-gated nodes), readOnlyRootFilesystem=true on the container, seccompProfile RuntimeDefault, and a node-scoped RBAC footprint. The privileged posture and its Trivy suppressions are documented with architectural rationale in .trivyignore and docs/src/security/threat-model.md.",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/190/final",
@@ -837,7 +837,7 @@
     },
     {
       "unique-id": "rel-kata-agent-writes-host",
-      "description": "Kata config agent writes the projected drop-in to the fixed host path /etc/k0s/containerd.d/kata.toml (atomic temp-file + rename under a hostPath mount narrowed to /etc/k0s, ADR 0005) and restarts the host k0s service via `nsenter -t 1 -m -u -i -n -p -- systemctl restart -- <restartService>`, which bounces containerd so it reloads the drop-in. This is the only host-filesystem write and host command execution in 5-Spot.",
+      "description": "Kata config agent writes the projected drop-in to the fixed host path /etc/k0s/containerd.d/kata.toml (atomic temp-file + rename under a hostPath mount narrowed to /etc/k0s, ADR 0005) and restarts the host k0s service by entering host PID 1's namespaces in-process (`5spot nsenter -t 1 -m -u -i -n -p -- systemctl restart -- <restartService>`, ADR 0020), which bounces containerd so it reloads the drop-in. This is the only host-filesystem write and host command execution in 5-Spot.",
       "relationship-type": {
         "connects": {
           "source": {
@@ -850,7 +850,7 @@
       },
       "controls": {
         "host-isolation-boundary": {
-          "description": "Host write + restart require privileged=true and hostPID=true on the agent pod (setns into host namespaces; nsenter to host PID 1 systemd). The escalation is bounded by opt-in label-gating (the agent lands only on nodes the controller has labelled, which only happens when an SM with kata binds that node), readOnlyRootFilesystem on the container, and atomic, idempotent, hash-gated writes that restart at most once per distinct config change. Documented in .trivyignore and docs/src/security/threat-model.md.",
+          "description": "Host write + restart require privileged=true and hostPID=true on the agent pod (setns into host PID 1's namespaces, in-process per ADR 0020). The escalation is bounded by opt-in label-gating (the agent lands only on nodes the controller has labelled, which only happens when an SM with kata binds that node), readOnlyRootFilesystem on the container, and atomic, idempotent, hash-gated writes that restart at most once per distinct config change. Documented in .trivyignore and docs/src/security/threat-model.md.",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/190/final",
@@ -1268,7 +1268,7 @@
         {
           "sequence-number": 5,
           "relationship-unique-id": "rel-kata-agent-writes-host",
-          "description": "Agent runs `nsenter -t 1 -m -u -i -n -p -- systemctl restart #lt;restartService#gt;` to restart the host k0s service; containerd reloads the new drop-in. The restart SIGKILLs the agent pod; systemd still completes the D-Bus job. Kubelet restarts the agent; on the next loop hashes match the applied annotation, so it is a no-op. Single-cycle convergence."
+          "description": "Agent re-executes itself as `5spot nsenter -t 1 -m -u -i -n -p -- systemctl restart #lt;restartService#gt;` (in-process setns, ADR 0020) to restart the host k0s service; containerd reloads the new drop-in. The restart SIGKILLs the agent pod; systemd still completes the D-Bus job. Kubelet restarts the agent; on the next loop hashes match the applied annotation, so it is a no-op. Single-cycle convergence."
         }
       ],
       "controls": {
@@ -1434,6 +1434,7 @@
     "docs/adr/0012-kata-agent-validates-its-own-input.md",
     "docs/adr/0011-schedule-gated-capacity-separate-controller.md",
     "docs/adr/0014-zero-capacity-on-governance-conflict.md",
-    "docs/adr/0013-kata-config-ref-annotation-admission-policy.md"
+    "docs/adr/0013-kata-config-ref-annotation-admission-policy.md",
+    "docs/adr/0020-one-binary-one-image-with-subcommands.md"
   ]
 }

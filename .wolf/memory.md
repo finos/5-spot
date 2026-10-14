@@ -111,3 +111,6 @@ description: chronological action log per session, consolidated weekly
 | 20:28 | Created .github/scripts/k0smotron-e2e.bats | — | ~1973 |
 | 20:30 | Created .github/scripts/validate-examples.py | — | ~2590 |
 | 21:03 | Created .github/workflows/e2e.yaml | — | ~949 |
+| 16:54 | Created docs/adr/0020-one-binary-one-image-with-subcommands.md | — | ~1693 |
+| 16:59 | Created src/cmd/nsenter.rs | — | ~2030 |
+| 17:10 | Created docs/src/reference/cli.md | — | ~2260 |

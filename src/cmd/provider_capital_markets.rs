@@ -15,7 +15,6 @@
 //! at its next calendar boundary (see `five_spot::providers::capital_markets`).
 
 use anyhow::{Context as _, Result};
-use clap::Parser;
 use kube::Client;
 use tracing::info;
 
@@ -27,26 +26,20 @@ use five_spot::providers::capital_markets;
 const DEFAULT_METRICS_PORT: u16 = 8080;
 
 /// CLI / environment configuration for the CapitalMarketsSchedule provider.
-#[derive(Debug, Parser)]
-#[command(
-    name = "spot-schedule-capital-markets",
-    about = "Reference spot-schedule provider: computes CapitalMarketsSchedule.status.active from an exchange calendar"
-)]
-struct Cli {
+#[derive(clap::Args, Debug)]
+pub(crate) struct Args {
     /// Port for the Prometheus `/metrics` endpoint.
     #[arg(long, env = "METRICS_PORT", default_value_t = DEFAULT_METRICS_PORT)]
-    metrics_port: u16,
+    pub(crate) metrics_port: u16,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+pub(crate) async fn run(cli: Args) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
-    let cli = Cli::parse();
     info!(
         metrics_port = cli.metrics_port,
         "spot-schedule-capital-markets provider started"
@@ -60,3 +53,7 @@ async fn main() -> Result<()> {
 
     capital_markets::run(client).await
 }
+
+#[cfg(test)]
+#[path = "provider_capital_markets_tests.rs"]
+mod tests;

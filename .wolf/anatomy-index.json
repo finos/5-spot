@@ -1,13 +1,13 @@
 {
   "version": 1,
   "meta": {
-    "lastScanned": "2026-10-14T01:03:08.143Z",
-    "fileCount": 330,
+    "lastScanned": "2026-10-14T21:10:58.900Z",
+    "fileCount": 332,
     "hits": 0,
     "misses": 0,
-    "renderedHash": "f536fab60d03b4a27027c7c5e6ad6e2a0eb95eb1c7daa64b3aa7d168c71d1a47",
-    "storeUpdatedAt": "2026-10-14T01:03:08.149Z",
-    "rootHash": "531326a15ee4ca7f"
+    "renderedHash": "3094084d3dccda931468187c8c08a9adc12288bd5e00cfb3bbdaced8cadee13e",
+    "storeUpdatedAt": "2026-10-14T21:10:58.906Z",
+    "rootHash": "07eabe92ac9fa4dc"
   },
   "files": {
     ".github/actions/extract-version/action.yml": {
@@ -1979,13 +1979,12 @@
     },
     "docs/src/reference/cli.md": {
       "description": "CLI Reference",
-      "tokens": 1228,
-      "hash": "f22668a813357f19",
-      "size": 4917,
-      "mtimeMs": 1782118059001.5286,
-      "updatedAt": "2026-09-27T02:53:45.824Z",
-      "source": "scan",
-      "importance": 0.1054
+      "tokens": 2119,
+      "hash": "94e8fb414c557f96",
+      "size": 8473,
+      "mtimeMs": 1792012258845.8826,
+      "updatedAt": "2026-10-14T21:10:58.900Z",
+      "source": "hook"
     },
     "docs/src/reference/spot-schedule-contract.md": {
       "description": "Spot Schedule Provider Contract",
@@ -7077,6 +7076,89 @@
       "mtimeMs": 1791939788093.864,
       "updatedAt": "2026-10-14T01:03:08.143Z",
       "source": "hook"
+    },
+    "docs/adr/0020-one-binary-one-image-with-subcommands.md": {
+      "description": "0020: One `5spot` binary with subcommands, shipped in one image",
+      "tokens": 1587,
+      "hash": "51fbeb1a20591ff7",
+      "size": 6346,
+      "mtimeMs": 1792011296842.619,
+      "updatedAt": "2026-10-14T20:54:56.896Z",
+      "source": "hook"
+    },
+    "src/cmd/nsenter.rs": {
+      "description": "The hidden `5spot nsenter` subcommand: run a command inside another",
+      "tokens": 2030,
+      "hash": "3738520db64c4934",
+      "size": 7612,
+      "mtimeMs": 1792011561467.2302,
+      "updatedAt": "2026-10-14T20:59:21.539Z",
+      "source": "hook",
+      "symbols": [
+        {
+          "name": "Args",
+          "kind": "class",
+          "startLine": 66,
+          "endLine": 97,
+          "tokens": 269
+        },
+        {
+          "name": "Namespace",
+          "kind": "class",
+          "startLine": 98,
+          "endLine": 105,
+          "tokens": 22
+        },
+        {
+          "name": "Namespace",
+          "kind": "section",
+          "startLine": 106,
+          "endLine": 120,
+          "tokens": 121
+        },
+        {
+          "name": "namespaces",
+          "kind": "fn",
+          "startLine": 121,
+          "endLine": 134,
+          "tokens": 115
+        },
+        {
+          "name": "ns_path",
+          "kind": "fn",
+          "startLine": 135,
+          "endLine": 142,
+          "tokens": 70
+        },
+        {
+          "name": "exit_code",
+          "kind": "fn",
+          "startLine": 143,
+          "endLine": 157,
+          "tokens": 138
+        },
+        {
+          "name": "run",
+          "kind": "fn",
+          "startLine": 158,
+          "endLine": 178,
+          "tokens": 184
+        },
+        {
+          "name": "enter",
+          "kind": "fn",
+          "startLine": 179,
+          "endLine": 212,
+          "tokens": 312
+        },
+        {
+          "name": "enter",
+          "kind": "fn",
+          "startLine": 213,
+          "endLine": 223,
+          "tokens": 81
+        }
+      ]
     }
   },
   "preamble": [

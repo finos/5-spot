@@ -53,9 +53,10 @@ docker buildx build \
 
 ### Dockerfiles
 
-Two runtime images are built from pre-built binaries (the Rust build happens
-outside the image — `make prepare-binaries-linux-amd64` and friends stage them
-under `binaries/<arch>/`):
+Two runtime images are built from the pre-built `5spot` binary (the Rust build
+happens outside the image; `make prepare-binaries-linux-amd64` and friends stage
+it under `binaries/<arch>/`). The image contains only `/5spot`: every component
+is a subcommand of it, selected by each manifest's `args` (ADR 0020).
 
 | File | Base image | Published as |
 |------|-----------|--------------|

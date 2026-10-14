@@ -1,9 +1,27 @@
 # Threat Model: 5-Spot ScheduledMachine Controller
 
-**Version:** 1.9  
-**Date:** 2026-10-13  
+**Version:** 1.10  
+**Date:** 2026-10-14  
 **Status:** Active — living document  
-**Covers:** ADR-0001 … ADR-0019 (the 1.9 pass covers ADR-0019, the k0smotron
+**Covers:** ADR-0001 … ADR-0020 (the 1.10 pass covers ADR-0020: every runtime
+component is a subcommand of one `5spot` binary in one image, and the Kata-config
+agent enters host namespaces itself instead of executing `nsenter`. Every section
+walked. No identity, RBAC grant, credential or boundary changes: each component
+keeps its own Deployment or DaemonSet, ServiceAccount, ClusterRole and pod
+security context, and every admission policy keys on ServiceAccount names, which
+are unchanged. What changes is what an image contains. §1, §2 (diagram, F8), §4
+(TB2 and TB6 text, and the capacity boundary's stated rationale, which now names
+the separate *process and token* rather than the separate binary, since that is
+what the guarantee always rested on), §6.2 T9 (corrected: the claim of no
+`unsafe` code was already false before this ADR, because `src/netlink_proc.rs`
+has two `unsafe` blocks for raw socket fds; ADR 0020 adds none), §6.5 (restart
+mechanism, K2, new K6), C6, §7 (four rows), §8 (one new LOW residual) and §9
+assumption 4. The restart path was verified on a real host in the actual
+Distroless base: host `systemctl` reached only through namespace entry, exit
+status passed through, and an unprivileged run refused rather than running in
+its own namespaces.
+
+The 1.9 pass covers ADR-0019, the k0smotron
 end-to-end tier in kind, and **bug-008**, which that tier found on its first run.
 Every section walked. The ADR adds no runtime component, identity, credential or
 boundary: the tier deploys the existing system unchanged into a throwaway
@@ -116,8 +134,8 @@ This threat model covers the **5-Spot controller** — a Kubernetes operator tha
 It identifies assets, trust boundaries, threat actors, per-component STRIDE threats, current mitigations, and residual risk. It is intended to inform security reviews, deployment hardening decisions, and future development.
 
 **In scope:**
-- The controller process (`five_spot` binary) and its Kubernetes RBAC surface
-- The `5spot-capacity-controller` process and its **separate** RBAC surface (ADR 0011)
+- The controller process (`5spot`, the default `controller` subcommand) and its Kubernetes RBAC surface
+- The capacity controller process (`5spot capacity-controller`, Deployment `5spot-capacity-controller`) and its **separate** RBAC surface (ADR 0011); one binary and image with every other component (ADR 0020)
 - The `ScheduledMachine` and `ScheduledCapacity` Custom Resource Definitions and their admission paths
 - All Kubernetes API interactions (CAPI Machine, Bootstrap, Infrastructure, Nodes, Pods), and the `create` plus single-field scale of a 5-Spot-owned object in an allowlisted API group (ADR 0016)
 - The metrics (`/metrics`) and health (`/healthz`, `/readyz`) HTTP endpoints of both controllers
@@ -139,11 +157,11 @@ flowchart TB
 
     subgraph cluster["Kubernetes Cluster"]
         subgraph capctrl["5-Spot Capacity Controller Pod (opt-in)"]
-            CC["Capacity Controller Process\n(5spot-capacity-controller binary)"]
+            CC["Capacity Controller Process\n(5spot capacity-controller)"]
         end
 
         subgraph ctrl["5-Spot Controller Pod"]
-            C["Controller Process\n(five_spot binary)"]
+            C["Controller Process\n(5spot controller)"]
             M[":8080 /metrics"]
             H[":8081 /healthz · /readyz"]
         end
@@ -185,7 +203,7 @@ flowchart TB
 | F7 | Controller → Node: stamp the `kata-config-ref` annotation naming the workload-cluster source object | HTTPS | Service account JWT |
 | F8 | Capacity Controller → API Server: watch `ScheduledCapacity`, its spot-schedule provider and the object it owns | HTTPS/Watch | Capacity service account JWT (separate identity) |
 | F9 | Capacity Controller → API Server: `create`, then server-side `apply`, an object it owns in an allowlisted API group, scaling one numeric field in it. **Never `delete`**: removal is owner-reference garbage collection, under kube-controller-manager's identity (ADR 0016) | HTTPS | Capacity service account JWT (separate identity) |
-| F8 | Kata-config agent → workload API: `get` the named ConfigMap/Secret, then write `/etc/k0s/containerd.d/kata.toml` on the host and restart a systemd unit through `nsenter` | HTTPS, then host namespaces | Per-pod service account JWT, then host PID 1 |
+| F8 | Kata-config agent → workload API: `get` the named ConfigMap/Secret, then write `/etc/k0s/containerd.d/kata.toml` on the host and restart a systemd unit from inside host PID 1's namespaces (`5spot nsenter`, ADR 0020) | HTTPS, then host namespaces | Per-pod service account JWT, then host PID 1 |
 | F9 | Reclaim agent → Node: write the three reclaim annotations | HTTPS | Per-pod service account JWT |
 
 ---
@@ -222,7 +240,7 @@ flowchart LR
 
     subgraph TB2["TB2 · Controller Pod Boundary"]
         direction TB
-        Bin["five_spot binary"]
+        Bin["5spot binary\n(controller subcommand)"]
         SA["Service Account JWT\n(implicitly trusted by API server)"]
         Bin --- SA
     end
@@ -251,7 +269,7 @@ flowchart LR
         KAgent["5spot-kata-config-agent\n(opt-in DaemonSet pod)"]
         KSA["Per-pod ServiceAccount\n(nodes:get,patch · cm/secret:get)"]
         KCaps["privileged + hostPID\n+ hostPath /etc/k0s"]
-        KHost["F8 · Host: kata.toml drop-in\n+ systemd unit restart via nsenter"]
+        KHost["F8 · Host: kata.toml drop-in\n+ systemd unit restart via setns into PID 1"]
         KAgent --- KSA
         KAgent --- KCaps
         KAgent --> KHost
@@ -295,12 +313,15 @@ group is a consumer's rather than CAPI's, and nothing here is ever deleted by
 Four properties define the boundary, and each is a deliberate narrowing rather
 than an accident of implementation:
 
-- **A separate identity.** Its own binary, Deployment and ServiceAccount, so the
-  grant cannot compound the machine controller's. Compromising the capacity
+- **A separate identity.** Its own process, Deployment and ServiceAccount, so
+  the grant cannot compound the machine controller's. Compromising the capacity
   controller cannot delete a CAPI `Machine`; compromising the machine
-  controller cannot write capacity. This is the whole reason ADR 0011 chose a
-  new binary over a second reconciler in the existing one, and it is why the
-  two HIGH residuals in §8 do not grow.
+  controller cannot write capacity. This is the whole reason ADR 0011 rejected a
+  second reconciler inside the existing controller process, which would have
+  shared its token, and it is why the two HIGH residuals in §8 do not grow.
+  ADR 0020 makes the capacity controller a subcommand of the same binary; that
+  changes nothing here, because the guarantee comes from the separate process
+  and token, never from the code in the image.
 - **`create` and `patch` are the only write verbs**, on an allowlisted API
   group, with **no `delete` anywhere**, no Secret access and no CAPI verbs
   (`deploy/capacity-controller/clusterrole.yaml`). The absence of `delete` is
@@ -327,9 +348,10 @@ than an accident of implementation:
 A cluster with no capacity consumer installs none of TB7.
 
 **TB6 is the highest-privilege boundary in the system.** The kata-config agent
-is the only component that runs `privileged: true`, and its work — writing a
+is the only component that runs `privileged: true`, and its work, writing a
 containerd drop-in to the host filesystem and restarting a host systemd unit
-through `nsenter -t 1` — is node-root by construction (ADR 0002, ADR 0003). It
+from inside host PID 1's namespaces, is node-root by construction (ADR 0002,
+ADR 0003, ADR 0020). It
 crosses from the Kubernetes API into the host's mount, UTS, IPC, network and PID
 namespaces. Everything in §6.5 follows from that.
 
@@ -417,7 +439,7 @@ namespaces. Everything in §6.5 follows from that.
 #### Tampering
 | ID | Threat | Likelihood | Impact | Status |
 |---|---|---|---|---|
-| T9 | Memory corruption in unsafe Rust code or via malformed serde input | Very Low | Critical | **Mitigated** — codebase is safe Rust; no `unsafe` blocks; serde handles malformed input with errors |
+| T9 | Memory corruption in unsafe Rust code or via malformed serde input | Very Low | Critical | **Mitigated**: safe Rust except two `unsafe` blocks in `src/netlink_proc.rs` that wrap a raw socket fd into an `OwnedFd` (rung-2 reclaim detector, Linux only), each scoped to that call; the namespace entry added by ADR 0020 uses the safe `nix::sched::setns` and adds none (corrected in 1.10: earlier versions said there were no `unsafe` blocks at all); serde handles malformed input with errors |
 | T10 | Supply chain attack via malicious crate version | Low | Critical | **Residual risk:** mitigated by Grype container scan (VEX-aware) in CI; no automated dependency pinning beyond Cargo.lock. **ADR 0015 cuts both ways here:** every dependency removed is one fewer upstream that can be compromised, and also one fewer component a scanner reports on, because internalized code leaves the SBOM. The 500-line bound and the test requirement are what keep the second effect small; see the §7 supply-chain note and §8. **Reduced 2026-10-13 (ADR 0018):** the YAML emitter is now safe Rust (`serde-saphyr`) instead of a C-derived one (`serde_yaml` over the unmaintained `unsafe-libyaml`), removing a memory-unsafe parser from the artifact that writes cluster manifests. Scope note: 5-Spot's YAML path **emits** rather than ingests, so this parser was never exposed to untrusted input in production, and the gain is to the build and supply-chain surface rather than to a runtime boundary |
 
 #### Information Disclosure
@@ -503,8 +525,11 @@ runs `privileged: true`. Its input is the `5spot.finos.org/kata-config-ref`
 annotation the controller stamps on the Node (F7): a compact JSON object naming
 the workload-cluster namespace, kind, object name, `data` key, and the systemd
 unit to restart. The agent `get`s that one object, writes
-`/etc/k0s/containerd.d/kata.toml`, and runs
-`nsenter -t 1 -m -u -i -n -p -- systemctl restart <unit>`.
+`/etc/k0s/containerd.d/kata.toml`, and re-executes its own binary as
+`5spot nsenter -t 1 -m -u -i -n -p -- systemctl restart -- <unit>` (ADR 0020):
+a fresh, single-threaded process that enters host PID 1's namespaces with
+`setns(2)` and runs the host's `systemctl`. The image has no `nsenter`, shell or
+`systemctl` of its own.
 
 Its per-pod `ServiceAccount` grants `nodes: get,patch` cluster-wide and
 `configmaps,secrets: get` (no `list`, no `watch`) in the target namespace.
@@ -512,7 +537,8 @@ Its per-pod `ServiceAccount` grants `nodes: get,patch` cluster-wide and
 | ID | Threat | STRIDE | Likelihood | Impact | Status |
 |---|---|---|---|---|---|
 | K1 | Drop-in written outside `/etc/k0s/` — a host path supplied through the CR or annotation, or a symlink planted on the host, redirects the write anywhere on the node | T, E | Low | **Critical** | **Mitigated** — no CRD field or annotation carries a host path at all (ADR 0005 removed `destPath`); the destination is the fixed `KATA_CONFIG_DEST_PATH` constant, and `confine_dest_path` canonicalizes and re-checks it against the `/etc/k0s/` base before every write and unlink, fail closed (`src/kata_config_agent.rs`) |
-| K2 | Command injection through the restart path | T, E | Low | **Critical** | **Mitigated, twice over** — `nsenter_restart_argv` builds an argv vector, so there is no shell anywhere in the path and metacharacters in any field are inert; and since ADR 0012 the argv carries a **second `--`**, between `restart` and the unit, which ends `systemctl`'s own option parsing. The first `--` only ever ended `nsenter`'s (`src/kata_config_agent.rs`) |
+| K2 | Command injection through the restart path | T, E | Low | **Critical** | **Mitigated, twice over**: `nsenter_restart_argv` builds an argv vector (since ADR 0020, `/proc/self/exe nsenter …`), so there is no shell anywhere in the path and metacharacters in any field are inert; and since ADR 0012 the argv carries a **second `--`**, between `restart` and the unit, which ends `systemctl`'s own option parsing. The first `--` ends the `nsenter` subcommand's. Verified on a host: a unit beginning with `-` reaches `systemctl` as a unit (`src/kata_config_agent.rs`, `src/cmd/nsenter.rs`) |
+| K6 | The hidden `5spot nsenter` subcommand is present in every component's image, so any 5-Spot pod could try to enter host namespaces | E | Low | **Critical** | **Mitigated.** Entering another process's namespaces needs `CAP_SYS_ADMIN`, which the kernel enforces; only the Kata-config agent's ServiceAccount is admitted with `privileged: true` (`deploy/admission/agent-pod-security-policy.yaml`, ADR 0004). Without it the subcommand **refuses and runs nothing** rather than falling back to its own namespaces (`src/cmd/nsenter.rs`; verified on a host: "Permission denied", no command run). The subcommand adds no capability: the same entry was always possible for a privileged pod with any `setns`-capable binary |
 | K3 | Drop-in content is attacker-chosen: containerd configuration is executed-adjacent, and the agent restarts the runtime that reads it | T, E | Low | **Critical** | **Accepted — architecturally required.** This is the agent's entire purpose. The control is upstream: whoever may set `spec.kata` on a `ScheduledMachine`, or write the Node annotation, is choosing containerd configuration on that node. **Treat `create`/`update` on `scheduledmachines` carrying `spec.kata`, and `patch nodes` in the workload cluster, as node-root-equivalent grants** (§7 deployment controls, §8) |
 | K4 | Restart of an unintended host unit | T, D | Low | High | **Mitigated for the injection case (ADR 0012)** — the argv's option terminator means a value beginning with `-` is a unit name and not a flag such as `-H` (remote host over SSH), `-M` (container) or `--root=`. The CRD pattern is anchored so a leading hyphen is not admissible (`src/crd.rs`), and `parse_kata_ref` re-checks the same rule on the agent's own input. **Not** mitigated for the policy case: a syntactically valid unit the operator did not intend — `sshd.service` matches and always will — which is why §7 treats `spec.kata` as a node-root-equivalent grant |
 | K5 | The agent trusts its Node annotation, which RBAC cannot scope to the agent's own Node | S, T, E | Low | High | **Mitigated for the agent case (ADR 0012 + ADR 0013).** ADR 0012 made the agent distrust the annotation's *shape* — `parse_kata_ref` validates every field and refuses a bad one, so no write and no restart. ADR 0013 addresses its *authority*: `deploy/admission/kata-config-annotation-policy.yaml` rejects any Node `UPDATE` that changes `5spot.finos.org/kata-config-ref` when the requester is a node-agent ServiceAccount, comparing `object` against `oldObject` so their own `kata-config-applied` writes still pass. A compromised agent can no longer retarget another node. **Residual:** anything *else* holding cluster-wide `nodes: patch` — a human admin, a CI identity — still can; see §8 |
@@ -555,7 +581,7 @@ removed rather than quietly dropped.
 | C3 | The controller creates an object in an API group it was never meant to write | T, E | Low | High | **Mitigated**: `ALLOWED_CAPACITY_TARGET_API_GROUPS` (`src/constants.rs`) is the third allowlist beside the bootstrap and infrastructure ones, checked in the reconciler so the permitted set lives in one greppable place and cannot be widened by a stale CRD. The ClusterRole grants `create` and `patch` on exactly those groups, so RBAC is the second gate. The check now gates a **create** rather than a patch, which raises what it is protecting and is why the `kind` e2e installs its stub consumer CRD under the real group rather than widening the allowlist for the test |
 | C4 | A capacity change destroys in-flight work: the capacity object is zeroed, or removed, while claims are live | T, D | Medium | High | **Mitigated by construction, in two parts.** *On a schedule:* actuation is a field write, never a delete, and the inactive value is a *warm-pool* zero: it stops replenishment while claimed work finishes on its own. The consumer owns claim binding and drain, which 5-Spot has no way to reason about. On deactivation the controller writes zero and then **waits** for `spec.handback.drainedPath` to reach zero, up to `handback.timeout`; on expiry it **holds and reports loudly** rather than escalating (ADR 0011 decision 6), because a missed handover is visible and recoverable while killed work is not. *On deletion of the `ScheduledCapacity`:* garbage collection removes the owned object, which cascades to whatever it owns. That is safe only because the consumer re-parents in-use resources away from the capacity object when they are claimed, so the cascade takes the idle capacity and leaves the work. Verified in the reference consumer's code, where a bound member's `ownerReferences` move from the pool to the claim at bind time by recorded decision. It is **not** a property 5-Spot can enforce, so it is §9 assumption 9 and a LOW residual in §8, not a control |
 | C5 | A host is governed by both a `ScheduledMachine` and a `ScheduledCapacity`, so it is drained for handover while capacity is still being sized on it | T, D | Medium | Medium | **Mitigated (ADR 0014).** `spec.nodeName` is compared against every `ScheduledMachine.status.nodeRef.name` in the namespace, and a match sets `HostGovernanceConflict=True` and **drives capacity to zero** (`src/reconcilers/capacity_decision.rs`). The active value is never written to a conflicted object whatever the schedule says, so the fail-closed intent holds where it matters, while zero removes a contradiction that may already exist rather than freezing it. ADR 0011 originally said "refuse to write", which left a value written *before* the conflict standing: the exact state the invariant forbids, observed live. The check is controller-side, not admission, because a `ValidatingAdmissionPolicy` evaluates one request against its own object and its `paramRef` and cannot look up other objects at all. **Residual, now LOW:** a `spec.nodeName` colliding with an unrelated machine zeroes capacity the operator wanted, until the reference is corrected; `spec.nodeName` is optional for exactly that reason. §8 |
-| C6 | The capacity grant compounds the machine controller's CAPI and bootstrap/infrastructure wildcards | E | Low | **High** | **Mitigated: this is the reason for the separate binary**, and the reason ADR 0016's widened grant does not make the two HIGH residuals in §8 grow. A distinct ServiceAccount, Deployment and ClusterRole; the machine controller's ClusterRole is not extended (ADR 0011 decision 3). Verified against a live API server with 26 `SubjectAccessReview` assertions, and re-asserted in the `kind` e2e in both directions: the capacity identity cannot delete or create a CAPI `Machine`, read a Secret, `delete` the object it owns, patch a `ScheduledMachine` or evict a Pod, and the machine controller cannot `create`, `patch` or `delete` the capacity target group |
+| C6 | The capacity grant compounds the machine controller's CAPI and bootstrap/infrastructure wildcards | E | Low | **High** | **Mitigated: this is the reason for the separate process and identity** (not a separate binary; the capacity controller is a subcommand of the one binary since ADR 0020), and the reason ADR 0016's widened grant does not make the two HIGH residuals in §8 grow. A distinct ServiceAccount, Deployment and ClusterRole; the machine controller's ClusterRole is not extended (ADR 0011 decision 3). Verified against a live API server with 26 `SubjectAccessReview` assertions, and re-asserted in the `kind` e2e in both directions: the capacity identity cannot delete or create a CAPI `Machine`, read a Secret, `delete` the object it owns, patch a `ScheduledMachine` or evict a Pod, and the machine controller cannot `create`, `patch` or `delete` the capacity target group |
 | C7 | An RBAC gap surfaces as a partial write or an opaque 403 mid-actuation | D | Low | Low | **Mitigated**: a pre-flight `SelfSubjectAccessReview` for **both** `create` and `patch` on the resolved target runs before the first write, so a missing grant becomes a `TargetResolved=False` condition naming the resource and the verb (ADR 0011 decision 5, ADR 0016 decision 7). Both verbs are checked because server-side apply needs `create` while the object is absent and `patch` once it exists: checking one would let the controller work until the first window and then stop |
 | C8 | The controller re-patches its own status every reconcile, re-triggering its own watch and flooding the API server | D | Low | Medium | **Mitigated**: condition `lastTransitionTime` is preserved unless the condition's `status` changes, and the computed status is compared against the stored one so a no-op patch is never sent. Found by running against a real API server, which measured ~50 `resourceVersion` bumps/second before the fix; pinned by a test that derives the expected status key set from the type rather than a hand-written list |
 | C9 | A missing or unparseable drain counter is read as "drained", completing a handback that never happened | T, D | Low | Medium | **Mitigated**: `Some(0)` and `None` are deliberately different answers: an unread or non-numeric counter keeps the object in `HandingBack` and says so in the status message, rather than being collapsed to zero (`capacity_path.rs::read_i64_at`) |
@@ -579,6 +605,7 @@ removed rather than quietly dropped.
 | `checked_mul` + `MAX_DURATION_SECS` cap | `src/reconcilers/helpers.rs` | T7 — duration overflow |
 | Timezone `maxLength` + character pattern in CRD | `src/crd.rs` | T6 — log injection |
 | `tokio::time::timeout(600s)` in finalizer cleanup | `src/reconcilers/helpers.rs` | D2 — finalizer hang |
+| Host-namespace entry fails closed and needs no tool in the image: the Kata agent re-executes itself as `5spot nsenter`, which opens and enters every namespace before running anything and refuses otherwise | `src/cmd/nsenter.rs`, `src/cmd/kata_config_agent.rs` (ADR 0020) | K2, K6: restart run in the wrong namespaces, or a namespace-entering tool in every image |
 | Server-side watch timeout below the client read timeout, on every watch, with a compile-time guard | `src/stream.rs` (`watch_config`), `src/constants.rs` | D6: watch events delayed by client-side read timeouts (bug-008) |
 | A real-Cluster-API end-to-end tier and strict example validation, run on every relevant change | `.github/workflows/e2e.yaml`, `.github/scripts/k0smotron-e2e.bats`, `.github/scripts/validate-examples.py` (ADR 0019) | Regression of the CAPI contract (ADR 0017), of the owned label the watches select on (T12, bug-007), and of watch timeliness (D6); provider fields silently dropped from an embedded `bootstrapSpec` / `infrastructureSpec` because the provider renamed them |
 | k0smotron.io RBAC narrowed to explicit resources | `deploy/deployment/rbac/clusterrole.yaml` | E2 — over-privileged SA |
@@ -594,7 +621,7 @@ removed rather than quietly dropped.
 | Agent pod-security exception boundary (`5spot-agent-pod-security` VAP, deny-by-default in `5spot-system`) | `deploy/admission/agent-pod-security-policy.yaml` + binding (ADR 0004) | E5 — abuse of the namespace-wide PSA/OPA/Kyverno exemption the privileged agents require |
 | Capacity field rooted at the owned object's `spec`, constrained to camelCase segments with reserved roots refused (CRD pattern, re-checked in the reconciler) | `src/crd.rs`, `src/reconcilers/capacity_path.rs` | C2: pointer-escape. **C1 no longer applies**: `metadata.` is unreachable rather than rejected (ADR 0016) |
 | Capacity target API group allowlist, checked in the reconciler and mirrored in RBAC; now gates a **create** | `src/constants.rs` (`ALLOWED_CAPACITY_TARGET_API_GROUPS`), `deploy/capacity-controller/clusterrole.yaml` | C3, C10: creating an object in an unintended API group |
-| Separate capacity identity: own binary, Deployment, ServiceAccount and ClusterRole; `create` + `patch` on one group, **no `delete` anywhere**, no secrets, no CAPI | `deploy/capacity-controller/` (ADR 0011, ADR 0016) | C6, C10: compounding the machine controller's CAPI and bootstrap wildcards |
+| Separate capacity identity: own process (the `capacity-controller` subcommand in its own Deployment), ServiceAccount and ClusterRole; `create` + `patch` on one group, **no `delete` anywhere**, no secrets, no CAPI | `deploy/capacity-controller/` (ADR 0011, ADR 0016) | C6, C10: compounding the machine controller's CAPI and bootstrap wildcards |
 | Pre-flight `SelfSubjectAccessReview` for **both** `create` and `patch` before the first capacity write | `src/reconcilers/scheduled_capacity.rs` | C7: opaque 403, partial write, or working until the first window and then stopping |
 | Cooperative bounded handback: write zero, wait on `drainedPath`, hold and report on timeout; never delete on a schedule | `src/reconcilers/capacity_decision.rs` (ADR 0011 decision 6) | C4: destroying in-flight work |
 | `uid`-matched controller-ownership check before any write to the capacity object | `src/reconcilers/scheduled_capacity.rs` (`is_owned_by`) | C11, C12: adopting a same-named object someone else owns; making a `force` apply safe |
@@ -614,6 +641,7 @@ them run in `.github/workflows/`.
 | Auto-VEX presence + reachability gate, byte-exact, fails closed (ADR 0008) | `src/bin/auto_vex_*.rs`, `.vex/`, release workflow | An advisory shipping untriaged |
 | Bounded dependency internalization: <=500 lines, excluded categories, measured on the production target (ADR 0015) | `.claude/rules/dependency-internalization.md`, roadmap 04 §2a | T10 in the reducing direction, by shrinking the set of upstreams that can be compromised at all. **Its limit is the point:** internalized code is not in the SBOM, so the controls above stop covering it, which is why specs, crypto, reference data and proc macros are excluded however thin their surface looks |
 | Base images digest-pinned on the `FROM` line, Dependabot-tracked (ADR 0010) | `Dockerfile`, `Dockerfile.chainguard`, `.github/dependabot.yml` | A stale or substituted base image |
+| One image per variant containing only `/5spot`, for every component: no shell, no `nsenter`, no extra binary; agent images retired | `Dockerfile`, `Dockerfile.chainguard`, `deploy/` (ADR 0020) | Components that could not start from a release (capacity controller, both agents), and per-component image drift. One SBOM, one signature and one scan now cover every component |
 | Actions SHA-pinned; Dependabot groups and a 7-day cooldown per ecosystem | `.github/workflows/*`, `.github/dependabot.yml` | A compromised action release |
 | Scanning: CodeQL, Trivy (image + IaC), grype, `cargo audit`, `cargo deny`, gitleaks, Semgrep | `.github/workflows/` | Known-vulnerable dependency, leaked credential |
 | Advisories are fixed, not suppressed: `deny.toml` keeps `ignore = []` | `deny.toml`, `.github/workflows/build.yaml` (`cargo-deny`) | A known advisory being silenced instead of resolved. ADR 0018 is the worked example: RUSTSEC-2024-0449 was closed by replacing `serde_yaml` with the safe-Rust `serde-saphyr`, not by adding an ignore entry |
@@ -852,6 +880,25 @@ repository override) and mirror the k0s binary.
 
 ---
 
+### LOW: Privileged agent pods carry every component's code
+
+**Threat:** since ADR 0020 one binary holds every component, so the privileged
+Kata-config agent pod's image also contains the controller's network-facing
+code and dependencies, and a vulnerability report against the image no longer
+says which component is affected.
+
+**Why it is LOW:** that code runs only if invoked, and invoking it inside the
+agent pod requires `exec` into a privileged, `hostPID` pod, which is already
+node-root-equivalent. The agent process itself is unchanged and has no listener
+beyond its metrics port. VEX reachability (ADR 0008) is computed over the one
+binary, which is conservative rather than permissive.
+
+**Revisit when:** an agent gains a network listener beyond metrics, or a
+vulnerability needs per-component triage that the union report cannot give.
+The answer then is a build-time feature split, not a return to separate images.
+
+---
+
 ### LOW — Multi-instance hash distribution weakness
 
 **Threat:** The consistent hash function adds `priority * 1000` to a 64-bit hash, which provides negligible differentiation. High-priority resources may cluster on one instance.
@@ -867,7 +914,7 @@ The following conditions are assumed to be true for this threat model to hold:
 1. **Kubernetes API server is trusted** — requests to the API server are authenticated and authorized; no API server vulnerabilities are in scope.
 2. **etcd encryption at rest is enabled** — CR specs (which may contain infrastructure details) are encrypted in etcd.
 3. **RBAC for ScheduledMachine creation is restricted** — only trusted users/service accounts have `create` permission on `scheduledmachines`.
-4. **Container image integrity** — the controller image is pulled from a trusted registry; image signing is enforced.
+4. **Container image integrity**: the 5-Spot image, which since ADR 0020 runs every component, is pulled from a trusted registry; image signing is enforced.
 5. **Cluster network is trusted** — the metrics and health endpoints are not accessible from outside the cluster.
 6. **Node-level isolation** — physical machines managed by 5-Spot do not share sensitive workloads with other tenants.
 7. **The capacity consumer enforces its own drain semantics**: 5-Spot writes a capacity field and waits; it has no way to evict, reclaim or account for work already running inside the slice. A consumer that reports drained while work continues, or that never reports at all, is outside 5-Spot's control (C4, C9). This is the deliberate division of labour in ADR 0011: the consumer owns claim binding and drain, 5-Spot owns only the calendar.

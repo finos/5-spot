@@ -3,13 +3,27 @@
 #[cfg(test)]
 #[allow(clippy::module_inception)]
 mod tests {
-    // `Parser` and the constants come in through the binary's own imports.
+    // The constants come in through the module's own imports.
     use super::super::*;
+    use crate::cli::{Cli, Command};
+    use clap::Parser as _;
+
+    /// Parse `5spot capacity-controller <extra>` through the real command line
+    /// (ADR 0020), and return the capacity controller's arguments.
+    fn parse(extra: &[&str]) -> Args {
+        let argv = ["5spot", "capacity-controller"]
+            .into_iter()
+            .chain(extra.iter().copied());
+        match Cli::try_parse_from(argv).expect("parses").into_command() {
+            Command::CapacityController(args) => args,
+            other => panic!("expected the capacity controller, got {other:?}"),
+        }
+    }
 
     /// Parse with no arguments, as the Deployment does when it relies on
     /// defaults and environment variables.
-    fn defaults() -> Cli {
-        Cli::parse_from(["5spot-capacity-controller"])
+    fn defaults() -> Args {
+        parse(&[])
     }
 
     #[test]
@@ -49,8 +63,7 @@ mod tests {
 
     #[test]
     fn test_cli_accepts_explicit_overrides() {
-        let cli = Cli::parse_from([
-            "5spot-capacity-controller",
+        let cli = parse(&[
             "--metrics-port",
             "9090",
             "--health-port",
@@ -92,7 +105,8 @@ mod tests {
 
     /// `--help` must build: a clap definition with a duplicate long flag or a
     /// bad default panics at parse time, and a controller that cannot start is
-    /// worse than one that misbehaves.
+    /// worse than one that misbehaves. Checked over the whole `5spot` command,
+    /// since every subcommand's flags now share one definition.
     #[test]
     fn test_cli_definition_is_valid() {
         use clap::CommandFactory as _;

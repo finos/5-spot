@@ -94,10 +94,10 @@ k0smotron) clusters with no configuration.
 
 ## Reclaim agent (DaemonSet)
 
-The node-side `5spot-reclaim-agent` is a separate binary deployed
-via DaemonSet (`deploy/node-agent/daemonset.yaml`). It has its own
-flags and environment variables — distinct from the controller — and
-is opt-in: nothing happens on a Node until the controller stamps the
+The node-side reclaim agent is the `5spot agent reclaim` subcommand of the
+one 5-Spot image (ADR 0020), deployed as the `5spot-reclaim-agent` DaemonSet
+(`deploy/node-agent/daemonset.yaml`). It has its own flags and environment
+variables, distinct from the controller's, and is opt-in: nothing happens on a Node until the controller stamps the
 `5spot.finos.org/reclaim-agent: enabled` label, which it does only
 when a `ScheduledMachine` on that Node has a non-empty
 `spec.killIfCommands`. See the [emergency-reclaim concept doc](../concepts/emergency-reclaim.md)
@@ -116,7 +116,7 @@ for the full design.
 ### Command-line arguments
 
 ```bash
-5spot-reclaim-agent [OPTIONS]
+5spot agent reclaim [OPTIONS]
 
 Options:
   --proc-root <PATH>           Filesystem root mapped to /proc

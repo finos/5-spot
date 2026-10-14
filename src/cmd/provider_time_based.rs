@@ -15,7 +15,6 @@
 //! `five_spot::providers::time_based`).
 
 use anyhow::{Context as _, Result};
-use clap::Parser;
 use kube::Client;
 use tracing::info;
 
@@ -27,26 +26,20 @@ use five_spot::providers::time_based;
 const DEFAULT_METRICS_PORT: u16 = 8080;
 
 /// CLI / environment configuration for the TimeBasedSpotSchedule provider.
-#[derive(Debug, Parser)]
-#[command(
-    name = "spot-schedule-time-based",
-    about = "Core spot-schedule provider: computes TimeBasedSpotSchedule.status.active from a day/hour window"
-)]
-struct Cli {
+#[derive(clap::Args, Debug)]
+pub(crate) struct Args {
     /// Port for the Prometheus `/metrics` endpoint.
     #[arg(long, env = "METRICS_PORT", default_value_t = DEFAULT_METRICS_PORT)]
-    metrics_port: u16,
+    pub(crate) metrics_port: u16,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+pub(crate) async fn run(cli: Args) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
-    let cli = Cli::parse();
     info!(
         metrics_port = cli.metrics_port,
         "spot-schedule-time-based provider started"
@@ -60,3 +53,7 @@ async fn main() -> Result<()> {
 
     time_based::run(client).await
 }
+
+#[cfg(test)]
+#[path = "provider_time_based_tests.rs"]
+mod tests;

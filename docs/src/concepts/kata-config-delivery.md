@@ -1,6 +1,6 @@
 # Kata Config Delivery (Per-Node containerd Drop-In)
 
-**Status:** Shipped — CRD field (`spec.kata`), controller-side Node opt-in, node-side `5spot-kata-config-agent` DaemonSet (host write + `nsenter` k0s-service restart), and agent metrics are all live. Decisions: ADR [0002](https://github.com/finos/5-spot/blob/main/docs/adr/0002-kata-config-delivery-via-spec-kata.md) (contract + resolution) and ADR [0003](https://github.com/finos/5-spot/blob/main/docs/adr/0003-in-pod-host-service-restart-via-nsenter.md) (host write + restart).
+**Status:** Shipped: CRD field (`spec.kata`), controller-side Node opt-in, node-side `5spot-kata-config-agent` DaemonSet (host write + k0s-service restart from inside host PID 1's namespaces), and agent metrics are all live. Decisions: ADR [0002](https://github.com/finos/5-spot/blob/main/docs/adr/0002-kata-config-delivery-via-spec-kata.md) (contract + resolution) and ADR [0003](https://github.com/finos/5-spot/blob/main/docs/adr/0003-in-pod-host-service-restart-via-nsenter.md) (host write + restart).
 
 ---
 
@@ -27,7 +27,7 @@ flowchart LR
     E["DaemonSet nodeSelector matches<br/>→ agent pod lands on node"]
     F["Agent GETs source object,<br/>atomically writes the fixed path<br/>/etc/k0s/containerd.d/kata.toml"]
     G["Record applied content hash<br/>annotation on own Node"]
-    H["nsenter -t 1 …<br/>systemctl restart k0sworker.service"]
+    H["5spot nsenter -t 1 …<br/>systemctl restart k0sworker.service"]
     I["containerd reloads drop-in<br/>(agent pod bounced + rescheduled)"]
 
     A --> B --> C --> D --> E --> F --> G --> H --> I
@@ -84,7 +84,7 @@ sequenceDiagram
             Agent->>Host: atomic write (tmp + rename, 0644)
             Agent->>NodeObj: PATCH kata-config-applied = <content hash>
             Note over Agent: Applied record written BEFORE<br/>the restart — the restart-loop guard
-            Agent->>Host: nsenter -t 1 -m -u -i -n -p --<br/>systemctl restart k0sworker.service
+            Agent->>Host: 5spot nsenter -t 1 -m -u -i -n -p --<br/>systemctl restart k0sworker.service
             Host-->>Agent: containerd bounces → pod SIGKILLed
             Note over Agent,Host: kubelet restarts the agent,<br/>next tick: hash matches → no-op.<br/>Single-cycle convergence.
         else hashes match
@@ -97,7 +97,7 @@ sequenceDiagram
 
 - **The applied record is written *before* the restart.** The restart bounces containerd, which SIGKILLs every pod on the node — including the agent itself. When kubelet brings it back, the recorded hash matches the on-host content, so the loop converges instead of restarting forever.
 - **Writes are atomic** (temp file in the destination directory + `rename`). A crash mid-write can never leave a half-written drop-in for containerd to choke on.
-- **The agent expects to die mid-restart.** systemd processes the restart job even after the `nsenter`'d `systemctl` client is killed; an error from the restart call is just "retry next tick".
+- **The agent expects to die mid-restart.** systemd processes the restart job even after the `systemctl` client it launched in the host's namespaces is killed; an error from the restart call is just "retry next tick".
 
 ### Drift self-healing — rewrite, don't re-restart
 
@@ -158,7 +158,7 @@ The agent removing its own label — rather than the controller yanking it — i
 
 The agent pod runs `privileged: true` + `hostPID: true`. This is a real cost, taken deliberately (ADR 0003):
 
-- **`hostPID: true`** — `nsenter -t 1` must resolve host PID 1 (systemd) to issue the service restart.
+- **`hostPID: true`**: entering host PID 1's namespaces (`5spot nsenter -t 1`) must resolve PID 1 to the host's systemd to issue the service restart.
 - **`privileged: true`** — `setns()` into the host mount/IPC/PID namespaces requires it; the host's `systemctl` and D-Bus socket live in the host mount namespace.
 
 Mitigations bounding the escalation:
@@ -169,7 +169,7 @@ Mitigations bounding the escalation:
 | `readOnlyRootFilesystem: true` + narrowed hostPath | The container rootfs is immutable, and the only writable surface is the host's `/etc/k0s` (mounted at `/host/etc/k0s`) — the agent never sees the rest of the host filesystem (ADR 0005). |
 | Fixed destination path | No CRD field or annotation carries a host path; the write/unlink target is the compile-time constant `/etc/k0s/containerd.d/kata.toml`, re-checked by a fail-closed canonicalized containment guard on every operation (ADR 0005). |
 | seccomp `RuntimeDefault` | Kept on both pod and container. |
-| Single-purpose binary | No shell, no exec of children beyond the fixed `nsenter … systemctl restart <unit>` argv, no remote-control surface. |
+| Single-purpose process, no tools in the image | The agent subcommand has no shell and no remote-control surface, and execs nothing but its own binary as `5spot nsenter … systemctl restart -- <unit>` (fixed argv, ADR 0012). The image has no shell, `nsenter` or `systemctl`: the host's `systemctl` is reached only by entering host PID 1's namespaces. The image does carry the other components' code (one binary, ADR 0020), reachable only by `exec` into the pod, which already requires node-root-equivalent access. |
 | Get-only RBAC | The agent's Role can `get` (never list/watch) the source objects, and `patch` only Nodes. |
 
 Every Trivy/KSV finding the manifest trips is justified individually in [`.trivyignore`](https://github.com/finos/5-spot/blob/main/.trivyignore) (kata-config-agent banner) with the architectural rationale and why the alternatives are worse.
@@ -228,3 +228,4 @@ The agent logs at `info` on every write, delete, and restart, and at `warn` on f
 - [ScheduledMachine](./scheduled-machine.md) — CRD reference including the `kata` field
 - [Monitoring](../operations/monitoring.md#kata-config-delivery-node-agent) — agent metrics
 - ADR [0002](https://github.com/finos/5-spot/blob/main/docs/adr/0002-kata-config-delivery-via-spec-kata.md) / ADR [0003](https://github.com/finos/5-spot/blob/main/docs/adr/0003-in-pod-host-service-restart-via-nsenter.md) — the decisions behind the shape
+- ADR [0020](https://github.com/finos/5-spot/blob/main/docs/adr/0020-one-binary-one-image-with-subcommands.md): the agent is a subcommand of the one 5-Spot binary and enters host namespaces itself, with no `nsenter` in the image.

@@ -17,12 +17,12 @@ SPDX-License-Identifier: Apache-2.0
 ## D-001 — Language and toolchain
 
 - **Rust**, edition **2021**, MSRV **1.90** (root `Cargo.toml`).
-- One crate, `five_spot`, with explicit `[[bin]]` targets — controller
-  (`5spot`), node agents (`5spot-kata-config-agent`, `5spot-reclaim-agent`),
-  first-party providers (`spot-schedule-time-based`,
-  `spot-schedule-capital-markets`), generators (`crdgen`, `crddoc`) and the
-  auto-VEX tools. Provider binary names are hyphenated to match their deploy
-  manifests' `command:`.
+- One crate, `five_spot`, with one runtime binary, `5spot`, whose subcommands
+  are every component: `controller` (the default), `capacity-controller`,
+  `provider time-based`, `provider capital-markets`, `agent reclaim` and
+  `agent kata-config` (ADR 0020). Manifests select a component with `args`.
+  The generators (`crdgen`, `crddoc`) and the auto-VEX tools are separate
+  build-time `[[bin]]` targets, never shipped in the image.
 - `rustfmt` defaults; `clippy` clean with `-D warnings` (`cargo-quality`
   skill is the gate).
 

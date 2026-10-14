@@ -1,7 +1,7 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-10-14T01:03:08.143Z
-> Files: 330 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-10-14T21:10:58.900Z
+> Files: 332 tracked | Anatomy hits: 0 | Misses: 0
 
 > Project structure index. Auto-maintained by OpenWolf hooks and daemon.
 > Run `openwolf scan` to generate, or wait for the first Claude Code session.
@@ -227,6 +227,7 @@
 - `0017-machine-reference-shape-follows-capi-contract.md` — 0017: The Machine's bootstrap and infrastructure references are serialized in the shape the discover (~1633 tok)
 - `0018-replace-serde-yaml-with-serde-saphyr.md` — 0018: Replace `serde_yaml` with `serde-saphyr`, behind one output-style wrapper (~1442 tok)
 - `0019-k0smotron-end-to-end-tier-in-kind.md` — 0019: A k0smotron end-to-end tier in kind, with strict example validation (~1800 tok)
+- `0020-one-binary-one-image-with-subcommands.md` — 0020: One `5spot` binary with subcommands, shipped in one image (~1587 tok)
 - `README.md` — Project documentation (~809 tok)
 - `template.md` — NNNN — <short decision title> (~251 tok)
 
@@ -488,7 +489,7 @@
 ## docs/src/reference/
 
 - `api.md` — 5Spot API Reference (~3376 tok)
-- `cli.md` — CLI Reference (~1228 tok)
+- `cli.md` — CLI Reference (~2119 tok)
 - `spot-schedule-contract.md` — Spot Schedule Provider Contract (~2056 tok)
 
 ## docs/src/security/
@@ -582,6 +583,10 @@
 - `scheduled_capacity_controller.rs` — # `5spot-capacity-controller` (~1451 tok)
 - `spot_schedule_capital_markets.rs` — # `spot-schedule-capital-markets` (~645 tok)
 - `spot_schedule_time_based.rs` — # `spot-schedule-time-based` (~607 tok)
+
+## src/cmd/
+
+- `nsenter.rs` — The hidden `5spot nsenter` subcommand: run a command inside another (~2030 tok)
 
 ## src/providers/
 

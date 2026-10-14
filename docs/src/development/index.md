@@ -85,6 +85,7 @@ the table below is a convenience copy.
 | [0017](https://github.com/finos/5-spot/blob/main/docs/adr/0017-machine-reference-shape-follows-capi-contract.md) | Machine references follow the discovered CAPI contract shape | Accepted |
 | [0018](https://github.com/finos/5-spot/blob/main/docs/adr/0018-replace-serde-yaml-with-serde-saphyr.md) | Replace `serde_yaml` with `serde-saphyr` behind one output-style wrapper | Accepted |
 | [0019](https://github.com/finos/5-spot/blob/main/docs/adr/0019-k0smotron-end-to-end-tier-in-kind.md) | A k0smotron end-to-end tier in kind, with strict example validation | Accepted |
+| [0020](https://github.com/finos/5-spot/blob/main/docs/adr/0020-one-binary-one-image-with-subcommands.md) | One `5spot` binary with subcommands, shipped in one image | Accepted |
 
 Start with **0001** for the methodology, **0006** and **0009** for how
 activation works, **0007** before touching a CRD, and **0004** before deploying

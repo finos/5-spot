@@ -1597,8 +1597,8 @@ fn iso_date_list_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
 /// all, because RBAC cannot express "only objects you created" and garbage
 /// collection does not need it to.
 ///
-/// Reconciled by the separate `5spot-capacity-controller` binary under its own
-/// ServiceAccount, so compromising it cannot delete a CAPI `Machine` and
+/// Reconciled by the capacity controller (`5spot capacity-controller`) under its
+/// own Deployment and ServiceAccount, so compromising it cannot delete a CAPI `Machine` and
 /// compromising the machine controller cannot write capacity.
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(

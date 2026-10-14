@@ -138,7 +138,7 @@ rules:
   # Leases for leader election (no delete needed for HA).
   #
   # `update` is retained: `kube_lease_manager` (the leader-election
-  # library used in src/main.rs) currently uses HTTP PUT semantics
+  # library used in src/cmd/controller.rs) currently uses HTTP PUT semantics
   # (Api::replace) on the Lease object during renewal. Removing
   # `update` would break leader election. If the upstream library
   # switches to merge-patch in a future release we can drop the verb;

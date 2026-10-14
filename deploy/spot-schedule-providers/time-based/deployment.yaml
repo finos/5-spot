@@ -41,7 +41,8 @@ spec:
           # Pin to a released version tag — NEVER use :latest (Trivy KSV-0013).
           image: ghcr.io/finos/5-spot:v0.3.0
           imagePullPolicy: IfNotPresent
-          command: ["/spot-schedule-time-based"]
+          # One image for every component; the subcommand selects it (ADR 0020).
+          args: ["provider", "time-based"]
           env:
             - name: RUST_LOG
               value: "info"

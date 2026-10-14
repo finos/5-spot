@@ -54,11 +54,10 @@ kubectl apply -k deploy/spot-schedule-providers/time-based/
     (5-Spot treats an absent/`StatusActiveMissing` verdict as unresolved). It runs
     as a `Deployment` in `5spot-system`, separate from `deploy/deployment/`.
 
-    The provider binary ships **inside the main 5-Spot image** — the Deployment uses
-    the same `ghcr.io/finos/5-spot` image as the controller and selects the provider
-    with `command: ["/spot-schedule-time-based"]` (the image is multi-binary: `/5spot`
-    plus each first-party provider). `make set-image-version VERSION=…` pins its tag
-    alongside the controller at release.
+    The provider is a subcommand of the one 5-Spot binary: the Deployment uses the
+    same `ghcr.io/finos/5-spot` image as the controller and selects the provider
+    with `args: ["provider", "time-based"]` (ADR 0020). `make set-image-version
+    VERSION=…` pins its tag alongside the controller at release.
 
 The provider runs with a least-privilege ClusterRole: `get;list;watch` on
 `timebasedspotschedules` and `update;patch` on **only** their `/status`

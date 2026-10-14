@@ -42,6 +42,8 @@ spec:
           # workflow or your GitOps tool rather than editing in place.
           image: ghcr.io/finos/5-spot:v0.3.0
           imagePullPolicy: IfNotPresent
+          # Bare `5spot` also runs the controller; explicit for clarity (ADR 0020).
+          args: ["controller"]
           env:
             - name: RUST_LOG
               value: "debug"

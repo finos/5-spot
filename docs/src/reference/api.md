@@ -345,8 +345,8 @@ without the incumbent ever losing the node.
 field is reversible and bounded; deleting a consumer's pool with live claims
 would destroy in-flight work using knowledge this controller does not have.
 
-Reconciled by the separate `5spot-capacity-controller` binary under its own
-ServiceAccount, so compromising it cannot delete a CAPI `Machine` and
+Reconciled by the capacity controller (`5spot capacity-controller`) under its
+own Deployment and ServiceAccount, so compromising it cannot delete a CAPI `Machine` and
 compromising the machine controller cannot write capacity. A cluster with no
 capacity consumer installs none of it.
 
