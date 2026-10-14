@@ -47,7 +47,7 @@ working hours. Paying for that worker 24/7 is wasteful. With 5-Spot you declare 
 | Docker      | Running, with enough headroom for ~4 small containers. |
 | `kind`      | ≥ v0.24. The CAPD node image tag must match — see below. |
 | `kubectl`   | Any recent version. |
-| `clusterctl`| The Cluster API CLI. **Pin to a release that still serves `cluster.x-k8s.io/v1beta1`** (the v1.8 / v1.9 lines do — 5-Spot emits v1beta1 Machines). |
+| `clusterctl`| The Cluster API CLI. Any release up to the v1.14 line works: these manifests use the `v1beta1` contract, which those still serve. No pinning needed, and 5-Spot itself is version-agnostic (see the note in `workload-cluster.yaml`). |
 | `make`      | To build + load the 5-Spot image (you run this; the repo never pushes images). |
 
 > **Version pinning matters.** These manifests use `kindest/node:v1.31.0`

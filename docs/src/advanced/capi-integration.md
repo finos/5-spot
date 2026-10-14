@@ -23,7 +23,7 @@ flowchart TB
 5-Spot creates CAPI `Machine` resources:
 
 ```yaml
-apiVersion: cluster.x-k8s.io/v1beta1
+apiVersion: cluster.x-k8s.io/v1beta2
 kind: Machine
 metadata:
   name: scheduled-machine-worker-xyz
@@ -36,14 +36,33 @@ spec:
   clusterName: my-cluster
   bootstrap:
     configRef:
-      apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+      apiGroup: bootstrap.cluster.x-k8s.io
       kind: KubeadmConfig
       name: worker-bootstrap
   infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    apiGroup: infrastructure.cluster.x-k8s.io
     kind: BareMetalMachine
     name: worker-infra
 ```
+
+The reference **shape** follows the contract version, not just the version
+string. From `v1beta2` on, CAPI references are
+`ContractVersionedObjectReference`: `apiGroup` + `kind` + `name`, with no
+version and no namespace (a reference is always namespace-local). On `v1beta1`
+and older the same two fields are a core `ObjectReference` instead:
+
+```yaml
+  bootstrap:
+    configRef:
+      apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+      kind: KubeadmConfig
+      name: worker-bootstrap
+      namespace: default
+```
+
+5-Spot picks the shape from the version it is creating the `Machine` at, so you
+never write either one by hand. See ADR
+[0017](https://github.com/finos/5-spot/blob/main/docs/adr/0017-machine-reference-shape-follows-capi-contract.md).
 
 ### Bootstrap Configuration
 
@@ -51,7 +70,7 @@ Inline bootstrap provider spec — 5-Spot creates this resource when the schedul
 
 ```yaml
 bootstrapSpec:
-  apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+  apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
   kind: K0sWorkerConfig
   spec:
     version: v1.30.0+k0s.0
@@ -63,7 +82,7 @@ Inline infrastructure provider spec — 5-Spot creates this resource when the sc
 
 ```yaml
 infrastructureSpec:
-  apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+  apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
   kind: RemoteMachine
   spec:
     address: 192.168.1.100
@@ -116,7 +135,7 @@ sequenceDiagram
 > reading Machines the controller uses the version the cluster *serves* (discovered
 > at startup) and **requires** Cluster API to be installed — see
 > [Configuration → CAPI Machine API version](../operations/configuration.md#capi-machine-api-version).
-> The `cluster.x-k8s.io/v1beta1` shown in the examples above is therefore one valid
+> The `cluster.x-k8s.io/v1beta2` shown in the examples above is therefore one valid
 > choice, not a fixed requirement.
 
 ## Machine Deletion Flow
@@ -148,12 +167,12 @@ sequenceDiagram
 spec:
   clusterName: k0s-cluster
   bootstrapSpec:
-    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
     kind: K0sWorkerConfig
     spec:
       version: v1.30.0+k0s.0
   infrastructureSpec:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
     kind: RemoteMachine
     spec:
       address: 192.168.1.100
@@ -167,13 +186,13 @@ spec:
 spec:
   clusterName: metal3-cluster
   bootstrapSpec:
-    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
     kind: KubeadmConfig
     spec:
       joinConfiguration:
         nodeRegistration: {}
   infrastructureSpec:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
     kind: Metal3Machine
     spec:
       image:

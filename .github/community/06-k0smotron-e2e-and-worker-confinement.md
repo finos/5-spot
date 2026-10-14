@@ -327,8 +327,61 @@ does not make the pool a cluster-wide default.
 - **No automated e2e covers this path.** The run was driven by hand. The
   manifests are recorded well enough here to script against a disposable VM, and
   the v1beta2 shapes above are the ones worth scripting, since `v1beta1` is
-  deprecated.
-- **Watch-stream reconnects log at ERROR/WARN.** Normal watch timeouts surface
-  as `ServiceError: error reading a body from connection` with an `ERROR`-level
-  "reflector terminated" line, which reads as a fault during routine operation.
-  Worth demoting to `debug`/`info` with a distinct message for genuine failures.
+  deprecated. **Still open.**
+
+### Closed 2026-10-13
+
+- **Watch-stream reconnects logged at ERROR/WARN.** Closed. A watch that the
+  apiserver recycles is routine, and `kube-runtime` reconnects on its own, so
+  logging it at `warn` reported a fault during normal operation. `src/stream.rs`
+  gained `is_routine_watch_restart`, which classifies `WatchFailed` (the
+  connection dropped) and `WatchError` carrying HTTP 410 Gone (the requested
+  `resourceVersion` has aged out of the apiserver's watch cache) as routine, and
+  keeps `InitialListFailed`, `WatchStartFailed` and `NoResourceVersion` at
+  `warn`, since those three mean the watch never started and are worth an
+  operator's attention. The four call sites (`src/main.rs`,
+  `src/reconcilers/child_watch.rs`, `src/reconcilers/dynamic_ref_watch.rs`,
+  `src/reconcilers/scheduled_capacity.rs`) now branch on it, and the routine
+  branch says "stream recycled" rather than reusing the failure wording. Five
+  tests in `src/stream_tests.rs` pin the classification per variant.
+
+- **The repo's examples were all on the deprecated `v1beta1` contract**, so the
+  forward path ADR 0017 added was documented nowhere a reader would copy from.
+  Closed. The seven `examples/scheduledmachine-*.yaml` files now declare
+  `v1beta2` for both `bootstrapSpec` and `infrastructureSpec`, which matches
+  reality on this cluster: k0smotron v2.2.0 serves `v1beta1` and `v1beta2` for
+  all four of its CRDs and has **`v1beta2` as the storage version**, so
+  `v1beta1` is the one being converted away from. `examples/scheduledmachine-basic.yaml`
+  carries the reasoning inline, including which version to declare on older
+  Cluster API, since 5-Spot passes the version through rather than choosing it.
+
+  `docs/src/advanced/capi-integration.md` now shows the `Machine` 5-Spot creates
+  in the v1beta2 shape (`apiGroup` + `kind` + `name`) with the v1beta1
+  `ObjectReference` beside it, which is the ADR 0017 behaviour and was not
+  previously written down anywhere in the published docs.
+
+  **The workshop deliberately stays on `v1beta1`** (`examples/workshop/`). Its
+  manifests are kubeadm and CAPD, and the v1beta2 move for those carries
+  structural changes beyond the version string, for example
+  `KubeadmControlPlane`'s `machineTemplate.infrastructureRef` moving under
+  `machineTemplate.spec`. Those cannot be verified without a CAPI v1.11+
+  management cluster with the kubeadm and Docker providers installed, and an
+  unverified walkthrough is worse than a deprecated one. Every CAPI release up
+  to and including the v1.14 line still serves `v1beta1`, so the workshop runs
+  on a current `clusterctl` as written.
+
+  What *was* wrong in the workshop is now fixed: both `README.md` and
+  `workload-cluster.yaml` told the reader to pin `clusterctl` to the v1.8 or
+  v1.9 line "because 5-Spot emits v1beta1 Machines". That claim was false after
+  ADR 0017 and it steered people onto a two-year-old CAPI for no reason.
+
+  `examples/scheduledmachine-bad-taint.yaml` keeps its deliberate defect, and
+  `docs/src/security/admission-validation.md` is unchanged: its rejection
+  examples pair a `k0smotron.io/v1beta1` bootstrap with a CAPI infrastructure
+  ref on purpose, and bumping one side would have made the pair inconsistent
+  with the passthrough rule.
+
+  **Still open from this item:** nothing in CI validates `examples/` against a
+  CRD schema. The migration was verified by server-side dry-run against a live
+  management cluster (all ten manifests accepted, nothing persisted), which is a
+  manual step. It belongs with the e2e harness thread above.

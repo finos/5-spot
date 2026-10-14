@@ -1029,7 +1029,11 @@ pub async fn run(client: Client, is_leader: Arc<AtomicBool>) -> anyhow::Result<(
                 }
                 Ok(watcher::Event::Init | watcher::Event::InitDone) => {}
                 Err(error) => {
-                    warn!(%error, "ScheduledCapacity reflector error; kube-runtime will reconnect");
+                    if crate::stream::is_routine_watch_restart(&error) {
+                        debug!(%error, "ScheduledCapacity reflector stream recycled; kube-runtime will reconnect");
+                    } else {
+                        warn!(%error, "ScheduledCapacity reflector error; kube-runtime will reconnect");
+                    }
                 }
             }
         }

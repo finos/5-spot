@@ -145,7 +145,7 @@ spec:
     - expression: "object.spec.bootstrapSpec.apiVersion.contains('/')"
       message: >-
         spec.bootstrapSpec.apiVersion must use a namespaced API group
-        (e.g. 'bootstrap.cluster.x-k8s.io/v1beta1') — core API versions are not permitted
+        (e.g. 'bootstrap.cluster.x-k8s.io/v1beta2'); core API versions are not permitted
       reason: Invalid
 
     # ── 9. bootstrapSpec.apiVersion must be from an allowed provider group ────
@@ -167,7 +167,7 @@ spec:
     - expression: "object.spec.infrastructureSpec.apiVersion.contains('/')"
       message: >-
         spec.infrastructureSpec.apiVersion must use a namespaced API group
-        (e.g. 'infrastructure.cluster.x-k8s.io/v1beta1') — core API versions are not permitted
+        (e.g. 'infrastructure.cluster.x-k8s.io/v1beta2'); core API versions are not permitted
       reason: Invalid
 
     # ── 12. infrastructureSpec.apiVersion must be from an allowed provider group

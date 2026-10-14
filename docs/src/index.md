@@ -73,14 +73,14 @@ spec:
 
   # Inline bootstrap configuration (e.g., K0sWorkerConfig)
   bootstrapSpec:
-    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
     kind: K0sWorkerConfig
     spec:
       version: v1.30.0+k0s.0
 
   # Inline infrastructure configuration (e.g., RemoteMachine)
   infrastructureSpec:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
     kind: RemoteMachine
     spec:
       address: 192.168.1.100

@@ -9,6 +9,91 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-10-13 18:40] - Demote routine watch restarts to debug; move examples to the CAPI v1beta2 contract
+
+**Author:** Erick Bourgeois
+
+### Changed
+
+- `src/stream.rs`: added `is_routine_watch_restart`, which classifies a
+  `kube::runtime::watcher::Error` as a routine stream recycle or a real fault.
+  `WatchFailed` (the connection dropped) and `WatchError` carrying HTTP 410 Gone
+  (the requested `resourceVersion` has aged out of the apiserver's watch cache)
+  are routine, because `kube-runtime` reconnects on its own.
+  `InitialListFailed`, `WatchStartFailed` and `NoResourceVersion` stay
+  non-routine: those three mean the watch never started. The module doc widened
+  from "small async adapters" to cover watch-stream helpers.
+- `src/stream_tests.rs`: five tests, one per variant group, pinning the
+  classification (10 tests in the file now).
+- `src/main.rs`, `src/reconcilers/child_watch.rs`,
+  `src/reconcilers/dynamic_ref_watch.rs`,
+  `src/reconcilers/scheduled_capacity.rs`: all four watch call sites branch on
+  the classifier, logging `debug!` with "stream recycled" for a routine restart
+  and keeping `warn!` for the rest. `main.rs` gained `debug` in its `tracing`
+  imports.
+- `examples/scheduledmachine-{basic,tainted,kata,child-cluster,spot-schedule,bad-taint,weekend}.yaml`:
+  `bootstrapSpec.apiVersion` and `infrastructureSpec.apiVersion` moved from
+  `v1beta1` to `v1beta2`. `basic.yaml` carries an inline note on why, and on
+  what to declare instead when running older Cluster API.
+- `docs/src/advanced/capi-integration.md`: the `Machine` example now shows the
+  v1beta2 `ContractVersionedObjectReference` shape (`apiGroup` + `kind` +
+  `name`) with the v1beta1 `ObjectReference` beside it, so ADR 0017's behaviour
+  is visible in the published docs rather than only in the ADR.
+- `docs/src/index.md`, `docs/src/installation/quickstart.md`,
+  `docs/src/concepts/{scheduled-machine,machine-lifecycle,emergency-reclaim,child-cluster-kubeconfig}.md`,
+  `README.md`: example `apiVersion` strings moved to `v1beta2` to match
+  `examples/`.
+- `src/crd.rs`, `src/bin/crddoc.rs`, `src/reconcilers/helpers.rs`,
+  `deploy/admission/validatingadmissionpolicy.yaml`: the `e.g.` version in
+  field descriptions and validation messages moved to `v1beta2`. Regenerated
+  `deploy/crds/scheduledmachine.yaml` and `docs/src/reference/api.md`; both
+  generators are idempotent.
+- `examples/workshop/README.md`, `examples/workshop/workload-cluster.yaml`:
+  removed the instruction to pin `clusterctl` to the v1.8 or v1.9 line "because
+  5-Spot emits v1beta1 Machines". That stopped being true with ADR 0017, and
+  every CAPI release through the v1.14 line still serves `v1beta1`, so no
+  pinning is needed. The workshop manifests themselves stay on `v1beta1` on
+  purpose, with the reason recorded in the file.
+- `.github/community/06-k0smotron-e2e-and-worker-confinement.md`, `ROADMAPS.md`:
+  both threads closed, with the two items that remain open called out.
+
+### Why
+
+Two leftovers from the k0smotron end-to-end run (roadmap 06).
+
+A watch that the apiserver recycles is normal operation, but every one produced
+a `warn`-level line indistinguishable from a real failure, which trains an
+operator to ignore the level that matters.
+
+The examples all declared the deprecated `v1beta1` contract, so the forward path
+ADR 0017 added was not demonstrated anywhere a reader would copy from.
+`v1beta2` is the right default rather than merely the newer option: k0smotron
+v2.2.0 serves both versions for all four of its CRDs and has `v1beta2` as the
+**storage** version, so `v1beta1` is the one being converted away from. The
+workshop is the deliberate exception, because kubeadm and CAPD need structural
+changes beyond the version string and no cluster available here can verify them.
+
+### Impact
+
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (plus log-level changes; no behavior change)
+
+### Verification
+
+- `cargo fmt --all`, `cargo clippy --all-targets --all-features -- -D warnings`,
+  `cargo test`: all pass, 875 lib tests plus integration, 0 failures.
+- `make crds` and `make crddoc` rerun to a byte-identical diff (idempotent).
+- All ten `examples/*.yaml` accepted by server-side dry-run against a live
+  apiserver running Cluster API v1.14.3 and k0smotron v2.2.0, plus the workshop
+  `ScheduledMachine`. Nothing was persisted. Four manifests needed their
+  namespace retargeted only because their namespaces do not exist on that
+  cluster.
+- `mkdocs build --strict`: exit 0, no warnings.
+
+---
+
 ## [2026-10-13 16:20] - ADR-0018: replace serde_yaml with serde-saphyr; bump CI action pins
 
 **Author:** Erick Bourgeois

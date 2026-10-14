@@ -111,12 +111,12 @@ spec:
     files: []
 
   bootstrapRef:
-    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
     kind: KubeadmConfigTemplate
     name: worker-bootstrap-config
 
   infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
     kind: MachineTemplate
     name: worker-machine-template
 

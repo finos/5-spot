@@ -6,10 +6,19 @@
 #
 # Everything here is upstream Cluster API — no k0smotron, no k0rdent.
 #
-# NOTE ON API VERSION: the 5-Spot controller currently creates CAPI `Machine`
-# objects under `cluster.x-k8s.io/v1beta1`. Install a Cluster API release that
-# still serves the v1beta1 API (the v1.8 / v1.9 lines do). These manifests use
-# v1beta1 throughout for consistency.
+# NOTE ON API VERSION: these manifests use the `v1beta1` CAPI contract
+# throughout, which every Cluster API release up to and including the v1.14 line
+# still serves. Any recent `clusterctl` therefore works; no pinning to an old
+# release is needed.
+#
+# 5-Spot does not constrain this. It passes the version component of
+# `bootstrapSpec.apiVersion` through to the `Machine` it creates and emits the
+# reference shape that contract requires (ADR 0017), so the worker in
+# scheduledmachine-business-hours.yaml declares `v1beta1` purely to match this
+# file. `v1beta2` works equally well, but moving this walkthrough to it also
+# means applying the kubeadm and CAPD structural changes that came with it (for
+# example `KubeadmControlPlane`'s `machineTemplate.infrastructureRef` moving
+# under `machineTemplate.spec`), so the two must be migrated together.
 #
 # NOTE ON THE NODE IMAGE: pin `kindest/node` to a tag that matches your local
 # `kind` version (see the kind release notes). The same tag is reused by the

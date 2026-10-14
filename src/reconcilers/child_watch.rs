@@ -198,12 +198,21 @@ async fn run_node_watcher(
             // is `InitApply`, which we handle above.
             Ok(watcher::Event::Init | watcher::Event::InitDone) => {}
             Err(e) => {
-                warn!(
-                    namespace = %key.namespace,
-                    secret = %key.secret_name,
-                    error = %e,
-                    "child-cluster Node watcher error; kube-runtime will reconnect"
-                );
+                if crate::stream::is_routine_watch_restart(&e) {
+                    debug!(
+                        namespace = %key.namespace,
+                        secret = %key.secret_name,
+                        error = %e,
+                        "child-cluster Node watcher stream recycled; kube-runtime will reconnect"
+                    );
+                } else {
+                    warn!(
+                        namespace = %key.namespace,
+                        secret = %key.secret_name,
+                        error = %e,
+                        "child-cluster Node watcher error; kube-runtime will reconnect"
+                    );
+                }
             }
         }
     }

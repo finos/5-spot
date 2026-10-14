@@ -61,4 +61,76 @@ mod tests {
         assert_eq!(stream.next().await, None);
         assert_eq!(stream.next().await, None);
     }
+
+    // ========================================================================
+    // is_routine_watch_restart - which watcher errors are expected churn
+    // ========================================================================
+
+    use kube::core::Status;
+    use kube::runtime::watcher;
+
+    /// Build the error kube-rs produces when the apiserver closes a long-poll,
+    /// which is what every idle watch does once `timeoutSeconds` elapses.
+    fn watch_failed() -> watcher::Error {
+        watcher::Error::WatchFailed(kube::Error::Service(Box::new(std::io::Error::other(
+            "error reading a body from connection",
+        ))))
+    }
+
+    fn watch_error_with_code(code: u16) -> watcher::Error {
+        watcher::Error::WatchError(Box::new(Status {
+            code,
+            message: "too old resource version".to_string(),
+            ..Default::default()
+        }))
+    }
+
+    #[test]
+    fn test_stream_recycle_is_routine() {
+        // The apiserver ends every watch when its timeout elapses, and any
+        // transport hiccup ends it the same way. kube-runtime reconnects, so
+        // this must not be logged as a fault.
+        assert!(is_routine_watch_restart(&watch_failed()));
+    }
+
+    #[test]
+    fn test_gone_410_is_routine() {
+        // The resourceVersion aged out of the watch cache; the watcher relists.
+        assert!(is_routine_watch_restart(&watch_error_with_code(410)));
+    }
+
+    #[test]
+    fn test_other_apiserver_status_codes_are_not_routine() {
+        // 401/403 mean the controller's credentials are wrong, which an
+        // operator must see. 500 means the apiserver is unwell.
+        for code in [401, 403, 404, 429, 500] {
+            assert!(
+                !is_routine_watch_restart(&watch_error_with_code(code)),
+                "status {code} must not be treated as routine"
+            );
+        }
+    }
+
+    #[test]
+    fn test_no_resource_version_is_not_routine() {
+        // The resource does not support watch: a configuration fault that will
+        // never resolve by reconnecting.
+        assert!(!is_routine_watch_restart(
+            &watcher::Error::NoResourceVersion
+        ));
+    }
+
+    #[test]
+    fn test_initial_list_and_watch_start_failures_are_not_routine() {
+        // These happen before a stream exists. A persistent failure here means
+        // the watch never establishes, so it stays at warn.
+        let list = watcher::Error::InitialListFailed(kube::Error::Service(Box::new(
+            std::io::Error::other("connection refused"),
+        )));
+        let start = watcher::Error::WatchStartFailed(kube::Error::Service(Box::new(
+            std::io::Error::other("connection refused"),
+        )));
+        assert!(!is_routine_watch_restart(&list));
+        assert!(!is_routine_watch_restart(&start));
+    }
 }

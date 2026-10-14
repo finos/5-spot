@@ -461,7 +461,11 @@ async fn run_referenced_watcher<K>(
                 ) => emit_refs_for_object(&gvk, &object, &index, &tx, label).await,
                 Ok(watcher::Event::Init | watcher::Event::InitDone) => {}
                 Err(error) => {
-                    warn!(?gvk, label, %error, "dynamic reference watcher error; kube-runtime will reconnect");
+                    if crate::stream::is_routine_watch_restart(&error) {
+                        debug!(?gvk, label, %error, "dynamic reference watcher stream recycled; kube-runtime will reconnect");
+                    } else {
+                        warn!(?gvk, label, %error, "dynamic reference watcher error; kube-runtime will reconnect");
+                    }
                 }
             }
         }

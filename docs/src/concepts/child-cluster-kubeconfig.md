@@ -37,11 +37,11 @@ spec:
     kind: TimeBasedSpotSchedule
     name: business-hours-toronto
   bootstrapSpec:
-    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
     kind: K0sWorkerConfig
     spec: {}
   infrastructureSpec:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
     kind: RemoteMachine
     spec:
       address: 10.0.0.1

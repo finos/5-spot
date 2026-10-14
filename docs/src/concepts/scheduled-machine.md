@@ -32,14 +32,14 @@ spec:
   
   # Inline bootstrap configuration
   bootstrapSpec:
-    apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
     kind: K0sWorkerConfig
     spec:
       version: v1.30.0+k0s.0
   
   # Inline infrastructure configuration
   infrastructureSpec:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
     kind: RemoteMachine
     spec:
       address: 192.168.1.100
@@ -96,7 +96,7 @@ Inline bootstrap configuration spec. This resource is created when the schedule 
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `apiVersion` | `string` | Yes | API version (e.g., `bootstrap.cluster.x-k8s.io/v1beta1`) |
+| `apiVersion` | `string` | Yes | API version (e.g., `bootstrap.cluster.x-k8s.io/v1beta2`) |
 | `kind` | `string` | Yes | Kind of bootstrap resource (e.g., `K0sWorkerConfig`) |
 | `namespace` | `string` | No | Namespace for created resource (defaults to ScheduledMachine namespace) |
 | `spec` | `object` | Yes | Provider-specific spec (e.g., K0sWorkerConfig spec) |
@@ -107,7 +107,7 @@ Inline infrastructure configuration spec. This resource is created when the sche
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `apiVersion` | `string` | Yes | API version (e.g., `infrastructure.cluster.x-k8s.io/v1beta1`) |
+| `apiVersion` | `string` | Yes | API version (e.g., `infrastructure.cluster.x-k8s.io/v1beta2`) |
 | `kind` | `string` | Yes | Kind of infrastructure resource (e.g., `RemoteMachine`) |
 | `namespace` | `string` | No | Namespace for created resource (defaults to ScheduledMachine namespace) |
 | `spec` | `object` | Yes | Provider-specific spec (e.g., RemoteMachine spec) |

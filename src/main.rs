@@ -44,7 +44,7 @@ use kube::{
     },
     Api, Client,
 };
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Command-line interface for the 5-Spot operator.
@@ -344,7 +344,11 @@ async fn main() -> Result<()> {
                 }
                 Ok(watcher::Event::Init | watcher::Event::InitDone) => {}
                 Err(e) => {
-                    warn!(error = %e, "ScheduledMachine reflector (spot-schedule index) error; kube-runtime will reconnect");
+                    if five_spot::stream::is_routine_watch_restart(&e) {
+                        debug!(error = %e, "ScheduledMachine reflector (spot-schedule index) stream recycled; kube-runtime will reconnect");
+                    } else {
+                        warn!(error = %e, "ScheduledMachine reflector (spot-schedule index) error; kube-runtime will reconnect");
+                    }
                 }
             }
         }
