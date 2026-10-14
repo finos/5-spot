@@ -28,20 +28,35 @@ SM=e2e-worker
 SCHEDULE=e2e-window
 LABEL_KEY=5spot.finos.org/scheduled-machine
 
+# The agent scenarios (ADR 0020, ADR 0021). Each is its own ScheduledMachine on
+# the same worker, so the Node is named after it.
+RECLAIM_SM=e2e-reclaim
+KATA_SM=e2e-kata
+# A process name the reclaim agent matches. Short enough that /proc/<pid>/comm
+# (15 characters) holds it whole.
+RECLAIM_MARKER=e2ereclaim
+KATA_SOURCE=e2e-kata
+KATA_DROPIN=/etc/k0s/containerd.d/kata.toml
+HARNESS="$BATS_TEST_DIRNAME/e2e-k0smotron.sh"
+
 load_env() {
   local env_file="${E2E_WORKDIR:-${TMPDIR:-/tmp}/5spot-e2e}/e2e.env"
   if [[ ! -f "$env_file" ]]; then
     echo "missing ${env_file}: run '.github/scripts/e2e-k0smotron.sh up' (make e2e-k0smotron-up) first" >&2
     return 1
   fi
+  # Exported, so the harness script inherits it when a test calls it.
+  set -a
   # shellcheck disable=SC1090
   source "$env_file"
+  set +a
 }
 
 kc() { kubectl --context "$KUBECTL_CONTEXT" -n "$E2E_NS" "$@"; }
 # The child API is reached from inside the kind node: it is on the kind network
 # under every container engine, and the host is not under rootless podman.
-kchild() { "$CONTAINER_TOOL" exec "$NODE_CONTAINER" kubectl --kubeconfig "$CHILD_KUBECONFIG_IN_NODE" "$@"; }
+# -i so manifests piped in reach `kubectl apply -f -` inside the node.
+kchild() { "$CONTAINER_TOOL" exec -i "$NODE_CONTAINER" kubectl --kubeconfig "$CHILD_KUBECONFIG_IN_NODE" "$@"; }
 
 # Wait until `$2..` prints exactly $1, or fail with what it last printed.
 wait_for_value() {
@@ -151,7 +166,10 @@ EOF
 teardown_file() {
   load_env || return 0
   # Best effort: leave the fixture reusable for a re-run.
-  kc delete scheduledmachine "$SM" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+  "$CONTAINER_TOOL" exec "$WORKER_NAME" pkill -x "$RECLAIM_MARKER" >/dev/null 2>&1 || true
+  for sm in "$SM" "$RECLAIM_SM" "$KATA_SM"; do
+    kc delete scheduledmachine "$sm" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+  done
   kc delete timebasedspotschedule "$SCHEDULE" --ignore-not-found >/dev/null 2>&1 || true
 }
 
@@ -218,3 +236,145 @@ setup() {
   wait_for_value "$SHORT_TIMEOUT" "" machines_for_sm
   wait_for_value "$REMOVE_TIMEOUT" "absent" child_node_absent
 }
+
+# ---------------------------------------------------------------------------
+# Helpers for the agent scenarios
+# ---------------------------------------------------------------------------
+
+# A ScheduledMachine on the shared worker, in the open window, with extra spec.
+apply_agent_sm() {
+  local name="$1" extra="$2"
+  kc apply -f - <<EOF
+apiVersion: 5spot.finos.org/v1beta1
+kind: ScheduledMachine
+metadata:
+  name: ${name}
+spec:
+  clusterName: ${E2E_CHILD}
+  enabled: true
+  schedule:
+    apiVersion: spotschedules.5spot.finos.org/v1alpha1
+    kind: TimeBasedSpotSchedule
+    name: ${SCHEDULE}
+  bootstrapSpec:
+    apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+    kind: K0sWorkerConfig
+    spec:
+      version: ${K0S_VERSION}
+  infrastructureSpec:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+    kind: RemoteMachine
+    spec:
+      address: ${WORKER_IP}
+      port: 22
+      user: root
+      sshKeyRef:
+        name: ${E2E_CHILD}-ssh
+  gracefulShutdownTimeout: 2m
+  nodeDrainTimeout: 2m
+${extra}
+EOF
+}
+
+node_ready() {
+  kchild get node "$1" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+}
+node_absent() {
+  if kchild get node "$1" >/dev/null 2>&1; then
+    echo "present"
+    return
+  fi
+  echo "absent"
+}
+node_label() {
+  kchild get node "$1" -o jsonpath="{.metadata.labels.${2//./\\.}}"
+}
+agent_pod_phase() {
+  kchild -n 5spot-system get pods -l "app=$1" --field-selector "spec.nodeName=$2" \
+    -o jsonpath='{.items[0].status.phase}'
+}
+agent_container_ready() {
+  kchild -n 5spot-system get pods -l "app=$1" --field-selector "spec.nodeName=$2" \
+    -o jsonpath='{.items[0].status.containerStatuses[0].ready}'
+}
+worker() { "$CONTAINER_TOOL" exec "$WORKER_NAME" "$@"; }
+
+# ---------------------------------------------------------------------------
+# Reclaim agent (ADR 0020 subcommand, ADR 0021 detector)
+# ---------------------------------------------------------------------------
+
+@test "reclaim: a ScheduledMachine with killIfCommands gets the agent on its node" {
+  apply_agent_sm "$RECLAIM_SM" "  killIfCommands: [\"${RECLAIM_MARKER}\"]"
+  wait_for_value "$JOIN_TIMEOUT" "True" node_ready "$RECLAIM_SM"
+  "$HARNESS" load-worker-image
+  # The controller opts the node in; the shipped DaemonSet (poll detector, no
+  # added capability) then lands on it and must actually run.
+  wait_for_value "$SHORT_TIMEOUT" "enabled" node_label "$RECLAIM_SM" "5spot.finos.org/reclaim-agent"
+  wait_for_value "$SHORT_TIMEOUT" "Running" agent_pod_phase 5spot-reclaim-agent "$RECLAIM_SM"
+  wait_for_value "$SHORT_TIMEOUT" "true" agent_container_ready 5spot-reclaim-agent "$RECLAIM_SM"
+}
+
+@test "reclaim: a matching process on the node triggers an emergency removal" {
+  # Start the process on the node itself: the worker container is the node.
+  "$CONTAINER_TOOL" exec -d "$WORKER_NAME" /bin/sh -c \
+    "cp /bin/sleep /usr/local/bin/${RECLAIM_MARKER} && exec /usr/local/bin/${RECLAIM_MARKER} 3600"
+  # The controller ejects the node and disables the ScheduledMachine so it does
+  # not come straight back.
+  wait_for_value "$REMOVE_TIMEOUT" "false" \
+    kc get scheduledmachine "$RECLAIM_SM" -o jsonpath='{.spec.enabled}'
+  wait_for_value "$REMOVE_TIMEOUT" "" \
+    kc get machines.v1beta2.cluster.x-k8s.io -l "${LABEL_KEY}=${RECLAIM_SM}" -o name
+  wait_for_value "$REMOVE_TIMEOUT" "absent" node_absent "$RECLAIM_SM"
+}
+
+@test "reclaim: clean up" {
+  worker pkill -x "$RECLAIM_MARKER" || true
+  kc delete scheduledmachine "$RECLAIM_SM" --ignore-not-found --wait=false
+  wait_for_value "$REMOVE_TIMEOUT" "" kc get scheduledmachine "$RECLAIM_SM" --ignore-not-found -o name
+}
+
+# ---------------------------------------------------------------------------
+# Kata-config agent: the restart goes through `5spot nsenter` (ADR 0020)
+# ---------------------------------------------------------------------------
+
+@test "kata: the drop-in reaches the node and k0sworker restarts through 5spot nsenter" {
+  local content="# 5-Spot e2e Kata drop-in, run ${BATS_ROOT_PID:-$$}"
+  kchild -n 5spot-system create configmap "$KATA_SOURCE" \
+    --from-literal=kata-containers.toml="$content" --dry-run=client -o yaml \
+    | kchild apply -f -
+  apply_agent_sm "$KATA_SM" "  kata:
+    kind: ConfigMap
+    name: ${KATA_SOURCE}"
+  wait_for_value "$JOIN_TIMEOUT" "True" node_ready "$KATA_SM"
+
+  # The worker's k0s service instance before the agent can run (the image is
+  # not on the node yet, so the agent pod cannot have started).
+  local before
+  before="$(worker systemctl show -p InvocationID --value k0sworker)"
+  [ -n "$before" ]
+  "$HARNESS" load-worker-image
+
+  wait_for_value "$SHORT_TIMEOUT" "enabled" node_label "$KATA_SM" "5spot.finos.org/kata-config"
+  # The privileged agent writes the fixed host path...
+  wait_for_value "$JOIN_TIMEOUT" "$content" worker cat "$KATA_DROPIN"
+  # ...records what it applied on its own Node...
+  wait_for_output "$SHORT_TIMEOUT" \
+    kchild get node "$KATA_SM" -o 'jsonpath={.metadata.annotations.5spot\.finos\.org/kata-config-applied}'
+  # ...and restarts the host k0s service by entering host PID 1's namespaces.
+  # The image has no nsenter or systemctl, so a new invocation of the unit can
+  # only come from the 5spot nsenter subcommand.
+  local deadline=$((SECONDS + JOIN_TIMEOUT)) after="$before"
+  while ((SECONDS < deadline)) && [[ "$after" == "$before" ]]; do
+    sleep 5
+    after="$(worker systemctl show -p InvocationID --value k0sworker 2>/dev/null || echo "$before")"
+  done
+  [[ "$after" != "$before" ]] || { echo "k0sworker was never restarted (InvocationID still $before)" >&2; false; }
+  wait_for_value "$JOIN_TIMEOUT" "True" node_ready "$KATA_SM"
+}
+
+@test "kata: clean up" {
+  kc delete scheduledmachine "$KATA_SM" --ignore-not-found --wait=false
+  wait_for_value "$REMOVE_TIMEOUT" "" kc get scheduledmachine "$KATA_SM" --ignore-not-found -o name
+  wait_for_value "$REMOVE_TIMEOUT" "absent" node_absent "$KATA_SM"
+}
+

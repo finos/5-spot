@@ -119,13 +119,16 @@ pub struct ScheduledMachineSpec {
     pub node_taints: Vec<NodeTaint>,
 
     /// Optional list of process patterns that trigger an emergency node
-    /// reclaim. When non-empty, the 5-Spot controller installs the
-    /// `5spot-reclaim-agent` `DaemonSet` on every Node backing this
-    /// `ScheduledMachine`; the agent watches `/proc` for any process whose
-    /// basename or argv matches one of these patterns and, on first match,
-    /// annotates the Node to request immediate (non-graceful) removal from
-    /// the cluster. When absent or empty, no agent is installed and
-    /// behaviour is time-based scheduling only.
+    /// reclaim. When non-empty, the 5-Spot controller labels every Node
+    /// backing this `ScheduledMachine` with
+    /// `5spot.finos.org/reclaim-agent: enabled`, which schedules the
+    /// `5spot-reclaim-agent` `DaemonSet` (installed on the workload cluster
+    /// from `deploy/node-agent/`) onto it. The agent polls `/proc` for any
+    /// process whose basename or argv matches one of these patterns and, on
+    /// first match, annotates the Node to request immediate (non-graceful)
+    /// removal from the cluster. When absent or empty, the Node is not
+    /// labelled, no agent runs on it, and behaviour is time-based scheduling
+    /// only.
     ///
     /// Patterns are evaluated against both `/proc/<pid>/comm` (exact
     /// basename) and `/proc/<pid>/cmdline` (substring). See the
@@ -877,7 +880,8 @@ pub struct KataConfig {
     #[schemars(schema_with = "kata_config_key_schema")]
     pub key: String,
 
-    /// systemd unit the node agent restarts (via `nsenter`) so containerd
+    /// systemd unit the node agent restarts (from inside host PID 1's
+    /// namespaces, via `5spot nsenter`) so containerd
     /// reloads the drop-in. Defaults to `k0sworker.service`; override with
     /// `k0scontroller.service` on single-node / controller-runs-workloads
     /// layouts.
@@ -1747,8 +1751,10 @@ pub struct CapacityWrite {
     /// under the `spec` of an object 5-Spot built before anything is sent, so
     /// there is no reachable `ownerReferences`, `finalizers` or label to write
     /// and no JSON Pointer escape to attempt. What the schema still enforces is
-    /// charset and depth, and the reconciler re-validates both because the
-    /// schema only holds while the deployed CRD is current.
+    /// charset, depth, and no reserved first segment (`spec`, `metadata`,
+    /// `status`, a mistake that would build `spec.spec.…`); the reconciler
+    /// re-validates all three because the schema only holds while the deployed
+    /// CRD is current.
     #[schemars(schema_with = "capacity_field_schema")]
     pub field: String,
 
@@ -1864,20 +1870,34 @@ fn default_handback_timeout() -> String {
 }
 
 /// Schema for `CapacityWrite.field`: the charset pattern from
-/// `CAPACITY_FIELD_PATTERN`, and no prefix rule.
+/// `CAPACITY_FIELD_PATTERN`, plus one CEL rule refusing a reserved first segment
+/// (`CAPACITY_FIELD_RESERVED_ROOTS`), and no prefix rule.
 ///
 /// ADR 0011's `startsWith('spec.')` CEL rule is **deliberately absent**, not
 /// forgotten. The value is a path relative to the owned object's `spec`, so a
 /// `spec.` prefix would now be wrong rather than required, and the prefixes that
 /// rule defended against are unreachable by construction (ADR 0016 decision 3).
-/// What remains is charset and depth, which the pattern carries on its own.
+///
+/// The reserved-root rule is schema hygiene, not a control: it turns a mistake
+/// the reconciler would otherwise only log on every requeue into an admission
+/// error the caller sees. RE2 has no negative lookahead, so it cannot live in
+/// the pattern; `matches` is core CEL, not an extension library.
 fn capacity_field_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     let pattern = crate::constants::CAPACITY_FIELD_PATTERN;
+    let roots = crate::constants::CAPACITY_FIELD_RESERVED_ROOTS;
+    let rule = format!("!self.matches('^({})([.]|$)')", roots.join("|"));
+    let message = format!(
+        "spec.capacity.field is relative to the owned object's spec and cannot start with {}",
+        roots.join(", ")
+    );
     schemars::json_schema!({
         "type": "string",
         "minLength": 1,
         "maxLength": 253,
-        "pattern": pattern
+        "pattern": pattern,
+        "x-kubernetes-validations": [
+            { "rule": rule, "message": message }
+        ]
     })
 }
 

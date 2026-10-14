@@ -136,10 +136,10 @@ schema hygiene, kept strict anyway:
 - **Depth**: at most seven segments, one below the eight a constructed path
   allows, because `spec` occupies the first position.
 
-These are enforced at admission (a schema pattern) **and** again in the
-reconciler. The second is not redundant: it is the check that still holds when
-the deployed CRD is older than the running controller, which is exactly the case
-a schema cannot defend against.
+These are enforced at admission (a schema pattern, plus a CEL rule for the
+reserved roots) **and** again in the reconciler. The second is not redundant: it
+is the check that still holds when the deployed CRD is older than the running
+controller, which is exactly the case a schema cannot defend against.
 
 The **inactive** value is fixed at `0` and is not configurable. A schedule that
 hands nothing back is not a schedule.

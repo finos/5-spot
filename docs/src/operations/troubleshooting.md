@@ -390,55 +390,32 @@ kubectl patch scheduledmachine/<name> --type merge \
 
 5. **The agent only reads `/proc/<pid>/comm` (exact basename) and `/proc/<pid>/cmdline` (substring).** A process whose `comm` is `java-wrapper` but argv starts with `/opt/jdk/bin/java ...` matches on `cmdline` (substring), not on `comm` (exact).
 
-### Reclaim agent crash-loops with `EPERM` on netlink socket
+### Reclaim agent crash-loops on the netlink socket
 
-**Symptom:** `kubectl logs -n 5spot-system <reclaim-agent-pod>` shows
-the agent exiting at startup with an error like:
+**Symptom:** `kubectl logs -n 5spot-system <reclaim-agent-pod>` shows the
+agent exiting at startup with one of:
 
 ```
+netlink i/o: Connection refused (os error 111)
 netlink i/o: Operation not permitted (os error 1)
 ```
 
-or `Subscriber::new() failed: netlink i/o: EPERM`.
+**Cause:** `--detector=netlink` (or `RECLAIM_DETECTOR=netlink`) is forced on a
+pod that cannot use it. The kernel's proc connector delivers only to the host's
+initial network namespace (`ECONNREFUSED` from any other), and needs
+`CAP_NET_ADMIN` (`EPERM` without it). The shipped DaemonSet has neither, by
+design (ADR 0021), and sets `RECLAIM_DETECTOR=poll`.
 
-**Cause:** `--detector=netlink` is in effect (the default on Linux),
-but the pod's container does not have `CAP_NET_ADMIN`. The kernel
-refuses to bind an `AF_NETLINK` socket to the `CN_IDX_PROC`
-multicast group without it.
+**Fix:** remove the override, or set it back to `poll`:
 
-**Fix (one of):**
+```bash
+kubectl set env -n 5spot-system ds/5spot-reclaim-agent RECLAIM_DETECTOR=poll
+```
 
-1. **Confirm the cap is in the manifest** —
-   `deploy/node-agent/daemonset.yaml` should grant `NET_ADMIN`
-   under the container's `securityContext.capabilities.add`. If a
-   downstream patch removed it, restore:
-
-   ```bash
-   kubectl get ds -n 5spot-system 5spot-reclaim-agent \
-     -o jsonpath='{.spec.template.spec.containers[0].securityContext.capabilities}'
-   # Expect: {"add":["NET_ADMIN"],"drop":["ALL"]}
-   ```
-
-2. **Force `poll` mode** if granting `CAP_NET_ADMIN` is not
-   acceptable in your environment. The agent's rung 1 (`/proc`
-   poll) detects the same processes at higher latency (≤250 ms vs
-   <10 ms) and zero added capability:
-
-   ```bash
-   kubectl set env -n 5spot-system ds/5spot-reclaim-agent \
-     RECLAIM_DETECTOR=poll
-   ```
-
-   See [Detector — rung 1 vs rung 2](../concepts/emergency-reclaim.md)
-   for the tradeoff.
-
-3. **Pod Security Admission may strip capabilities** under the
-   `restricted` profile. The DaemonSet's pod-level
-   `securityContext` already drops `runAsNonRoot=false` and other
-   restricted-profile bumps; if PSA is enforcing `restricted` on
-   `5spot-system`, downgrade the namespace label to `baseline` or
-   add an exemption. The reclaim-agent's privileges are
-   architecturally bounded by its opt-in nodeSelector.
+With `auto`, the agent tries netlink once and falls back to `poll` with a
+warning instead of exiting. Granting `CAP_NET_ADMIN` alone does not help: the
+agent pod-security policy denies both the capability and `hostNetwork` in
+`5spot-system`. See [Detector, rung 1 vs rung 2](../concepts/emergency-reclaim.md).
 
 ### Reclaim agent runs but never observes any events
 

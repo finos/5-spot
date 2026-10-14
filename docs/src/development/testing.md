@@ -200,7 +200,7 @@ provisioned over SSH as a `RemoteMachine` exactly as a physical host would be.
 ```bash
 make e2e-k0smotron-up      # builds and loads the image from your checkout
 make validate-examples     # every example and docs manifest against real schemas
-make e2e-k0smotron         # the lifecycle suite
+make e2e-k0smotron         # the lifecycle, agent and capacity suites
 make e2e-k0smotron-logs    # diagnostics, if something failed
 make e2e-k0smotron-down
 ```
@@ -238,6 +238,26 @@ or use Docker.
    infrastructure objects, and the phase becomes `Inactive`.
 6. **Reopening it** brings the same host back as a Ready Node.
 7. **Deleting the `ScheduledMachine`** removes everything it created.
+
+Then the components that share the image (ADR 0020), each from its shipped
+manifest:
+
+8. **Reclaim agent:** a `ScheduledMachine` with `killIfCommands` gets its Node
+   labelled, and the agent DaemonSet (installed on the child cluster, image
+   imported into the worker's containerd) runs on it.
+9. A process matching `killIfCommands`, started on the worker, triggers an
+   **emergency removal**: the Machine and Node go, and `spec.enabled` is set to
+   `false` so the machine does not come straight back (ADR 0021's poll
+   detector, no added capability).
+10. **Kata-config agent:** with `spec.kata` set, the drop-in appears at
+    `/etc/k0s/containerd.d/kata.toml` on the worker, the agent records the
+    applied hash on its Node, and the worker's `k0sworker` service gets a new
+    invocation. The image has no `nsenter` or `systemctl`, so that restart can
+    only have come from `5spot nsenter` entering the worker's PID 1 namespaces.
+11. **Capacity controller:** `.github/scripts/capacity-e2e.bats` runs against
+    the same cluster: the owned object is created, scaled, held at zero when the
+    window closes, re-scaled on the same object, garbage-collected on delete,
+    and the identity can do exactly what ADR 0011 and 0016 allow.
 
 The suite fails rather than skips when a prerequisite is missing: a test that
 skips reports success while proving nothing.

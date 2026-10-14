@@ -7,15 +7,21 @@
 #   kind management cluster
 #     ├── cert-manager, Cluster API, k0smotron     (clusterctl, pinned)
 #     ├── 5-Spot controller + time-based provider  (deploy/, image under test)
+#     ├── 5-Spot capacity controller + stub target CRD (deploy/capacity-controller/)
 #     └── namespace $E2E_NS
 #           ├── Cluster / RemoteCluster / K0smotronControlPlane   (hosted, NodePort)
 #           └── Secret with a per-run SSH key
+#   child cluster, namespace 5spot-system
+#     ├── reclaim and kata-config agent DaemonSets   (deploy/node-agent, deploy/kata-config-agent)
+#     └── workload-cluster admission policies         (agent pod security, kata annotation)
 #   worker container on the kind network            (systemd + sshd, pinned digest)
 #
 # The ScheduledMachine itself is created by the bats suite, not here, so the
 # suite owns the behaviour under test and this script owns only the fixture.
 #
-# Usage: e2e-k0smotron.sh cluster|up|logs|down|env
+# Usage: e2e-k0smotron.sh cluster|up|load-worker-image|logs|down|env
+#   load-worker-image  import the image under test into the worker's k0s
+#                      containerd (after each join; the child cannot pull it)
 #   cluster  create only the kind cluster (so `make kind-load` has a target)
 #
 # Runs the same way in CI (docker) and locally (CONTAINER_TOOL=podman). Every
@@ -96,7 +102,7 @@ retry_until() {
 cluster_exists() { kind get clusters 2>/dev/null | grep -qx "$E2E_CLUSTER"; }
 node_container() { echo "${E2E_CLUSTER}-control-plane"; }
 child_kubectl() {
-  "$CONTAINER_TOOL" exec "$(node_container)" kubectl --kubeconfig "$CHILD_KUBECONFIG_IN_NODE" "$@"
+  "$CONTAINER_TOOL" exec -i "$(node_container)" kubectl --kubeconfig "$CHILD_KUBECONFIG_IN_NODE" "$@"
 }
 
 # ── Steps ─────────────────────────────────────────────────────────────────────
@@ -173,6 +179,49 @@ deploy_5spot() {
     '[{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"Never"}]'
   kc -n 5spot-system rollout status deployment/5spot-controller --timeout="${ROLLOUT_TIMEOUT}s"
   kc -n 5spot-system rollout status deployment/spot-schedule-time-based --timeout="${ROLLOUT_TIMEOUT}s"
+}
+
+deploy_capacity_controller() {
+  log "Deploying the capacity controller and its stub target CRD"
+  kc apply -f .github/scripts/fixtures/capacity-target-crd.yaml
+  kc apply -k deploy/capacity-controller/
+  kc -n 5spot-system set image deployment/5spot-capacity-controller controller="$KIND_IMAGE"
+  kc -n 5spot-system patch deployment/5spot-capacity-controller --type json -p \
+    '[{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"Never"}]'
+  kc -n 5spot-system rollout status deployment/5spot-capacity-controller --timeout="${ROLLOUT_TIMEOUT}s"
+}
+
+# Install, on the child cluster, what an operator installs on a workload
+# cluster: the 5spot-system namespace, the workload-side admission policies,
+# and both agent DaemonSets. The DaemonSets select nodes by the opt-in labels
+# the controller stamps, so nothing runs until a ScheduledMachine asks for it.
+prepare_child_agents() {
+  log "Installing the agents and workload-cluster policies on the child cluster"
+  child_kubectl create namespace 5spot-system --dry-run=client -o yaml | child_kubectl apply -f -
+  child_kubectl apply -f - < deploy/admission/agent-pod-security-policy.yaml
+  child_kubectl apply -f - < deploy/admission/agent-pod-security-binding.yaml
+  child_kubectl apply -f - < deploy/admission/kata-config-annotation-policy.yaml
+  local agent
+  for agent in node-agent kata-config-agent; do
+    kubectl kustomize "deploy/${agent}" | child_kubectl apply -f -
+  done
+  local ds
+  for ds in 5spot-reclaim-agent 5spot-kata-config-agent; do
+    child_kubectl -n 5spot-system set image "daemonset/${ds}" agent="$KIND_IMAGE"
+    child_kubectl -n 5spot-system patch "daemonset/${ds}" --type json -p \
+      '[{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"Never"}]'
+  done
+}
+
+# The child cluster's kubelet runs inside the worker container and cannot pull
+# the locally built image, so import it into the worker's k0s containerd. A
+# k0s reset (the RemoteMachine cleanup) wipes it, so this runs after each join.
+load_worker_image() {
+  require "$CONTAINER_TOOL"
+  retry_until "$CONTROL_PLANE_TIMEOUT" "k0s containerd on ${WORKER_NAME}" \
+    "$CONTAINER_TOOL" exec "$WORKER_NAME" k0s ctr version
+  "$CONTAINER_TOOL" save "$KIND_IMAGE" \
+    | "$CONTAINER_TOOL" exec -i "$WORKER_NAME" k0s ctr -n k8s.io images import -
 }
 
 start_worker() {
@@ -295,6 +344,7 @@ CHILD_KUBECONFIG_IN_NODE=${CHILD_KUBECONFIG_IN_NODE}
 WORKER_NAME=${WORKER_NAME}
 WORKER_IP=$(container_ip "$WORKER_NAME")
 K0S_VERSION=${K0S_VERSION}
+KIND_IMAGE=${KIND_IMAGE}
 EOF
   log "Environment written to ${ENV_FILE}"
   cat "$ENV_FILE"
@@ -306,8 +356,10 @@ up() {
   install_providers
   load_image
   deploy_5spot
+  deploy_capacity_controller
   start_worker
   create_child_cluster
+  prepare_child_agents
   write_env
 }
 
@@ -327,8 +379,13 @@ logs() {
   kc -n 5spot-system logs deploy/spot-schedule-time-based --tail=100 || true
   section "k0smotron infrastructure provider"
   kc -n k0smotron logs deploy/k0smotron-controller-manager-infrastructure --tail=200 || true
-  section "child cluster nodes"
-  child_kubectl get nodes -o wide || true
+  section "capacity controller"
+  kc -n 5spot-system logs deploy/5spot-capacity-controller --tail=100 || true
+  section "child cluster nodes and agents"
+  child_kubectl get nodes -o wide --show-labels || true
+  child_kubectl -n 5spot-system get daemonsets,pods -o wide || true
+  child_kubectl -n 5spot-system logs -l app=5spot-reclaim-agent --tail=100 || true
+  child_kubectl -n 5spot-system logs -l app=5spot-kata-config-agent --tail=100 || true
   section "worker: k0sworker journal"
   "$CONTAINER_TOOL" exec "$WORKER_NAME" journalctl -u k0sworker --no-pager -n 200 || true
 }
@@ -346,8 +403,9 @@ down() {
 case "${1:-}" in
   cluster) require kind; create_cluster ;;
   up) up ;;
+  load-worker-image) load_worker_image ;;
   logs) logs ;;
   down) down ;;
   env) write_env ;;
-  *) die "usage: $0 cluster|up|logs|down|env" ;;
+  *) die "usage: $0 cluster|up|load-worker-image|logs|down|env" ;;
 esac

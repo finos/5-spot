@@ -11,6 +11,9 @@ silently dropped when 5-Spot creates the object. The only check that catches it
 is the provider's own schema, so every embedded object is extracted and
 validated as the standalone object 5-Spot would create.
 
+Every manifest under deploy/ and examples/ must also parse with no duplicate
+mapping keys (PyYAML silently keeps the last, bug-012).
+
 What is validated, each with `kubectl apply --dry-run=server --validate=strict`
 (unknown fields are errors, and the CAPI / k0smotron webhooks run):
 
@@ -125,6 +128,45 @@ def embedded_objects(doc: dict, parent: str) -> list[tuple[str, dict]]:
     return out
 
 
+class StrictLoader(yaml.SafeLoader):
+    """A loader that rejects duplicate mapping keys.
+
+    PyYAML's safe_load keeps the last of two equal keys without a word, which
+    is how a manifest once shipped two `args:` on one container (bug-012).
+    """
+
+
+def _no_duplicate_keys(loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bool = False):
+    seen: dict[object, int] = {}
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in seen:
+            raise yaml.constructor.ConstructorError(
+                None, None,
+                f"duplicate key {key!r} (lines {seen[key] + 1} and {key_node.start_mark.line + 1})",
+                key_node.start_mark,
+            )
+        seen[key] = key_node.start_mark.line
+    return yaml.SafeLoader.construct_mapping(loader, node, deep)
+
+
+StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_duplicate_keys)
+
+
+def duplicate_key_failures(root: str) -> list[str]:
+    """Every manifest under deploy/ and examples/ must parse with no duplicate keys."""
+    failures = []
+    patterns = ("deploy/**/*.yaml", "examples/**/*.yaml")
+    for pattern in patterns:
+        for path in sorted(glob.glob(os.path.join(root, pattern), recursive=True)):
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    list(yaml.load_all(handle, Loader=StrictLoader))
+            except yaml.YAMLError as err:
+                failures.append(f"{path}: {getattr(err, 'problem', err)}")
+    return failures
+
+
 def collect(root: str) -> list[Item]:
     items: list[Item] = []
     sources: list[tuple[str, str]] = []
@@ -193,6 +235,7 @@ def main() -> int:
     )
 
     report = Report()
+    report.failed.extend(duplicate_key_failures(root))
     for item in collect(root):
         if item.note:
             report.failed.append(f"{item.source}: {item.note}")

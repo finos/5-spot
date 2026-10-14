@@ -261,51 +261,62 @@ The agent ships two detection back-ends. Both produce identical [`Match`](https:
 | Mode | What it does | Latency | Idle CPU | Linux only? | Extra capability |
 |---|---|---|---|---|---|
 | `poll` (rung 1) | Walks `/proc` every `poll_interval_ms` | up to one poll interval (250 ms default) | ~0 (one syscall per pid per tick) | No — works wherever `/proc` exists | None |
-| `netlink` (rung 2) | Subscribes to the kernel's [proc connector](https://www.kernel.org/doc/html/latest/driver-api/connector.html) (`PROC_EVENT_EXEC`); kernel pushes one message per `exec(2)` | <10 ms (kernel-pushed) | sleeps until the kernel wakes it | **Yes** — Linux only | `CAP_NET_ADMIN` |
+| `netlink` (rung 2) | Subscribes to the kernel's [proc connector](https://www.kernel.org/doc/html/latest/driver-api/connector.html) (`PROC_EVENT_EXEC`); kernel pushes one message per `exec(2)` | <10 ms (kernel-pushed) | sleeps until the kernel wakes it | **Yes**, and only in the host's initial network namespace | `CAP_NET_ADMIN` |
+
+**The shipped DaemonSet polls** (`RECLAIM_DETECTOR=poll`, ADR 0021). The proc
+connector delivers only to the host's **initial network namespace**: from any
+other namespace, `Subscriber::new()` fails with `Connection refused (os error
+111)`, even as root with `CAP_NET_ADMIN`. A pod without `hostNetwork` is in its
+own network namespace, and the agent pod-security policy denies `hostNetwork` to
+every agent (ADR 0004). So netlink cannot work in the shipped topology, and
+before ADR 0021 the agent's `auto` default chose it anyway and crash-looped.
 
 Selection:
 
 ```
---detector=auto       # default. Linux → netlink, anywhere else → poll.
---detector=netlink    # force netlink. Errors loudly on non-Linux or
-                      # without CAP_NET_ADMIN.
---detector=poll       # force the rung-1 poll loop on any platform.
+--detector=poll       # what the shipped DaemonSet sets. Works anywhere /proc exists.
+--detector=auto       # the binary's default: netlink if its socket opens,
+                      # otherwise poll, with a warning naming the reason.
+--detector=netlink    # force netlink. Fails loudly if it cannot open, which
+                      # in a pod without hostNetwork is always.
 ```
 
 Override at deploy time via `RECLAIM_DETECTOR={auto|netlink|poll}` on the DaemonSet pod.
 
-**Tradeoff.** `netlink` is lower latency and lower idle CPU in steady state. Under heavy-exec workloads (`make -j32`, compile farms) it can be **more** expensive than `poll`, because rung 2 sees every short-lived process whereas rung 1 only sees those that survive to the next tick. If the operator's fleet runs exec storms, pin `--detector=poll` explicitly; otherwise keep the `auto` default.
-
-The DaemonSet manifest grants `CAP_NET_ADMIN` once at the pod level (see `deploy/node-agent/daemonset.yaml`), so an operator switching `--detector=poll → netlink` (or vice versa) does not need to re-roll the pod's security context. The cap is unused on `poll`; the kernel never sees a netlink syscall in that mode.
+**Tradeoff.** `netlink` is lower latency and lower idle CPU in steady state, but
+needs the host network namespace and `CAP_NET_ADMIN`, a grant broad enough to
+rewrite the node's routes and firewall. For a trigger whose next step is a
+drain, a poll interval of 250 ms is not material, so 5-Spot polls. `poll` sees
+only processes that survive to the next tick; a process that starts and exits
+inside one interval is missed.
 
 ### Kernel and capability requirements
 
-Rung 1 (`poll`) needs essentially nothing — `/proc` exists on every Linux kernel and the agent already has UID 0 + host `/proc` mount for [other reasons](#opt-in-installation). It also runs unmodified in a non-Linux container if you ever need to (the `Subscriber` constructor reports "unsupported" and the bin falls back automatically when `--detector=auto` is in effect).
+Rung 1 (`poll`) needs essentially nothing: `/proc` exists on every Linux kernel
+and the agent already has UID 0, `hostPID` and the host `/proc` mount for
+[other reasons](#opt-in-installation). **The shipped DaemonSet adds no
+capability**: `capabilities.drop: [ALL]` with nothing added, and the agent
+pod-security policy now admits no capability add for any pod in `5spot-system`
+(ADR 0021).
 
-Rung 2 (`netlink`) has three runtime prerequisites:
+Rung 2 (`netlink`) is for an operator who deliberately runs the agent in the
+host network namespace, outside 5-Spot's shipped policy. It then needs:
 
-| Requirement | Provided by | What happens if missing |
-|---|---|---|
-| **Kernel built with `CONFIG_PROC_EVENTS=y`** | Distro kernel build (Debian, Ubuntu, RHEL/CentOS, Alpine, Talos, Bottlerocket, Chainguard host kernels — all default `y`) | The netlink socket opens cleanly but the kernel never pushes events. Agent sits idle, never matches. No userspace error to detect this. Diagnose by `zgrep CONFIG_PROC_EVENTS /proc/config.gz` on the host; mitigate by `--detector=poll`. |
-| **`CAP_NET_ADMIN` on the agent container** | `deploy/node-agent/daemonset.yaml` `securityContext.capabilities.add: [NET_ADMIN]` | `Subscriber::new()` fails at startup with `EPERM`; the bin exits non-zero and `kubelet` restarts it (crash loop until the cap is granted). `--detector=poll` works without it. |
-| **Linux kernel ≥ 2.6.15** | Effectively guaranteed on any cluster you'd actually deploy 5-Spot to (released 2006) | Same as missing `CONFIG_PROC_EVENTS` — silent. |
+| Requirement | What happens if missing |
+|---|---|
+| **The host's initial network namespace** (`hostNetwork: true`) | `Subscriber::new()` fails with `ECONNREFUSED`; `auto` falls back to poll, explicit `netlink` exits non-zero |
+| **`CAP_NET_ADMIN`** on the agent container | `Subscriber::new()` fails with `EPERM`; same behaviour as above |
+| **Kernel built with `CONFIG_PROC_EVENTS=y`** (every mainstream distro kernel) | The socket opens but the kernel never pushes events; the agent never matches, with no userspace error. Check `zgrep CONFIG_PROC_EVENTS /proc/config.gz` on the host |
 
-The cap chain is straightforward:
+The risk of the poll-mode agent is bounded by:
 
-```
-deploy/node-agent/daemonset.yaml
-  └─ container.securityContext.capabilities
-       ├─ drop: [ALL]                 # default-deny
-       └─ add: [NET_ADMIN]            # rung 2 only — rung 1 doesn't use it
-```
-
-This is the *only* added capability. UID 0 + host `/proc` + `hostPID` were already required for rung 1 (the agent has to read every process's `/proc/<pid>/{comm,cmdline}` under `hidepid=2`). See [`.trivyignore`](https://github.com/finos/5-spot/blob/main/.trivyignore) for the architectural-necessity rationale on each Trivy / Semgrep finding the configuration trips.
-
-`CAP_NET_ADMIN` is broader than just netlink-connector access — it also grants ability to edit routes, iptables, etc. on the host network namespace. The risk is bounded by:
-
-1. **Opt-in nodeSelector** — the cap is granted only on Nodes labelled `5spot.finos.org/reclaim-agent: enabled`, which the controller stamps only when a `ScheduledMachine` on that Node has a non-empty `spec.killIfCommands`. A cluster that never uses `killIfCommands` never has the cap on any pod.
-2. **Single-purpose binary** — the agent has no shell, no exec of children, no remote-control surface. Compromising it requires swapping the binary on disk, at which point an attacker could grant any cap they wanted anyway.
-3. **Operator opt-out** — pin `--detector=poll` (env `RECLAIM_DETECTOR=poll`) and the cap is granted-but-unused. Operators with PSA `restricted` profiles or capability allowlists can deploy in this mode and never need the cap.
+1. **Opt-in nodeSelector**: the agent lands only on Nodes labelled
+   `5spot.finos.org/reclaim-agent: enabled`, which the controller stamps only
+   when a `ScheduledMachine` on that Node has a non-empty
+   `spec.killIfCommands`. A cluster that never uses `killIfCommands` never runs
+   it.
+2. **No added capability and no listener**: the agent reads `/proc` and PATCHes
+   its own Node's annotations. It has no shell and no remote-control surface.
 
 See the [threat model](../security/threat-model.md#64-reclaim-agent-trust-boundary-tb5) for the full STRIDE table on the reclaim agent.
 

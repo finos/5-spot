@@ -1,9 +1,30 @@
 # Threat Model: 5-Spot ScheduledMachine Controller
 
-**Version:** 1.10  
+**Version:** 1.11  
 **Date:** 2026-10-14  
 **Status:** Active — living document  
-**Covers:** ADR-0001 … ADR-0020 (the 1.10 pass covers ADR-0020: every runtime
+**Covers:** ADR-0001 … ADR-0021 (the 1.11 pass covers ADR-0021 and two admission
+defects found while extending the e2e tier to the agents. Every section walked.
+**ADR-0021 reduces privilege**: the reclaim agent's `CAP_NET_ADMIN` served only
+the netlink detector, which cannot work outside the host's initial network
+namespace (measured: `ECONNREFUSED` from any other, even as root), and the
+agent policy denies `hostNetwork`. So the shipped agent crash-looped and the
+emergency reclaim control was unavailable on every Linux node (new D10, now
+mitigated), while holding a capability it could never use. A second, independent
+defect in the same path made every Node patch fail in any detector mode
+(bug-014), so the control had never worked. The DaemonSet now
+polls and adds no capability, and the policy admits no capability add for any
+pod: T13 is **closed**, not accepted. The second defect: the agent policy still
+required the kata agent's hostPath to be `/` after ADR 0005 narrowed the mount
+to `/etc/k0s`, so it rejected the shipped kata agent outright, and its stated
+"exact documented posture" (E5) was not the manifest's. Rule 6b now admits only
+`/etc/k0s`, tighter than before. Both are now proven against a real API server
+by `.github/scripts/agent-pod-security.bats`, which renders the shipped
+DaemonSets into Pods and asserts admission as well as denial. Changed: §2
+diagram, §6.4 (intro, T13 closed, new D10), E5, K7, §7 (two rows updated, one
+new). §§1, 3, 4, 5, 8, 9, 10 unchanged.
+
+The 1.10 pass covers ADR-0020: every runtime
 component is a subcommand of one `5spot` binary in one image, and the Kata-config
 agent enters host namespaces itself instead of executing `nsenter`. Every section
 walked. No identity, RBAC grant, credential or boundary changes: each component
@@ -259,7 +280,7 @@ flowchart LR
         direction TB
         Agent["5spot-reclaim-agent\n(opt-in DaemonSet pod)"]
         AgentSA["Per-pod ServiceAccount\n(nodes:get,patch · cm:get,list,watch)"]
-        Caps["UID 0 + hostPID + CAP_NET_ADMIN\n+ host /proc + /etc/machine-id"]
+        Caps["UID 0 + hostPID, no added capability\n+ host /proc + /etc/machine-id"]
         Agent --- AgentSA
         Agent --- Caps
     end
@@ -477,8 +498,9 @@ The node-side `5spot-reclaim-agent` DaemonSet runs on opted-in
 worker nodes only and signals the controller via three Node
 annotations. It is the lowest-trust component in the system: pod
 runs as UID 0 with `hostPID: true`, host `/proc` mount, host
-`/etc/machine-id` mount, and `CAP_NET_ADMIN` (for rung 2 netlink
-proc connector). Per-pod `ServiceAccount` grants only
+`/etc/machine-id` mount, and **no added capability**: it polls `/proc`, and
+`CAP_NET_ADMIN` was removed with the netlink detector it served (ADR 0021).
+Per-pod `ServiceAccount` grants only
 `nodes: get,patch` cluster-wide and `configmaps: get,list,watch`
 in `5spot-system`.
 
@@ -492,7 +514,7 @@ in `5spot-system`.
 | ID | Threat | Likelihood | Impact | Status |
 |---|---|---|---|---|
 | T12 | Compromised agent escalates to other Nodes via stolen ServiceAccount token | Low (per-pod SA, scoped credentials) | Medium | **Mitigated** — RBAC: `nodes: get,patch` cluster-wide (no `list/watch` — can't enumerate). Host-identity check refuses any PATCH against a Node whose `machineID` doesn't match the agent's own `/etc/machine-id`. |
-| T13 | `CAP_NET_ADMIN` (granted for rung 2 netlink) is misused to send rogue netlink messages on other subsystems | Low | Low–Medium | **Accepted** — `CAP_NET_ADMIN` is Linux's coarsest-grained networking cap and grants more than just netlink connector access (route table edits, iptables, etc.). Scope-bounded in two ways: (1) the cap is added only on opted-in Nodes via the existing `5spot.finos.org/reclaim-agent: enabled` nodeSelector, so only the small set of Nodes with `killIfCommands` set ever sees it; (2) the agent binary is single-purpose with no shell, no exec of children — a compromise would need an attacker to swap the binary, at which point they could grant themselves any cap they wanted. Operators who refuse the cap can pin `--detector=poll` (rung 1) which needs no extra capability. |
+| T13 | ~~`CAP_NET_ADMIN` (granted for rung 2 netlink) is misused to send rogue netlink messages on other subsystems~~ | n/a | n/a | **Closed (2026-10-14, ADR 0021).** The capability is gone: the netlink proc connector delivers only to the host's initial network namespace, which an agent pod never is (the agent policy denies `hostNetwork`), so the grant could never be used. The DaemonSet adds no capability (`deploy/node-agent/daemonset.yaml`), and the agent policy's rule 7 now admits no capability add for any pod in `5spot-system` (`deploy/admission/agent-pod-security-policy.yaml`), proved by `.github/scripts/agent-pod-security.bats` |
 
 #### Repudiation
 | ID | Threat | Likelihood | Impact | Status |
@@ -508,13 +530,14 @@ in `5spot-system`.
 | ID | Threat | Likelihood | Impact | Status |
 |---|---|---|---|---|
 | D8 | User repeatedly re-enables a SM whose conflicting process is still running, generating an ejection loop | Medium | Low | **Mitigated** — loop-protection: ≥3 reclaims for the same SM within 10 minutes emits a `RapidReReclaim` Warning Event and bumps `fivespot_rapid_re_reclaims_total{namespace, name}`. Operator runbook in [troubleshooting](../operations/troubleshooting.md) covers the response. |
-| D9 | Heavy-exec workload (`make -j32`) overwhelms the netlink subscriber's recv loop with `PROC_EVENT_EXEC` traffic | Low | Low | **Accepted** — agent CPU is bounded by container limits (`50m`); `ENOBUFS` on the netlink socket surfaces as `NetlinkError::Io` and is logged, not silently dropped. Operators who anticipate exec storms should pin `--detector=poll`. |
+| D9 | Heavy-exec workload (`make -j32`) overwhelms the netlink subscriber's recv loop with `PROC_EVENT_EXEC` traffic | Low | Low | **No longer applicable to the shipped agent** (it polls, ADR 0021); kept for an operator who runs netlink in the host network namespace. Accepted there: agent CPU is bounded by container limits (`50m`); `ENOBUFS` on the netlink socket surfaces as `NetlinkError::Io` and is logged, not silently dropped. Operators who anticipate exec storms should pin `--detector=poll`. |
+| D10 | **The emergency reclaim control is unavailable**: the shipped reclaim agent crash-loops, so a `killIfCommands` match is never reported | Was certain on Linux | High | **Mitigated (2026-10-14, ADR 0021 and bug-014).** Two independent causes, either sufficient. (1) `auto` chose netlink, which cannot open in a pod's network namespace, and the agent exited; now `auto` falls back to `/proc` polling (`DetectorFlag::resolve_with`) and the DaemonSet pins `poll`. (2) Even with a working detector, every Node patch was refused client-side, because a forced server-side-apply parameter was paired with a merge patch, so a match never reached the controller in any mode; now a plain merge patch with a field manager (`annotation_patch_params`, tested through kube's own request builder). Both in `src/cmd/reclaim_agent.rs`; the k0smotron e2e tier (ADR 0019) drives a real process match on a node through to the emergency removal |
 
 #### Elevation of Privilege
 | ID | Threat | Likelihood | Impact | Status |
 |---|---|---|---|---|
 | E4 | `hostPID: true` lets the agent see all host PIDs — could be abused to extract data from another container's `/proc/<pid>/environ` if the agent is compromised | Low | Medium | **Accepted** — `hostPID` is architecturally required (the agent's job is to read host process state). Mitigated by: opt-in `nodeSelector` (only on nodes with `killIfCommands`), single-purpose binary with no shell, `readOnlyRootFilesystem: true`, drop ALL caps + add only `NET_ADMIN`, `seccompProfile: RuntimeDefault`. Trivy / Semgrep suppressions in `.trivyignore` document the architectural-necessity reasoning. |
-| E5 | **Abuse of the namespace-wide pod-security exemption** — the privileged agents require `5spot-system` to be exempted from the cluster's PSA/Gatekeeper/Kyverno baseline; any principal with `create pods` in the namespace (compromised CI, typo'd Deployment) could then run privileged / mount the host root with no admission check | Medium | Critical | **Mitigated (2026-06-10, ADR 0004)** — `5spot-agent-pod-security` deny-by-default `ValidatingAdmissionPolicy` re-imposes the baseline inside `5spot-system`: risky attributes pinned to the two agent ServiceAccounts at their exact documented posture (hostPath clamped per agent, caps clamped to `NET_ADMIN`, `privileged` to the kata agent only), compensating controls mandatory, `hostNetwork`/`hostIPC` and risky ephemeral containers denied outright, `failurePolicy: Fail`. Residual: a principal who can both create pods *and* use an agent SA wears the exception — clamped to the agents' documented posture; SA RBAC is the control. |
+| E5 | **Abuse of the namespace-wide pod-security exemption**: the privileged agents require `5spot-system` to be exempted from the cluster's PSA/Gatekeeper/Kyverno baseline; any principal with `create pods` in the namespace (compromised CI, typo'd Deployment) could then run privileged / mount the host root with no admission check | Medium | Critical | **Mitigated (2026-06-10, ADR 0004)**: `5spot-agent-pod-security` deny-by-default `ValidatingAdmissionPolicy` re-imposes the baseline inside `5spot-system`: risky attributes pinned to the two agent ServiceAccounts at their exact documented posture (hostPath clamped per agent: `/etc/k0s` for the kata agent, `/proc` and `/etc/machine-id` for the reclaim agent; **no capability adds** since ADR 0021; `privileged` to the kata agent only), compensating controls mandatory, `hostNetwork`/`hostIPC` and risky ephemeral containers denied outright, `failurePolicy: Fail`. **Corrected 2026-10-14:** until then the kata hostPath clamp still required `/` after ADR 0005 moved the mount to `/etc/k0s`, so the policy rejected the shipped kata agent and its "exact documented posture" was not the manifest's; the clamp is now `/etc/k0s`, and `.github/scripts/agent-pod-security.bats` asserts the shipped agents are admitted. Residual: a principal who can both create pods *and* use an agent SA wears the exception: clamped to the agents' documented posture; SA RBAC is the control. |
 
 ### 6.5 Kata-Config Agent (Trust Boundary: TB6)
 
@@ -616,10 +639,11 @@ removed rather than quietly dropped.
 | Host-identity verification (machine-id cross-check) | `src/reclaim_agent.rs::compare_machine_ids` + `deploy/node-agent/daemonset.yaml` (`/etc/machine-id` mount) | S5 — DaemonSet-tampering NODE_NAME spoof |
 | Distinct field managers (`5spot-reclaim-agent` vs `5spot-controller-reclaim-agent`) | All Node PATCH paths | R1 — audit attribution |
 | Per-pod `ServiceAccount` with `nodes: get,patch` only (no `list/watch`) | `deploy/node-agent/rbac.yaml` | T12 — agent enumerates other Nodes |
-| Opt-in `5spot.finos.org/reclaim-agent: enabled` nodeSelector | `deploy/node-agent/daemonset.yaml` | T13 — `CAP_NET_ADMIN` scope-bounding |
+| Opt-in `5spot.finos.org/reclaim-agent: enabled` nodeSelector | `deploy/node-agent/daemonset.yaml` | Bounds where the `hostPID` agent runs to Nodes with `killIfCommands` set (T13 itself closed by ADR 0021) |
 | Loop-protection (`RapidReReclaim` warning + counter) | `src/loop_protection.rs` + `src/reconcilers/helpers.rs::handle_emergency_remove` | D8 — re-enable loop |
 | Agent pod-security exception boundary (`5spot-agent-pod-security` VAP, deny-by-default in `5spot-system`) | `deploy/admission/agent-pod-security-policy.yaml` + binding (ADR 0004) | E5 — abuse of the namespace-wide PSA/OPA/Kyverno exemption the privileged agents require |
-| Capacity field rooted at the owned object's `spec`, constrained to camelCase segments with reserved roots refused (CRD pattern, re-checked in the reconciler) | `src/crd.rs`, `src/reconcilers/capacity_path.rs` | C2: pointer-escape. **C1 no longer applies**: `metadata.` is unreachable rather than rejected (ADR 0016) |
+| The agent policy proved both ways against a real API server: the **shipped** DaemonSets rendered into Pods must be admitted, and a capability add, a host-root mount and `NET_ADMIN` must be denied | `.github/scripts/agent-pod-security.bats`, run by `make kind-verify-admission` in `.github/workflows/admission-test.yaml` | E5, K7, T13: a policy that drifts from the manifests it governs, in either direction |
+| Capacity field rooted at the owned object's `spec`, constrained to camelCase segments with reserved roots refused (CRD pattern and a CEL rule, re-checked in the reconciler) | `src/crd.rs`, `src/reconcilers/capacity_path.rs` | C2: pointer-escape. **C1 no longer applies**: `metadata.` is unreachable rather than rejected (ADR 0016) |
 | Capacity target API group allowlist, checked in the reconciler and mirrored in RBAC; now gates a **create** | `src/constants.rs` (`ALLOWED_CAPACITY_TARGET_API_GROUPS`), `deploy/capacity-controller/clusterrole.yaml` | C3, C10: creating an object in an unintended API group |
 | Separate capacity identity: own process (the `capacity-controller` subcommand in its own Deployment), ServiceAccount and ClusterRole; `create` + `patch` on one group, **no `delete` anywhere**, no secrets, no CAPI | `deploy/capacity-controller/` (ADR 0011, ADR 0016) | C6, C10: compounding the machine controller's CAPI and bootstrap wildcards |
 | Pre-flight `SelfSubjectAccessReview` for **both** `create` and `patch` before the first capacity write | `src/reconcilers/scheduled_capacity.rs` | C7: opaque 403, partial write, or working until the first window and then stopping |

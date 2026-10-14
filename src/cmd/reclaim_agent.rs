@@ -76,11 +76,17 @@ const FIELD_MANAGER: &str = "5spot-reclaim-agent";
 /// agent exerts essentially zero CPU.
 const IDLE_WAKEUP_SECS: u64 = 30;
 
+/// How long `--oneshot` waits for the ConfigMap watcher's initial list before
+/// deciding whether the agent is armed. Bounded so an unreachable API server
+/// fails the run instead of hanging it.
+const ONESHOT_SYNC_TIMEOUT_SECS: u64 = 30;
+
 /// CLI value for `--detector`. Resolved to a [`Detector`] via
 /// [`DetectorFlag::resolve`] so `auto` is platform-aware.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub(crate) enum DetectorFlag {
-    /// Pick `netlink` on Linux, `poll` elsewhere.
+    /// Use `netlink` if its socket opens (Linux, host network namespace),
+    /// otherwise `poll`.
     Auto,
     /// Subscribe to the netlink proc connector (Linux only).
     Netlink,
@@ -89,18 +95,42 @@ pub(crate) enum DetectorFlag {
 }
 
 impl DetectorFlag {
-    /// Resolve `auto` to a concrete detector based on the build target.
+    /// Resolve the flag to the detector to run, probing netlink for `auto`.
     fn resolve(self) -> Detector {
+        self.resolve_with(cfg!(target_os = "linux"), || {
+            NetlinkSubscriber::new().map(drop)
+        })
+    }
+
+    /// Resolve the flag, with the platform and the netlink probe injected.
+    ///
+    /// `auto` uses netlink only if its socket actually opens. The proc
+    /// connector delivers only to the host's initial network namespace and
+    /// agent pods may not use `hostNetwork` (ADR 0004), so in the shipped
+    /// topology the probe fails and `auto` polls `/proc` instead of exiting,
+    /// which used to crash-loop the DaemonSet (ADR 0021). An explicit
+    /// `netlink` or `poll` is honoured without probing: an operator who asked
+    /// for netlink is told at run time if it is unavailable.
+    fn resolve_with(
+        self,
+        on_linux: bool,
+        probe_netlink: impl FnOnce() -> Result<(), NetlinkError>,
+    ) -> Detector {
         match self {
             DetectorFlag::Netlink => Detector::Netlink,
             DetectorFlag::Poll => Detector::Poll,
-            DetectorFlag::Auto => {
-                if cfg!(target_os = "linux") {
-                    Detector::Netlink
-                } else {
+            DetectorFlag::Auto if !on_linux => Detector::Poll,
+            DetectorFlag::Auto => match probe_netlink() {
+                Ok(()) => Detector::Netlink,
+                Err(error) => {
+                    warn!(
+                        %error,
+                        "netlink proc connector unavailable (it needs the host's initial \
+                         network namespace); polling /proc instead"
+                    );
                     Detector::Poll
                 }
-            }
+            },
         }
     }
 }
@@ -125,8 +155,9 @@ pub(crate) struct Args {
     #[clap(long, env = "NODE_NAME")]
     pub(crate) node_name: String,
 
-    /// If set, run the detector once and exit instead of looping. Useful
-    /// for one-shot invocations and for smoke tests.
+    /// If set, wait for the per-node ConfigMap watch to finish its initial
+    /// list, run the detector once, and exit instead of looping. Useful for
+    /// one-shot invocations and for smoke tests.
     #[clap(long)]
     pub(crate) oneshot: bool,
 
@@ -136,14 +167,14 @@ pub(crate) struct Args {
     #[clap(long, env = "MACHINE_ID_PATH", default_value = DEFAULT_MACHINE_ID_PATH)]
     pub(crate) machine_id_path: PathBuf,
 
-    /// Process-event source. `netlink` (default on Linux) subscribes
-    /// to the kernel's proc connector for sub-10 ms detection. `poll`
-    /// (the rung-1 fallback, default on non-Linux) walks `/proc` every
-    /// `poll_interval_ms`. `auto` picks `netlink` on Linux and `poll`
-    /// elsewhere.
+    /// Process-event source. `poll` walks `/proc` every
+    /// `poll_interval_ms`. `netlink` subscribes to the kernel's proc
+    /// connector for sub-10 ms detection, but only works in the host's
+    /// initial network namespace and needs `CAP_NET_ADMIN`; the shipped
+    /// DaemonSet has neither and sets `poll` (ADR 0021). `auto` uses
+    /// `netlink` if its socket opens and `poll` otherwise.
     ///
-    /// Tradeoffs: `netlink` requires `CAP_NET_ADMIN` on the agent pod
-    /// but has lower idle CPU and tighter latency. Under heavy-exec
+    /// Tradeoffs: `netlink` has lower idle CPU and tighter latency. Under heavy-exec
     /// workloads (`make -j32`, compile farms) it can be more expensive
     /// than `poll`, which only sees processes that survive a tick.
     /// See `docs/src/concepts/emergency-reclaim.md` for the full
@@ -230,7 +261,27 @@ pub(crate) async fn run(cli: Args) -> Result<()> {
     // Spawn the watcher. It runs until the process exits or the channel
     // receiver drops; a transient apiserver error triggers an internal
     // resubscribe inside `kube::runtime::watcher`.
-    let watcher_handle = tokio::spawn(run_config_watcher(client, cm_name, tx));
+    // `synced` flips once the watcher's initial list is complete: from then
+    // on `rx` holds the ConfigMap if it exists.
+    let (synced_tx, mut synced_rx) = watch::channel(false);
+    let watcher_handle = tokio::spawn(run_config_watcher(client, cm_name, tx, synced_tx));
+
+    // A oneshot run reads the config exactly once, so it must not read it
+    // before the watcher has listed; otherwise it always sees `None`
+    // (bug-016). The long-running agent needs no wait: it reacts to changes.
+    if cli.oneshot
+        && !await_initial_sync(
+            &mut synced_rx,
+            Duration::from_secs(ONESHOT_SYNC_TIMEOUT_SECS),
+        )
+        .await
+    {
+        watcher_handle.abort();
+        return Err(anyhow!(
+            "oneshot: the ConfigMap watch did not complete its initial list within \
+             {ONESHOT_SYNC_TIMEOUT_SECS}s"
+        ));
+    }
 
     let detector = cli.detector.resolve();
     info!(
@@ -290,6 +341,7 @@ async fn run_config_watcher(
     client: Client,
     cm_name: Arc<String>,
     tx: watch::Sender<Option<Config>>,
+    synced: watch::Sender<bool>,
 ) {
     let cms: Api<ConfigMap> =
         Api::namespaced(client, five_spot::constants::RECLAIM_AGENT_NAMESPACE);
@@ -297,7 +349,7 @@ async fn run_config_watcher(
     let mut stream = watcher(cms, wc).boxed();
     loop {
         match stream.next().await {
-            Some(Ok(event)) => apply_event(event, &tx, &cm_name),
+            Some(Ok(event)) => apply_event(event, &tx, &synced, &cm_name),
             Some(Err(e)) => {
                 // The watcher crate internally resubscribes; this branch
                 // is observational so operators see the blip in logs.
@@ -311,9 +363,12 @@ async fn run_config_watcher(
     }
 }
 
+/// Push one watcher event into the config channel, and mark the initial list
+/// complete on `InitDone`.
 fn apply_event(
     event: watcher::Event<ConfigMap>,
     tx: &watch::Sender<Option<Config>>,
+    synced: &watch::Sender<bool>,
     cm_name: &str,
 ) {
     use watcher::Event;
@@ -323,10 +378,22 @@ fn apply_event(
             info!(configmap = cm_name, "configmap deleted — idling scanner");
             let _ = tx.send(None);
         }
-        Event::Init | Event::InitDone => {
+        Event::Init => {
             debug!("configmap watcher init boundary");
         }
+        Event::InitDone => {
+            debug!("configmap watcher initial list complete");
+            let _ = synced.send(true);
+        }
     }
+}
+
+/// Wait until the ConfigMap watcher has completed its initial list, or
+/// `timeout` elapses. Returns `false` on timeout or if the watcher is gone.
+async fn await_initial_sync(synced: &mut watch::Receiver<bool>, timeout: Duration) -> bool {
+    tokio::time::timeout(timeout, synced.wait_for(|done| *done))
+        .await
+        .is_ok_and(|result| result.is_ok())
 }
 
 fn push_parsed(cm: &ConfigMap, tx: &watch::Sender<Option<Config>>, cm_name: &str) {
@@ -571,6 +638,19 @@ async fn run_netlink_scanner(
 /// `host_machine_id == None` means the operator passed
 /// `--skip-host-id-check`; the function falls back to the pre-Phase-4
 /// behaviour of trusting `NODE_NAME` blindly.
+/// Parameters for the merge patch that writes the reclaim annotations.
+///
+/// A merge patch with the agent's field manager and **no** `force`: `force` is
+/// only valid for server-side apply, and pairing it with `Patch::Merge` made
+/// kube refuse every request before it was sent, so the agent could never
+/// annotate its Node (bug-014).
+fn annotation_patch_params() -> PatchParams {
+    PatchParams {
+        field_manager: Some(FIELD_MANAGER.to_string()),
+        ..PatchParams::default()
+    }
+}
+
 async fn annotate_node(
     nodes: &Api<Node>,
     node_name: &str,
@@ -591,9 +671,8 @@ async fn annotate_node(
 
     let ts = chrono::Utc::now().to_rfc3339();
     let patch = build_patch_body(m, &ts);
-    let params = PatchParams::apply(FIELD_MANAGER).force();
     nodes
-        .patch(node_name, &params, &Patch::Merge(&patch))
+        .patch(node_name, &annotation_patch_params(), &Patch::Merge(&patch))
         .await
         .with_context(|| format!("patch Node/{node_name}"))?;
     info!(node = %node_name, "reclaim annotation written");

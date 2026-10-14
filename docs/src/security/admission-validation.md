@@ -262,8 +262,8 @@ The two 5-Spot node agents deliberately exceed the Pod Security Standards
 | `privileged` | ✅ (setns into host PID 1 for the k0s restart, ADR 0003, 0020) | (none) |
 | `hostPID` | ✅ | ✅ (scan host `/proc`) |
 | root (`runAsUser: 0`) | ✅ | ✅ |
-| `hostPath` | `/` (RW) | `/proc`, `/etc/machine-id` (RO) |
-| added capabilities | — | `NET_ADMIN` |
+| `hostPath` | `/etc/k0s` (RW, ADR 0005) | `/proc`, `/etc/machine-id` (RO) |
+| added capabilities | (none) | (none; ADR 0021 removed `NET_ADMIN`) |
 
 Clusters enforcing a pod-security baseline (Pod Security Admission, OPA
 Gatekeeper, Kyverno) will deny these pods. **Kubernetes admission is
@@ -303,9 +303,9 @@ That exemption is namespace-wide — which is the hole the
 - `hostPID`, `hostPath`, explicit root — restricted to the two agent
   ServiceAccounts; `privileged` to the kata-config agent only.
 - `hostNetwork` / `hostIPC` — denied for everyone (no 5-Spot component uses them).
-- hostPath **clamped per agent**: kata may mount only `/`; reclaim only
-  `/proc` and `/etc/machine-id`. Capability adds clamped to `NET_ADMIN` on the
-  reclaim agent.
+- hostPath **clamped per agent**: kata may mount only `/etc/k0s` (ADR 0005);
+  reclaim only `/proc` and `/etc/machine-id`. **No pod may add a capability**
+  (ADR 0021).
 - The compensating controls become **mandatory**: privileged containers must
   keep `readOnlyRootFilesystem: true`; agent pods must keep
   `seccompProfile.type: RuntimeDefault`.
@@ -422,12 +422,18 @@ server, on a throwaway cluster:
 
 ```bash
 make kind-create
-make kind-verify-admission   # .github/scripts/admission-deny.bats
+make kind-verify-admission   # admission-deny.bats + agent-pod-security.bats
 make kind-delete
 ```
 
-CI runs the same target on every change under `deploy/admission/`
-(`.github/workflows/admission-test.yaml`).
+`agent-pod-security.bats` also proves the opposite failure: it renders the
+**shipped** reclaim and kata-config DaemonSets into Pods and asserts the policy
+admits them, so a policy that drifts from the manifests it governs fails here.
+That is how a stale hostPath rule (it still demanded `/` after ADR 0005 moved
+the mount to `/etc/k0s`, rejecting the kata agent outright) was found.
+
+CI runs the same target on every change under `deploy/admission/` or either
+agent's manifests (`.github/workflows/admission-test.yaml`).
 
 Expected output includes `Type Ready` condition in the `Status` section.
 

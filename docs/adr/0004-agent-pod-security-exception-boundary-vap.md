@@ -8,6 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 - **Date:** 2026-06-10
 - **Deciders:** Erick Bourgeois
 - **Supersedes:** —
+- **Superseded in part by:** ADR [0005](./0005-remove-kata-destpath-fixed-host-path.md) (the kata agent's hostPath is `/etc/k0s`, not `/`; the policy rule caught up on 2026-10-14) and ADR [0021](./0021-reclaim-agent-polls-proc-no-net-admin.md) (decision 5: no capability adds for any agent, `NET_ADMIN` removed)
 - **Related:** ADR [0003](./0003-in-pod-host-service-restart-via-nsenter.md) (the privileged kata-config agent this boundary sanctions); ADR [0005](./0005-confine-kata-destpath-to-etc-k0s.md) (complementary containment *inside* the kata agent's hostPath `/` mount — 0005 confines what the agent writes, this ADR confines who may carry the mount at all); the reclaim agent (`deploy/node-agent/daemonset.yaml`); `deploy/admission/` (existing ValidatingAdmissionPolicy posture); `.trivyignore`; `docs/src/security/threat-model.md`.
 
 ## Context

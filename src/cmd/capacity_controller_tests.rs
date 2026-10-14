@@ -112,4 +112,18 @@ mod tests {
         use clap::CommandFactory as _;
         Cli::command().debug_assert();
     }
+
+    /// The readiness the Deployment's probe sees once the controller is up.
+    /// Without `set_ready`, `/readyz` answered 503 forever, the pod never
+    /// became Ready and `kubectl rollout status` hung (bug-013, found when the
+    /// k0smotron e2e tier first deployed this controller).
+    #[test]
+    fn test_startup_health_state_is_ready() {
+        let state = startup_health_state();
+        assert!(
+            state.is_ready(),
+            "the capacity controller must report ready"
+        );
+        assert!(state.is_healthy());
+    }
 }

@@ -8,8 +8,8 @@
 # -------
 # The two 5-Spot node agents deliberately exceed the Pod Security Standards:
 #
-#   5spot-kata-config-agent  privileged + hostPID + hostPath / (RW)   (ADR 0003)
-#   5spot-reclaim-agent      hostPID + CAP_NET_ADMIN + hostPath /proc,
+#   5spot-kata-config-agent  privileged + hostPID + hostPath /etc/k0s (RW)   (ADR 0003, 0005)
+#   5spot-reclaim-agent      hostPID + hostPath /proc,
 #                            /etc/machine-id (RO)
 #
 # Kubernetes admission is CONJUNCTIVE: every plugin must admit a request and
@@ -162,14 +162,16 @@ spec:
       reason: Forbidden
 
     # ── 6b. hostPath clamp — kata config agent: '/' only ────────────────────
-    # The dest path is operator-configurable per ScheduledMachine, so the
-    # DaemonSet mounts the host root (ADR 0003); it may mount nothing else.
+    # The drop-in path is fixed at /etc/k0s/containerd.d/kata.toml (ADR 0005
+    # removed the configurable destPath), so the DaemonSet mounts exactly
+    # /etc/k0s and may mount nothing else. This rule still demanded '/' after
+    # ADR 0005, which rejected the shipped DaemonSet outright.
     - expression: >-
         !variables.isKataAgent
-        || variables.hostPathVolumes.all(v, v.hostPath.path == '/')
+        || variables.hostPathVolumes.all(v, v.hostPath.path == '/etc/k0s')
       message: >-
-        the kata config agent may only mount hostPath '/' (its documented
-        posture, ADR 0003); any other hostPath is outside the sanctioned exception
+        the kata config agent may only mount hostPath '/etc/k0s' (ADR 0005);
+        any other hostPath is outside the sanctioned exception
       reason: Forbidden
 
     # ── 6c. hostPath clamp — reclaim agent: /proc and /etc/machine-id only ──
@@ -181,19 +183,18 @@ spec:
         (its documented posture); any other hostPath is outside the sanctioned exception
       reason: Forbidden
 
-    # ── 7. capability adds: reclaim agent NET_ADMIN only ────────────────────
-    # NET_ADMIN backs the netlink proc-connector subscription (rung 2). No
-    # other identity may add any capability; the reclaim agent may add only
-    # this one.
+    # ── 7. capability adds: none, for anyone ──────────────────────────────
+    # The reclaim agent's NET_ADMIN existed only for the netlink proc
+    # connector, which delivers solely to the host's initial network
+    # namespace; rule 2 denies hostNetwork, so it could never be used and it
+    # is gone (ADR 0021). No identity in 5spot-system may add a capability.
     - expression: >-
         variables.allContainers.all(c,
           !has(c.securityContext) || !has(c.securityContext.capabilities)
           || !has(c.securityContext.capabilities.add)
-          || c.securityContext.capabilities.add.all(a,
-               variables.isReclaimAgent && a == 'NET_ADMIN'))
+          || size(c.securityContext.capabilities.add) == 0)
       message: >-
-        added Linux capabilities in 5spot-system are restricted to NET_ADMIN on
-        the reclaim agent (serviceAccountName 5spot-reclaim-agent)
+        adding Linux capabilities is not allowed in 5spot-system (ADR 0021)
       reason: Forbidden
 
     # ── 8. explicit root: agents only ────────────────────────────────────────

@@ -37,7 +37,8 @@
 //! reason: it reads a **consumer's own report**, and reading back the `spec`
 //! value 5-Spot just wrote would make handback complete instantly and falsely.
 //!
-//! The CRD schema enforces the charset and depth rules at admission. **This
+//! The CRD schema enforces the charset, depth and reserved-root rules at
+//! admission. **This
 //! module is not a duplicate of that check, it is the one that still holds**
 //! when the deployed CRD is out of date relative to the running controller,
 //! which is exactly the situation a schema cannot defend against.
@@ -45,13 +46,9 @@
 use serde_json::{Map, Value};
 
 use crate::constants::{
-    CAPACITY_DRAINED_PATH_PREFIX, CAPACITY_FIELD_MAX_SEGMENTS, CAPACITY_PATH_MAX_SEGMENTS,
+    CAPACITY_DRAINED_PATH_PREFIX, CAPACITY_FIELD_MAX_SEGMENTS, CAPACITY_FIELD_RESERVED_ROOTS,
+    CAPACITY_PATH_MAX_SEGMENTS,
 };
-
-/// First segments rejected in `spec.capacity.field`. Each is already implicit
-/// or structurally out of reach, so naming one is a mistake that would build the
-/// wrong object rather than an attack that would reach a dangerous field.
-const RESERVED_ROOT_SEGMENTS: &[&str] = &["spec", "metadata", "status"];
 
 /// Maximum total length of a capacity path, matching the CRD schema's
 /// `maxLength` so the two layers reject the same inputs.
@@ -209,7 +206,7 @@ pub fn validate_capacity_field(field: &str) -> Result<Vec<&str>, CapacityPathErr
     // Checked after the charset pass so a malformed field reports the more
     // specific error: "a-b is not a field name" beats "a-b has a bad root".
     let first = segments[0];
-    if RESERVED_ROOT_SEGMENTS.contains(&first) {
+    if CAPACITY_FIELD_RESERVED_ROOTS.contains(&first) {
         return Err(CapacityPathError::ReservedRootSegment {
             segment: first.to_string(),
             found: field.to_string(),
