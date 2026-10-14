@@ -9,6 +9,53 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-10-14 19:30] - CI: restore image publishing on main; one variant per image tag
+
+**Author:** Erick Bourgeois
+
+### Changed
+
+- `.github/workflows/build.yaml` (`test`): `needs: [license-check, verify-commits]`
+  instead of `[format]`. `format` and `clippy` run on pull requests only, so on a
+  push to `main` a skipped `format` skipped `test`, and through `test` the
+  `docker`, attest and Grype jobs. **No image was published for `c799008`** (the
+  merge of #197). Regression introduced by the 2026-10-13 21:30 entry, which
+  moved `test` off `build` to run in parallel; that intent is kept.
+- `.github/workflows/build.yaml` (image metadata): the `sha-<commit>` tag on
+  pull requests, and the `main-<date>`, `sha-<commit>` and `latest` tags on
+  `main`, now carry `matrix.variant.suffix`, as the release block already did.
+  Both variants pushed the same names, so the later job won: `sha-8a9fc7b`
+  resolved to the Distroless digest while `pr-197` was Chainguard. Chainguard's
+  suffix is empty, so its tags are unchanged and `latest` is now always
+  Chainguard; Distroless gains `latest-distroless`, `sha-<commit>-distroless`
+  and `main-<date>-distroless`. Nothing in the repository pulls the old names.
+- `docs/src/development/building.md`: per-event, per-variant tag table.
+- `SECURITY.md`: the Distroless variant is a tag suffix on
+  `ghcr.io/finos/5-spot`, not a `ghcr.io/finos/5-spot-distroless` repository
+  (which does not exist).
+
+### Why
+
+Rolling the bug-008 fix out to core needs an image built from `main`, and none
+existed. The tag collision would also have made `sha-<commit>` unsafe to use for
+choosing a variant.
+
+### Impact
+
+- [ ] Breaking change (Chainguard tags unchanged; Distroless tags are new names)
+- [ ] Requires cluster rollout
+- [x] Config change only (CI)
+- [ ] Documentation only
+
+### Verification
+
+- Every job that depends on a pull-request-only job checked mechanically: none
+  besides `test` did. `actionlint`: the six pre-existing shellcheck findings
+  only.
+- Not verifiable before merge: the publish itself runs only on a push to `main`.
+
+---
+
 ## [2026-10-14 10:30] - Bump rustls to 0.23.46 (RUSTSEC-2026-0346 to 0349)
 
 **Author:** Erick Bourgeois

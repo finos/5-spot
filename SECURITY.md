@@ -53,7 +53,8 @@ release on `main` receives security fixes during the incubation phase.
 In scope:
 
 - The 5-Spot controller binary and its container images
-  (`ghcr.io/finos/5-spot`, `ghcr.io/finos/5-spot-distroless`).
+  (`ghcr.io/finos/5-spot`: the Chainguard variant, and the Distroless variant
+  under the same name with a `-distroless` tag suffix).
 - The Custom Resource Definitions and admission policies shipped under
   [`deploy/`](./deploy).
 - The build and release pipeline
