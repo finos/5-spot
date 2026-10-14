@@ -59,8 +59,20 @@ under `binaries/<arch>/`):
 
 | File | Base image | Published as |
 |------|-----------|--------------|
-| `Dockerfile` | `gcr.io/distroless/cc-debian13:nonroot` | `ghcr.io/finos/5-spot*-distroless` |
-| `Dockerfile.chainguard` | `cgr.dev/chainguard/glibc-dynamic:latest` | `ghcr.io/finos/5-spot` |
+| `Dockerfile` | `gcr.io/distroless/cc-debian13:nonroot` | `ghcr.io/finos/5-spot`, tags ending `-distroless` |
+| `Dockerfile.chainguard` | `cgr.dev/chainguard/glibc-dynamic:latest` | `ghcr.io/finos/5-spot`, tags without a suffix |
+
+Both variants share one repository and are told apart by tag suffix. Every tag
+carries it, so a tag always names exactly one variant:
+
+| Event | Chainguard | Distroless |
+|---|---|---|
+| Pull request | `pr-<n>`, `sha-<commit>` | `pr-<n>-distroless`, `sha-<commit>-distroless` |
+| Push to `main` | `main-<date>`, `sha-<commit>`, `latest` | `main-<date>-distroless`, `sha-<commit>-distroless`, `latest-distroless` |
+| Release | `v<x.y.z>`, `v<x.y>`, `v<x>`, `sha-<commit>` | the same, each ending `-distroless` |
+
+For a pull request, `<commit>` is GitHub's merge commit for the PR, not the
+branch head. To deploy a specific build, pin the digest rather than the tag.
 
 Both bases are **pinned by digest on the `FROM` line**, and Dependabot's
 `docker` ecosystem opens a PR with the new digest when either tag is rebuilt:

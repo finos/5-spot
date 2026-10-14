@@ -393,7 +393,7 @@ jobs:
           images: ghcr.io/${{ matrix.variant.image-repository }}
           tags: |
             type=raw,value=${{ matrix.variant.image-tag }}
-            type=raw,value=sha-${{ needs.extract-version.outputs.short-sha }}
+            type=raw,value=sha-${{ needs.extract-version.outputs.short-sha }}${{ matrix.variant.suffix }}
           flavor: |
             latest=false
 
@@ -405,9 +405,13 @@ jobs:
           images: ghcr.io/${{ matrix.variant.image-repository }}
           tags: |
             type=raw,value=${{ matrix.variant.image-tag }}
-            type=raw,value=main-{{date 'YYYY-MM-DD'}}
-            type=raw,value=sha-${{ needs.extract-version.outputs.short-sha }}
-            type=raw,value=latest
+            # Every tag shared by both variants carries the variant suffix, as the
+            # release block does. Without it both jobs pushed the same name and the
+            # later one won, so sha-<commit> and latest named an arbitrary variant.
+            # Chainguard's suffix is empty: its tags, and latest, are unchanged.
+            type=raw,value=main-{{date 'YYYY-MM-DD'}}${{ matrix.variant.suffix }}
+            type=raw,value=sha-${{ needs.extract-version.outputs.short-sha }}${{ matrix.variant.suffix }}
+            type=raw,value=latest${{ matrix.variant.suffix }}
           flavor: |
             latest=false
 
