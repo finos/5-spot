@@ -316,7 +316,10 @@ jobs:
   test:
     name: 🧪 Test
     runs-on: ubuntu-latest
-    needs: [format]
+    # Not [format]: format and clippy run on pull requests only, and on a push
+    # to main a skipped need skips this job and, through it, docker (no image
+    # was published for c799008). These two gates run on every event.
+    needs: [license-check, verify-commits]
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
