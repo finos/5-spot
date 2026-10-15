@@ -51,6 +51,14 @@ flowchart LR
 
 Each hop's responsibility stays narrow: the **agent** only writes annotations (node-scoped RBAC, no broad API access); the **controller** owns all cluster-mutating work (drain, Machine delete, schedule flip).
 
+The Node lives in the cluster the agent runs on, usually a child cluster. The
+controller reads its annotations, drains it and clears them through that
+cluster's kubeconfig (the same `spec.kubeconfigSecretRef` or
+`<clusterName>-kubeconfig` resolution as every other Node operation), and
+deletes the Machine and disables the `ScheduledMachine` on the management
+cluster. A kubeconfig that cannot be resolved is a reconcile error, never a
+silently skipped check.
+
 ---
 
 ## Lifecycle — where `EmergencyRemove` fits

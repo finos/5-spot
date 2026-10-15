@@ -293,6 +293,44 @@
         "scheduledcapacity",
         "e2e"
       ]
+    },
+    {
+      "id": "bug-016",
+      "date": "2026-10-15",
+      "error_message": "5spot agent reclaim --oneshot exits 1 at once: 'oneshot mode: no config present', 'Error: no configmap observed during oneshot run', with the per-node ConfigMap present; followed by 'watch list error: Service(Closed)' noise.",
+      "root_cause": "run() spawned the ConfigMap watcher and the scanner read the config channel immediately. In oneshot mode it read exactly once, always before the watcher's initial list, so it always saw None. The Service(Closed) lines are the watcher's client being dropped on exit, not a network fault.",
+      "fix": "The watcher signals InitDone on a second watch channel; --oneshot waits for it (await_initial_sync, bounded by ONESHOT_SYNC_TIMEOUT_SECS=30) before the scanner runs. Tests pin the wait, the timeout, a dead watcher, and apply_event's InitDone/Init/InitApply/Delete handling. Verified live: armed, matched, annotated, exit 0.",
+      "lesson": "A oneshot mode that reads state fed by a background watcher must wait for the watcher's initial sync, or it races and always loses.",
+      "files": [
+        "src/cmd/reclaim_agent.rs",
+        "src/cmd/reclaim_agent_tests.rs"
+      ],
+      "tags": [
+        "reclaim-agent",
+        "oneshot",
+        "race",
+        "watcher",
+        "found-by-e2e"
+      ]
+    },
+    {
+      "id": "bug-017",
+      "date": "2026-10-15",
+      "error_message": "Reclaim annotations present on the child-cluster Node (reclaim-requested=true) but the controller never ejects: SM stays Active, logs only 'Machine active and in schedule'.",
+      "root_cause": "check_emergency_reclaim fetched the Node with Api::all(ctx.client), the management-cluster client. In the k0smotron topology the Node is in the child cluster, so the GET 404'd, which the guard treats as 'already removed', and the reclaim was skipped silently. handle_emergency_remove already resolved the child client; only the detection step was missed.",
+      "fix": "check_emergency_reclaim resolves ctx.child_clients.resolve(&ctx.client, resource) first and reads the Node through it; fail-closed on an unresolvable kubeconfig. Test asserts the first API call is the <cluster>-kubeconfig Secret lookup, then the Node GET. Verified live: SM disabled, Machine deleted, Node gone.",
+      "lesson": "Every Node read or write in a reconciler must go through the child-client resolver; a 404 that means 'benign' hides a wrong-cluster lookup.",
+      "files": [
+        "src/reconcilers/scheduled_machine.rs",
+        "src/reconcilers/scheduled_machine_tests.rs"
+      ],
+      "tags": [
+        "reclaim",
+        "child-cluster",
+        "kubeconfig",
+        "silent-failure",
+        "found-by-e2e"
+      ]
     }
   ]
 }

@@ -9,6 +9,45 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-10-15 10:30] - Emergency reclaim works end to end: two more defects found driving it live
+
+**Author:** Erick Bourgeois
+
+### Changed
+
+- `src/reconcilers/scheduled_machine.rs`: `check_emergency_reclaim` reads the
+  Node through the resolved child-cluster client, not the management client.
+  The Node is in the child cluster, so the old GET returned 404, which the guard
+  reads as "already removed", and every reclaim was skipped silently (bug-017).
+  `handle_emergency_remove` already used the child client; only detection was
+  missed. New test: the first API call is the `<clusterName>-kubeconfig` lookup.
+- `src/cmd/reclaim_agent.rs`: the ConfigMap watcher signals when its initial
+  list is complete, and `--oneshot` waits for that (bounded, 30 s) before it
+  scans. It used to read the config before the watcher had listed, so a oneshot
+  run always reported "no configmap observed", even with the ConfigMap present
+  (bug-016). The documented smoke test could never have passed. Eight new tests.
+- `docs/src/reference/cli.md`, `docs/src/operations/configuration.md`: the
+  `--oneshot` description. `docs/src/concepts/emergency-reclaim.md`: which
+  cluster each step of the flow uses.
+
+### Why
+
+Bug-014's fix needed live proof, and driving it live found these two. Verified
+on the k0smotron e2e environment with binaries built from this tree: the agent
+armed from its per-node ConfigMap, matched the process and annotated its Node
+(exit 0); the controller then disabled the `ScheduledMachine`, deleted the
+Machine, and the Node left the child cluster. With the published image the
+annotation sat on the Node and nothing happened.
+
+### Impact
+
+- [ ] Breaking change
+- [x] Requires cluster rollout (controller and reclaim agent image)
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
 ## [2026-10-15 09:30] - capacity.field: reserved roots refused at admission, as documented
 
 **Author:** Erick Bourgeois

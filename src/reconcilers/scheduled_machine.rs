@@ -771,9 +771,16 @@ async fn check_emergency_reclaim(
         return Ok(None);
     }
 
-    // Fetch the Node. 404 is benign — means the node was already removed,
-    // nothing to reclaim. Other errors propagate so the reconciler retries.
-    let nodes: Api<Node> = Api::all(ctx.client.clone());
+    // The reclaim agent annotates the Node in the cluster it runs on, so read
+    // it through the child-cluster client, as handle_emergency_remove does.
+    // The management client finds no such Node in a k0smotron topology and
+    // the 404 below would skip the reclaim silently (bug-017). Fail-closed:
+    // an unresolvable kubeconfig is a reconcile error, not a skipped check.
+    let child = ctx.child_clients.resolve(&ctx.client, resource).await?;
+
+    // Fetch the Node. 404 is benign: the node was already removed, nothing to
+    // reclaim. Other errors propagate so the reconciler retries.
+    let nodes: Api<Node> = Api::all(child.client().clone());
     let node = match nodes.get(node_name).await {
         Ok(n) => n,
         Err(kube::Error::Api(e)) if e.code == HTTP_NOT_FOUND => {

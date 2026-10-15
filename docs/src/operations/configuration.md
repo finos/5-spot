@@ -130,8 +130,8 @@ Options:
   --skip-host-id-check         Skip the host-identity cross-check before PATCH
                                  (defence-in-depth; default off)
                                  [env: SKIP_HOST_ID_CHECK]
-  --oneshot                    Run the detector once and exit
-                                 (one-shot tests / smoke verification)
+  --oneshot                    Wait for the ConfigMap watch's initial list,
+                                 scan once, and exit (smoke verification)
   -h, --help                   Print help
   -V, --version                Print version
 ```
