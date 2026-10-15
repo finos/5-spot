@@ -146,5 +146,14 @@ the same host back in 79s; deletion cleans up in 21s), and
 reasons. The first run against the published image found bug-008 (threat model
 D6), which is why the controller had to come from this change.
 
+**Extended 2026-10-14 (ADR 0020, ADR 0021).** Once every component shared one
+image, the tier also deploys the capacity controller (and runs
+`.github/scripts/capacity-e2e.bats`, which until then had never run in CI and
+had drifted from the `TimeBasedSpotSchedule` schema) and both node agents on the
+child cluster, with the image imported into the worker's containerd. Building
+that found three defects no other tier could: the reclaim agent crash-looped on
+Linux (ADR 0021), the agent pod-security policy rejected the shipped kata agent,
+and a duplicate `args` key in the reclaim DaemonSet.
+
 **CALM impact:** none. CALM models the running system; this is a test tier
 that deploys the existing system unchanged.

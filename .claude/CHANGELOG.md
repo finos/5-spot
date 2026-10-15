@@ -9,6 +9,177 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-10-15 10:30] - Emergency reclaim works end to end: two more defects found driving it live
+
+**Author:** Erick Bourgeois
+
+### Changed
+
+- `src/reconcilers/scheduled_machine.rs`: `check_emergency_reclaim` reads the
+  Node through the resolved child-cluster client, not the management client.
+  The Node is in the child cluster, so the old GET returned 404, which the guard
+  reads as "already removed", and every reclaim was skipped silently (bug-017).
+  `handle_emergency_remove` already used the child client; only detection was
+  missed. New test: the first API call is the `<clusterName>-kubeconfig` lookup.
+- `src/cmd/reclaim_agent.rs`: the ConfigMap watcher signals when its initial
+  list is complete, and `--oneshot` waits for that (bounded, 30 s) before it
+  scans. It used to read the config before the watcher had listed, so a oneshot
+  run always reported "no configmap observed", even with the ConfigMap present
+  (bug-016). The documented smoke test could never have passed. Eight new tests.
+- `docs/src/reference/cli.md`, `docs/src/operations/configuration.md`: the
+  `--oneshot` description. `docs/src/concepts/emergency-reclaim.md`: which
+  cluster each step of the flow uses.
+
+### Why
+
+Bug-014's fix needed live proof, and driving it live found these two. Verified
+on the k0smotron e2e environment with binaries built from this tree: the agent
+armed from its per-node ConfigMap, matched the process and annotated its Node
+(exit 0); the controller then disabled the `ScheduledMachine`, deleted the
+Machine, and the Node left the child cluster. With the published image the
+annotation sat on the Node and nothing happened.
+
+### Impact
+
+- [ ] Breaking change
+- [x] Requires cluster rollout (controller and reclaim agent image)
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
+## [2026-10-15 09:30] - capacity.field: reserved roots refused at admission, as documented
+
+**Author:** Erick Bourgeois
+
+### Changed
+
+- `src/crd.rs`: `capacity_field_schema` adds one CEL rule,
+  `!self.matches('^(spec|metadata|status)([.]|$)')`, generated from the new
+  `CAPACITY_FIELD_RESERVED_ROOTS`. RE2 has no negative lookahead, so it cannot
+  live in the pattern; `matches` is core CEL. No prefix rule is added (ADR 0016
+  decision 3 stands). Doc comment on `CapacityWrite.field` updated.
+- `src/constants.rs`: `CAPACITY_FIELD_RESERVED_ROOTS`, the one list the schema
+  rule and `src/reconcilers/capacity_path.rs` both use (its private
+  `RESERVED_ROOT_SEGMENTS` is gone).
+- `src/crd_tests.rs`: the schema carries exactly the reserved-root rule, its
+  message names every root, and no rule requires a prefix.
+- `deploy/crds/scheduledcapacity.yaml`: regenerated (`make crds`).
+- `.github/scripts/capacity-e2e.bats`: test 15 also asserts the admission
+  message.
+- `docs/src/concepts/scheduled-capacity.md`, `docs/src/security/threat-model.md`
+  (§7 row): name the CEL rule.
+
+### Why
+
+The new capacity e2e found that `spec.capacity.field: metadata.ownerReferences`
+was admitted. The concept page, the threat model §7 row and the
+`CapacityError::Path` rustdoc all said admission refuses a reserved root; only
+the reconciler did, into its logs on every requeue. Not a security gap (the path
+is rooted at the owned object's `spec`, so `metadata` is unreachable either
+way), but a caller mistake that should fail where the caller sees it.
+
+Verified against a real API server (kind, Kubernetes v1.37): `metadata.ownerReferences`,
+`status.replicas`, `spec.warmReplicas` and `spec` are refused with the rule's
+message; `warmReplicas`, `scale.warm` and `specReplicas` are admitted. The
+capacity e2e suite passes 16/16.
+
+### Impact
+
+- [ ] Breaking change (a reserved-root field never reconciled; it now fails at admission instead)
+- [x] Requires cluster rollout (CRD update)
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
+## [2026-10-15 02:00] - ADR-0021: reclaim agent polls with no NET_ADMIN; capacity controller and both agents in the e2e tier; five defects fixed
+
+**Author:** Erick Bourgeois
+
+### Changed
+
+- `src/cmd/reclaim_agent.rs`: `DetectorFlag::resolve_with` probes netlink once
+  for `auto` and falls back to `/proc` polling with a warning; explicit
+  `netlink`/`poll` are not probed. `--detector` help corrected.
+  `annotation_patch_params()`: the Node annotation is a merge patch with the
+  agent's field manager and no `force`. The old `PatchParams::apply(..).force()`
+  with `Patch::Merge` was refused by kube before sending, so the agent could
+  never annotate its Node in any mode (bug-014). Tests go through kube's public
+  `Request::patch` builder.
+- `deploy/node-agent/daemonset.yaml`: `RECLAIM_DETECTOR=poll`; `NET_ADMIN`
+  removed (`capabilities.drop: [ALL]`, nothing added); the duplicate `args` key
+  merged into one list (`agent reclaim --proc-root=/host/proc`).
+- `deploy/admission/agent-pod-security-policy.yaml`: rule 7 admits no
+  capability add for any pod; rule 6b admits only hostPath `/etc/k0s` for the
+  kata agent (it still demanded `/` after ADR 0005 and rejected the shipped
+  DaemonSet). `.trivyignore`: KSV-0022 suppression removed.
+- `src/cmd/capacity_controller.rs`: `startup_health_state()` sets ready as well
+  as connected; `/readyz` previously answered 503 forever.
+- `src/crd.rs`, `src/bin/crddoc.rs`: `killIfCommands` describes the opt-in
+  label (the controller never installed the DaemonSet); `restartService` names
+  `5spot nsenter`. CRDs and `api.md` regenerated.
+- `.github/scripts/agent-pod-security.bats` (**new**): the shipped agent
+  DaemonSets rendered into Pods must be admitted; capability adds, `NET_ADMIN`
+  and a host-root mount must be denied. Run by `make kind-verify-admission`;
+  `admission-test.yaml` also triggers on the agent manifests.
+- `.github/scripts/e2e-k0smotron.sh`: deploys the capacity controller, installs
+  both agents and the workload-cluster policies on the child cluster, and a new
+  `load-worker-image` imports the image into the worker's containerd.
+- `.github/scripts/k0smotron-e2e.bats`: reclaim scenario (a real process match
+  on the worker through to emergency removal, with the agent required Ready, not
+  just Running) and kata scenario (drop-in on the worker's disk and a
+  `k0sworker` restart through `5spot nsenter`). `kchild` passes stdin, so piped
+  manifests reach the child cluster.
+- `.github/scripts/capacity-e2e.bats`: `TimeBasedSpotSchedule` schema fixed
+  (`windows:` no longer exists); now run by `make e2e-k0smotron`.
+- `.github/scripts/validate-examples.py`: strict duplicate-key check over
+  `deploy/` and `examples/`.
+- `docs/adr/0021-reclaim-agent-polls-proc-no-net-admin.md` (**new**); ADR 0004
+  marked superseded in part (0005, 0021); ADR 0019 extended; both indexes.
+- `docs/architecture/calm/architecture.json`: agent policy posture.
+- Docs: `concepts/emergency-reclaim.md`, `operations/configuration.md`,
+  `operations/troubleshooting.md`, `reference/cli.md`,
+  `security/admission-validation.md`, `development/testing.md`,
+  `.claude/rules/testing.md`.
+- `docs/src/security/threat-model.md`: 1.11 pass (T13 closed, D10 new, E5 and
+  K7 corrected, two §7 rows).
+- `.wolf/buglog.json`: bug-010 to bug-014.
+
+### Why
+
+Adding the capacity controller and both agents to the e2e tier found five
+defects no other tier could: the reclaim agent crash-looped on every Linux node
+(netlink needs the host's initial network namespace, which agent pods never
+have), and even with a working detector its Node patch was refused client-side,
+so emergency reclaim had never worked; the agent pod-security policy rejected
+the shipped kata agent; the capacity controller never reported ready; and the
+reclaim DaemonSet had two `args` keys (introduced by the ADR 0020 change).
+
+### Impact
+
+- [ ] Breaking change
+- [x] Requires cluster rollout (controller image and both agent manifests)
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+
+- `cargo fmt`, `cargo clippy -D warnings`, `cargo test`: 880 library and 53
+  binary tests (52 on macOS; the `ECONNREFUSED` fallback test is Linux-only).
+- `make kind-verify-admission` on a throwaway cluster: all 11 tests pass
+  (6 new, 5 existing).
+- `make validate-examples`: 77 passed, 0 failed, 7 not validated.
+- e2e on slate under rootful podman from the published `main` image
+  (`sha-b6cc654-distroless`), with the capacity readinessProbe removed in a
+  scratch copy because that image predates the readiness fix: lifecycle tests
+  1 to 7 and reclaim test 8 pass. **The remaining reclaim, kata and capacity
+  results were still running at commit time**; the PR's e2e workflow builds the
+  image from this change and runs all of them with the real probe.
+- `make calm-validate`, `mkdocs build --strict`, shellcheck, actionlint: clean.
+
+---
+
 ## [2026-10-14 23:30] - ADR-0020: one `5spot` binary with subcommands, one image; in-process host namespace entry
 
 **Author:** Erick Bourgeois

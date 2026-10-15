@@ -177,6 +177,160 @@
         "rustls",
         "dependencies"
       ]
+    },
+    {
+      "id": "bug-010",
+      "date": "2026-10-14",
+      "error_message": "The shipped reclaim agent cannot run on Linux: with RECLAIM_DETECTOR unset, `auto` picks netlink, Subscriber::new() fails with ECONNREFUSED (os error 111), the agent exits, and the DaemonSet crash-loops. Emergency reclaim never worked out of the box.",
+      "root_cause": "The kernel's proc connector delivers only to the initial network namespace. Measured with tests/integration_netlink_proc.rs as root: passes in the host netns, fails in `unshare -n`. Agent pods have their own netns, and the agent pod-security VAP denies hostNetwork (ADR 0004), so netlink could never open. The only netlink test runs by hand as root in the host namespace, the one case that works.",
+      "fix": "ADR 0021: DetectorFlag::resolve_with probes netlink once for `auto` and falls back to poll with a warning; explicit netlink/poll are not probed. The DaemonSet sets RECLAIM_DETECTOR=poll and drops NET_ADMIN; VAP rule 7 admits no capability adds; the KSV-0022 trivyignore suppression is removed.",
+      "lesson": "A test that only runs in the one environment where a feature works proves nothing about where it is deployed. Run the privileged/kernel-facing path in the namespace and policy context the pod actually gets.",
+      "files": [
+        "src/cmd/reclaim_agent.rs",
+        "deploy/node-agent/daemonset.yaml",
+        "deploy/admission/agent-pod-security-policy.yaml",
+        ".trivyignore"
+      ],
+      "tags": [
+        "reclaim-agent",
+        "netlink",
+        "network-namespace",
+        "admission",
+        "found-by-e2e-work",
+        "adr-0021"
+      ]
+    },
+    {
+      "id": "bug-011",
+      "date": "2026-10-14",
+      "error_message": "ValidatingAdmissionPolicy 5spot-agent-pod-security denied the shipped kata-config agent DaemonSet pod: 'the kata config agent may only mount hostPath /'. The agent could not start on any cluster with the policy installed.",
+      "root_cause": "ADR 0005 removed the configurable destPath and narrowed the DaemonSet's hostPath from / to /etc/k0s, but rule 6b of the agent pod-security policy still required '/' and its comment still described destPath. Nothing tested that the shipped agent pods pass their own policy.",
+      "fix": "Rule 6b now admits exactly hostPath /etc/k0s (tighter than before). New .github/scripts/agent-pod-security.bats renders both shipped DaemonSets into Pods and asserts they are admitted, plus the denials (NET_ADMIN, any capability add, host-root mount).",
+      "lesson": "A policy needs a positive test built from the real manifest it governs, not only deny tests: a correct-looking policy can block the very component it exists to allow.",
+      "files": [
+        "deploy/admission/agent-pod-security-policy.yaml",
+        ".github/scripts/agent-pod-security.bats"
+      ],
+      "tags": [
+        "admission",
+        "vap",
+        "kata-config-agent",
+        "adr-0005"
+      ]
+    },
+    {
+      "id": "bug-012",
+      "date": "2026-10-14",
+      "error_message": "deploy/node-agent/daemonset.yaml had two `args:` keys on the agent container after ADR 0020's manifest edit: `args: [agent, reclaim]` plus the existing `args: [--proc-root=/host/proc]`. YAML keeps the last, so the pod would run `5spot --proc-root=/host/proc`, the controller with an unknown flag.",
+      "root_cause": "The ADR 0020 edit inserted a new args key above an existing one, and the check used yaml.safe_load, which silently accepts duplicate keys. CI passed because no tier deployed the reclaim agent.",
+      "fix": "One args list: [agent, reclaim, --proc-root=/host/proc]. A strict duplicate-key check over deploy/ and examples/ added to validate-examples.py.",
+      "lesson": "PyYAML's safe_load accepts duplicate mapping keys; validate manifests with a loader that rejects them. Before adding a key to a manifest block, look for that key further down the same block.",
+      "files": [
+        "deploy/node-agent/daemonset.yaml",
+        ".github/scripts/validate-examples.py"
+      ],
+      "tags": [
+        "manifests",
+        "yaml",
+        "duplicate-key",
+        "adr-0020"
+      ]
+    },
+    {
+      "id": "bug-013",
+      "date": "2026-10-14",
+      "error_message": "The capacity controller Deployment never became Ready: both pods Running 0/1, `kubectl rollout status deployment/5spot-capacity-controller` hung ('1 old replicas are pending termination').",
+      "root_cause": "src/cmd/capacity_controller.rs called HealthState::set_k8s_connected(true) but never set_ready(true); /readyz requires both, so it answered 503 forever. Never noticed because no tier ever deployed the capacity controller from an image (the Dockerfiles did not even ship its binary before ADR 0020), and capacity-e2e.bats never ran in CI.",
+      "fix": "startup_health_state() returns a connected and ready HealthState, served by the capacity controller; test_startup_health_state_is_ready pins it. The k0smotron e2e tier now deploys the capacity controller and runs capacity-e2e.bats.",
+      "lesson": "Every binary that exposes /readyz needs a test that its startup path reports ready; a probe that can never pass is invisible until something waits on it.",
+      "files": [
+        "src/cmd/capacity_controller.rs",
+        "src/cmd/capacity_controller_tests.rs"
+      ],
+      "tags": [
+        "capacity-controller",
+        "readiness",
+        "health",
+        "found-by-e2e-work",
+        "adr-0020"
+      ]
+    },
+    {
+      "id": "bug-014",
+      "date": "2026-10-14",
+      "error_message": "Reclaim agent matched the process (pid 6736, pattern e2ereclaim) then exited: 'patch Node/e2e-reclaim: Failed to build request: failed to validate request: PatchParams::force only works with Patch::Apply'. CrashLoopBackOff; the Node was never annotated.",
+      "root_cause": "annotate_node used PatchParams::apply(FIELD_MANAGER).force() with Patch::Merge. kube refuses force for anything but server-side apply, client-side, before sending. Every match in every detector mode failed, so emergency reclaim could never have worked. Unit tests covered the patch body, not the request; nothing ran the agent against an API server.",
+      "fix": "annotation_patch_params(): a merge patch with the agent's field manager and no force. Tests go through kube's public Request::patch builder (the same validation): the agent's params pass, and the old forced-merge pairing is pinned as rejected.",
+      "lesson": "A mocked API cannot catch a request the client library refuses to build. Test request construction through the library's own builder, and run node agents against a real API server.",
+      "files": [
+        "src/cmd/reclaim_agent.rs",
+        "src/cmd/reclaim_agent_tests.rs"
+      ],
+      "tags": [
+        "reclaim-agent",
+        "kube-rs",
+        "patch",
+        "server-side-apply",
+        "found-by-e2e"
+      ]
+    },
+    {
+      "id": "bug-015",
+      "date": "2026-10-15",
+      "error_message": "capacity-e2e test 15 'a capacity field naming a reserved root is rejected': patching spec.capacity.field to metadata.ownerReferences succeeded (status 0).",
+      "root_cause": "The CRD pattern for capacity.field checks only charset and depth; nothing at admission refused a reserved first segment (spec, metadata, status). Only the reconciler did, via error_policy, into its logs on every requeue. The concept doc, threat model §7 and CapacityError::Path rustdoc all claimed admission refused it. Not a security gap: the path is rooted at the owned object's spec.",
+      "fix": "capacity_field_schema adds a CEL rule !self.matches('^(spec|metadata|status)([.]|$)') generated from the new constants::CAPACITY_FIELD_RESERVED_ROOTS, shared with capacity_path.rs. Verified on a v1.37 API server; capacity e2e 16/16.",
+      "lesson": "When docs say 'enforced at admission', test it against a real API server: a schema pattern that cannot express the rule (RE2, no lookahead) silently leaves it to the reconciler. Use a CEL rule built from the same constant.",
+      "files": [
+        "src/crd.rs",
+        "src/constants.rs",
+        "src/reconcilers/capacity_path.rs"
+      ],
+      "tags": [
+        "crd",
+        "cel",
+        "admission",
+        "scheduledcapacity",
+        "e2e"
+      ]
+    },
+    {
+      "id": "bug-016",
+      "date": "2026-10-15",
+      "error_message": "5spot agent reclaim --oneshot exits 1 at once: 'oneshot mode: no config present', 'Error: no configmap observed during oneshot run', with the per-node ConfigMap present; followed by 'watch list error: Service(Closed)' noise.",
+      "root_cause": "run() spawned the ConfigMap watcher and the scanner read the config channel immediately. In oneshot mode it read exactly once, always before the watcher's initial list, so it always saw None. The Service(Closed) lines are the watcher's client being dropped on exit, not a network fault.",
+      "fix": "The watcher signals InitDone on a second watch channel; --oneshot waits for it (await_initial_sync, bounded by ONESHOT_SYNC_TIMEOUT_SECS=30) before the scanner runs. Tests pin the wait, the timeout, a dead watcher, and apply_event's InitDone/Init/InitApply/Delete handling. Verified live: armed, matched, annotated, exit 0.",
+      "lesson": "A oneshot mode that reads state fed by a background watcher must wait for the watcher's initial sync, or it races and always loses.",
+      "files": [
+        "src/cmd/reclaim_agent.rs",
+        "src/cmd/reclaim_agent_tests.rs"
+      ],
+      "tags": [
+        "reclaim-agent",
+        "oneshot",
+        "race",
+        "watcher",
+        "found-by-e2e"
+      ]
+    },
+    {
+      "id": "bug-017",
+      "date": "2026-10-15",
+      "error_message": "Reclaim annotations present on the child-cluster Node (reclaim-requested=true) but the controller never ejects: SM stays Active, logs only 'Machine active and in schedule'.",
+      "root_cause": "check_emergency_reclaim fetched the Node with Api::all(ctx.client), the management-cluster client. In the k0smotron topology the Node is in the child cluster, so the GET 404'd, which the guard treats as 'already removed', and the reclaim was skipped silently. handle_emergency_remove already resolved the child client; only the detection step was missed.",
+      "fix": "check_emergency_reclaim resolves ctx.child_clients.resolve(&ctx.client, resource) first and reads the Node through it; fail-closed on an unresolvable kubeconfig. Test asserts the first API call is the <cluster>-kubeconfig Secret lookup, then the Node GET. Verified live: SM disabled, Machine deleted, Node gone.",
+      "lesson": "Every Node read or write in a reconciler must go through the child-client resolver; a 404 that means 'benign' hides a wrong-cluster lookup.",
+      "files": [
+        "src/reconcilers/scheduled_machine.rs",
+        "src/reconcilers/scheduled_machine_tests.rs"
+      ],
+      "tags": [
+        "reclaim",
+        "child-cluster",
+        "kubeconfig",
+        "silent-failure",
+        "found-by-e2e"
+      ]
     }
   ]
 }

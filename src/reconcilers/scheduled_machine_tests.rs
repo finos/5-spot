@@ -1072,6 +1072,72 @@ mod tests {
         );
     }
 
+    // ---- The Node is looked up in the child cluster (bug-017) ----
+
+    /// A 404 `Status` body, as the API server sends it.
+    fn not_found(kind: &str, name: &str) -> http::Response<kube::client::Body> {
+        let body = serde_json::json!({
+            "kind": "Status", "apiVersion": "v1", "status": "Failure",
+            "reason": "NotFound", "code": 404,
+            "message": format!("{kind} \"{name}\" not found"),
+        });
+        http::Response::builder()
+            .status(http::StatusCode::NOT_FOUND)
+            .body(kube::client::Body::from(
+                serde_json::to_vec(&body).expect("serialisable"),
+            ))
+            .expect("valid response")
+    }
+
+    #[tokio::test]
+    async fn test_check_emergency_reclaim_reads_the_node_through_the_child_client() {
+        // The reclaim agent annotates the Node in the cluster it runs on: the
+        // child cluster. The guard used to GET the Node with the management
+        // client, found nothing (404 is "already removed"), and skipped the
+        // reclaim silently. Its first call must therefore be the child
+        // kubeconfig lookup, exactly as handle_emergency_remove does.
+        let sm = make_sm_with_status(crate::crd::ScheduledMachineStatus {
+            phase: Some("Active".to_string()),
+            node_ref: Some(crate::crd::NodeRef {
+                api_version: "v1".to_string(),
+                kind: "Node".to_string(),
+                name: "worker-01".to_string(),
+                uid: None,
+            }),
+            ..Default::default()
+        });
+        let kubeconfig_secret = format!("{}-kubeconfig", sm.spec.cluster_name);
+
+        let (client, handle) = taint_mock_client_pair();
+        let server = tokio::spawn(async move {
+            let mut h = std::pin::pin!(handle);
+            let (req, send) = h.next_request().await.expect("a first request");
+            let path = req.uri().path().to_string();
+            assert!(
+                path.ends_with(&format!("/namespaces/default/secrets/{kubeconfig_secret}")),
+                "the first call must resolve the child kubeconfig, got {path}"
+            );
+            // No child Secret: resolution falls back to the management
+            // cluster (the single-cluster posture), so the Node GET follows.
+            send.send_response(not_found("secrets", &kubeconfig_secret));
+            let (req, send) = h.next_request().await.expect("the Node GET");
+            assert!(
+                req.uri().path().ends_with("/api/v1/nodes/worker-01"),
+                "then the Node, got {}",
+                req.uri()
+            );
+            send.send_response(not_found("nodes", "worker-01"));
+        });
+
+        let ctx = Arc::new(Context::new(client, 0, 1));
+        let result = super::super::check_emergency_reclaim(&Arc::new(sm), &ctx).await;
+        server.await.expect("mock server assertions");
+        assert!(
+            matches!(result, Ok(None)),
+            "a missing Node is benign, got {result:?}"
+        );
+    }
+
     // ========================================================================
     // handle_emergency_remove_phase — Phase-4 crash-recovery arm test
     //

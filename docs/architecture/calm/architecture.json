@@ -199,7 +199,7 @@
       ],
       "controls": {
         "agent-pod-security-boundary": {
-          "description": "Deny-by-default ValidatingAdmissionPolicy (5spot-agent-pod-security) scoped to pods in 5spot-system. Because Kubernetes admission is conjunctive (no policy can override another engine's deny), the cluster's pod-security baseline (PSA/Gatekeeper/Kyverno) must exempt the namespace for the two privileged 5-Spot node agents to land; this policy is the paired compensating guardrail behind that exemption. It allowlists exactly the two agent ServiceAccounts' documented posture \u2014 kata-config-agent: privileged + hostPID + hostPath '/'; reclaim-agent: hostPID + NET_ADMIN + hostPath '/proc','/etc/machine-id' \u2014 denies hostNetwork/hostIPC outright, denies every risky attribute for any other identity in the namespace, and makes the compensating controls (readOnlyRootFilesystem on privileged containers, seccomp RuntimeDefault) mandatory. failurePolicy=Fail (fails closed). See ADR 0004.",
+          "description": "Deny-by-default ValidatingAdmissionPolicy (5spot-agent-pod-security) scoped to pods in 5spot-system. Because Kubernetes admission is conjunctive (no policy can override another engine's deny), the cluster's pod-security baseline (PSA/Gatekeeper/Kyverno) must exempt the namespace for the two privileged 5-Spot node agents to land; this policy is the paired compensating guardrail behind that exemption. It allowlists exactly the two agent ServiceAccounts' documented posture: kata-config-agent: privileged + hostPID + hostPath '/etc/k0s' (ADR 0005); reclaim-agent: hostPID + hostPath '/proc','/etc/machine-id', no added capabilities (ADR 0021 removed NET_ADMIN); denies hostNetwork/hostIPC outright, denies every risky attribute for any other identity in the namespace, and makes the compensating controls (readOnlyRootFilesystem on privileged containers, seccomp RuntimeDefault) mandatory. failurePolicy=Fail (fails closed). See ADR 0004.",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -1435,6 +1435,7 @@
     "docs/adr/0011-schedule-gated-capacity-separate-controller.md",
     "docs/adr/0014-zero-capacity-on-governance-conflict.md",
     "docs/adr/0013-kata-config-ref-annotation-admission-policy.md",
-    "docs/adr/0020-one-binary-one-image-with-subcommands.md"
+    "docs/adr/0020-one-binary-one-image-with-subcommands.md",
+    "docs/adr/0021-reclaim-agent-polls-proc-no-net-admin.md"
   ]
 }

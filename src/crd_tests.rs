@@ -2178,9 +2178,16 @@ mod tests {
             field.get("pattern").and_then(serde_json::Value::as_str),
             Some(constants::CAPACITY_FIELD_PATTERN)
         );
+        let rules = field
+            .get("x-kubernetes-validations")
+            .and_then(serde_json::Value::as_array)
+            .expect("capacity.field carries the reserved-root rule");
         assert!(
-            field.get("x-kubernetes-validations").is_none(),
-            "capacity.field needs no prefix CEL rule: the path is rooted at the \
+            rules.iter().all(|rule| !rule["rule"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("startsWith")),
+            "capacity.field must not require a prefix: the path is rooted at the \
              owned object's spec by construction (ADR 0016 decision 3), got {field:?}"
         );
         assert!(
@@ -2192,6 +2199,47 @@ mod tests {
             json.pointer("/properties/spec/properties/targetRef")
                 .is_none(),
             "spec.targetRef is withdrawn by ADR 0016"
+        );
+    }
+
+    /// A reserved first segment (`spec`, `metadata`, `status`) is a caller
+    /// mistake: `spec.warmReplicas` would build `spec.spec.warmReplicas`. The
+    /// reconciler refuses it, but only into its logs, so admission refuses it
+    /// too, where the caller sees the reason. One rule, one message, built from
+    /// the same list the reconciler checks.
+    #[test]
+    fn test_scheduled_capacity_crd_rejects_a_reserved_root_in_the_field() {
+        let json = scheduled_capacity_schema_json();
+        let rules = json
+            .pointer(
+                "/properties/spec/properties/capacity/properties/field/x-kubernetes-validations",
+            )
+            .and_then(serde_json::Value::as_array)
+            .expect("capacity.field has x-kubernetes-validations");
+
+        assert_eq!(
+            rules.len(),
+            1,
+            "exactly the reserved-root rule, got {rules:?}"
+        );
+        let rule = rules[0]["rule"].as_str().expect("rule is a string");
+        assert_eq!(
+            rule, "!self.matches('^(spec|metadata|status)([.]|$)')",
+            "the rule is generated from CAPACITY_FIELD_RESERVED_ROOTS"
+        );
+        let message = rules[0]["message"].as_str().expect("message is a string");
+        for root in constants::CAPACITY_FIELD_RESERVED_ROOTS {
+            assert!(message.contains(root), "message names '{root}': {message}");
+        }
+    }
+
+    /// The reserved roots are exactly the three the reconciler and the
+    /// concept doc name; a fourth or a missing one is a contract change.
+    #[test]
+    fn test_capacity_field_reserved_roots_are_spec_metadata_status() {
+        assert_eq!(
+            constants::CAPACITY_FIELD_RESERVED_ROOTS,
+            &["spec", "metadata", "status"]
         );
     }
 

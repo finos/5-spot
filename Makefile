@@ -969,7 +969,7 @@ kind-verify-admission: kind-install ## Verify the admission policies actually DE
 	@command -v bats >/dev/null || { 	  echo "bats not found. Install bats-core: apt-get install bats | brew install bats-core"; 	  exit 1; 	}
 	@kind get clusters 2>/dev/null | grep -qx $(KIND_CLUSTER_NAME) || { 	  echo "kind cluster '$(KIND_CLUSTER_NAME)' does not exist. Run: make kind-create"; 	  exit 1; 	}
 	@echo "Verifying admission denial against kind-$(KIND_CLUSTER_NAME)..."
-	@KUBECTL_CONTEXT=kind-$(KIND_CLUSTER_NAME) bats .github/scripts/admission-deny.bats
+	@KUBECTL_CONTEXT=kind-$(KIND_CLUSTER_NAME) bats .github/scripts/admission-deny.bats .github/scripts/agent-pod-security.bats
 
 # ============================================================
 # k0smotron end-to-end tier (ADR 0019)
@@ -1048,9 +1048,12 @@ e2e-k0smotron-up: e2e-tools ## Create the k0smotron e2e environment (builds and 
 	fi
 	@$(E2E_ENV) .github/scripts/e2e-k0smotron.sh up
 
-e2e-k0smotron: ## Run the k0smotron lifecycle suite (bats; needs e2e-k0smotron-up)
+e2e-k0smotron: ## Run the k0smotron lifecycle, agent and capacity suites (bats; needs e2e-k0smotron-up)
 	@command -v bats >/dev/null || { echo "bats not found. Install bats-core: apt-get install bats | brew install bats-core"; exit 1; }
+	@# The capacity suite runs here too: it is the only place the capacity
+	@# controller is exercised against a real API server in CI.
 	@bats --timing .github/scripts/k0smotron-e2e.bats
+	@KUBECTL_CONTEXT=kind-$(E2E_CLUSTER) bats --timing .github/scripts/capacity-e2e.bats
 
 validate-examples: ## Validate examples/ and docs/src manifests strictly against real schemas (needs e2e-k0smotron-up)
 	@python3 -c 'import yaml' 2>/dev/null || { echo "PyYAML not found. Install it: apt-get install python3-yaml | pip install pyyaml"; exit 1; }

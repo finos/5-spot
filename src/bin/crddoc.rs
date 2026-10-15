@@ -251,13 +251,15 @@ fn main() {
     println!(
         "(optional, array of strings) Process patterns that trigger an emergency node reclaim."
     );
-    println!("When non-empty, the 5-Spot controller installs the `5spot-reclaim-agent` DaemonSet");
-    println!("on every Node backing this `ScheduledMachine`. The agent watches `/proc` for any");
-    println!("process whose basename or argv matches one of these patterns and, on first match,");
-    println!("annotates the Node to request immediate (non-graceful) removal from the cluster.");
+    println!("When non-empty, the 5-Spot controller labels every Node backing this");
+    println!("`ScheduledMachine` with `5spot.finos.org/reclaim-agent: enabled`, which schedules");
+    println!("the `5spot-reclaim-agent` DaemonSet (installed on the workload cluster from");
+    println!("`deploy/node-agent/`) onto it. The agent polls `/proc` for any process whose");
+    println!("basename or argv matches one of these patterns and, on first match, annotates the");
+    println!("Node to request immediate (non-graceful) removal from the cluster.");
     println!();
     println!(
-        "When absent or empty, no agent is installed and behaviour is time-based scheduling only."
+        "When absent or empty, the Node is not labelled and behaviour is time-based scheduling only."
     );
     println!("Patterns are evaluated against both `/proc/<pid>/comm` (exact basename) and");
     println!("`/proc/<pid>/cmdline` (substring).");

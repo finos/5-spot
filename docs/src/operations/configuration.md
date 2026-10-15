@@ -109,7 +109,7 @@ for the full design.
 |---|---|---|
 | `NODE_NAME` | _(required, injected via downward API)_ | Name of the Node the agent is running on. The agent only PATCHes this Node. |
 | `RECLAIM_PROC_ROOT` | `/proc` | Path the agent treats as `/proc`. Override for sandboxed/test runs only. |
-| `RECLAIM_DETECTOR` | `auto` | Process-event source. `auto` picks `netlink` on Linux and `poll` elsewhere. See the [Detector](#detector) subsection below. |
+| `RECLAIM_DETECTOR` | `auto` (the shipped DaemonSet sets `poll`) | Process-event source. `auto` uses `netlink` if its socket opens and `poll` otherwise. See the [Detector](#detector) subsection below. |
 | `MACHINE_ID_PATH` | `/etc/machine-id` | Path the agent reads for the host machine-id (host-identity verification, security-audit Phase 4). The DaemonSet mounts the host file at `/host/etc/machine-id` and sets this to that path. |
 | `SKIP_HOST_ID_CHECK` | `false` | If `true`, skip the `Node.status.nodeInfo.machineID` cross-check before PATCH. Use only when `/etc/machine-id` is genuinely unavailable; production must stay strict. |
 
@@ -130,8 +130,8 @@ Options:
   --skip-host-id-check         Skip the host-identity cross-check before PATCH
                                  (defence-in-depth; default off)
                                  [env: SKIP_HOST_ID_CHECK]
-  --oneshot                    Run the detector once and exit
-                                 (one-shot tests / smoke verification)
+  --oneshot                    Wait for the ConfigMap watch's initial list,
+                                 scan once, and exit (smoke verification)
   -h, --help                   Print help
   -V, --version                Print version
 ```
@@ -145,28 +145,16 @@ source differs.
 | Mode | Mechanism | Latency | Idle CPU | Linux only? | Extra capability |
 |---|---|---|---|---|---|
 | `poll` | Walks `/proc` every `poll_interval_ms` | up to one poll interval (250 ms default) | ~0 | No | None |
-| `netlink` | Subscribes to the kernel proc connector (`PROC_EVENT_EXEC`) | <10 ms (kernel-pushed) | sleeps until kernel wakes it | **Yes** | `CAP_NET_ADMIN` |
+| `netlink` | Subscribes to the kernel proc connector (`PROC_EVENT_EXEC`) | <10 ms (kernel-pushed) | sleeps until kernel wakes it | **Yes**, host network namespace only | `CAP_NET_ADMIN` |
 
-`auto` (the default):
-- Linux → `netlink`
-- macOS / any non-Linux → `poll` (the netlink subscriber's
-  constructor returns `Unsupported` on those platforms)
+**The shipped DaemonSet sets `RECLAIM_DETECTOR=poll`** (ADR 0021). The proc
+connector delivers only to the host's initial network namespace, and agent pods
+may not use `hostNetwork`, so netlink cannot work in the shipped topology; the
+DaemonSet therefore also adds no capability.
 
-When to **pin `--detector=poll`** explicitly:
-
-- **Heavy-exec workloads** (`make -j32`, compile farms, CI workers)
-  — `netlink` sees every short-lived process even if it exits in
-  microseconds; `poll` only sees processes that survive to the
-  next tick. Under exec storms `poll` can be cheaper.
-- **`CAP_NET_ADMIN` is unacceptable** in your environment (PSA
-  `restricted` profile, hardened cluster policy). The cap is
-  granted only on opted-in nodes via the DaemonSet's pod-level
-  `securityContext`, but you may have organisational reasons to
-  keep it dropped.
-- **Kernel without `CONFIG_PROC_EVENTS`** (very rare; some
-  embedded / hardened distros). `netlink` socket opens cleanly
-  but no events are ever delivered. See
-  [troubleshooting](./troubleshooting.md#reclaim-agent-runs-but-never-observes-any-events).
+`auto` (the binary's default) uses `netlink` only if its socket actually opens,
+and otherwise polls with a warning naming the reason. An explicit `netlink`
+fails loudly instead.
 
 Override at deploy time:
 

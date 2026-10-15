@@ -91,19 +91,27 @@ spec:
           # is the `agent reclaim` subcommand of the one 5-Spot image (ADR 0020).
           image: ghcr.io/finos/5-spot:v0.3.0
           imagePullPolicy: IfNotPresent
-          args: ["agent", "reclaim"]
           # The agent no longer reads its config from a mounted file.
           # Instead it watches the per-node ConfigMap
           # `reclaim-agent-<NODE_NAME>` in the 5spot-system namespace and
           # reloads live on every change. The only runtime knob it needs
           # is the proc root; NODE_NAME (below) is the ConfigMap-name key.
+          # `agent reclaim` selects the component in the one 5-Spot image
+          # (ADR 0020).
           args:
+            - agent
+            - reclaim
             - --proc-root=/host/proc
           env:
             - name: RUST_LOG
               value: "info"
             - name: RUST_LOG_FORMAT
               value: "json"
+            # Poll /proc. The netlink proc connector delivers only to the
+            # host's initial network namespace, and agent pods may not use
+            # hostNetwork (ADR 0004), so netlink cannot work here (ADR 0021).
+            - name: RECLAIM_DETECTOR
+              value: "poll"
             # NODE_NAME is consumed by the CLI (`--node-name` default). The
             # agent PATCHes this Node object on match.
             - name: NODE_NAME
@@ -129,15 +137,11 @@ spec:
             #   value: "true"
           # Reading every `/proc/<pid>/comm` + `cmdline` requires root;
           # CAP_SYS_PTRACE is not strictly required and is kept dropped.
-          # CAP_NET_ADMIN is added for rung 2: subscribing to the
-          # netlink proc connector (`NETLINK_CONNECTOR` socket family)
-          # requires it. Drop ALL first, then add only the one cap we
-          # need. See `.trivyignore` (KSV-0012 / KSV-0116 / KSV-0118 /
-          # KSV-0105 for runAsNonRoot=false; KSV-0102 for the
-          # CAP_NET_ADMIN add) for the architectural-necessity
-          # rationale. Operators who pin `--detector=poll` do not
-          # exercise the cap; it is granted at the pod level so the
-          # binary never has to fail open at runtime.
+          # No capability is added: CAP_NET_ADMIN existed only for the
+          # netlink detector, which cannot work without hostNetwork, so
+          # it is gone (ADR 0021). See `.trivyignore` (KSV-0012 / KSV-0116
+          # / KSV-0118 / KSV-0105 for runAsNonRoot=false) for the
+          # architectural-necessity rationale.
           securityContext:
             runAsUser: 0
             runAsGroup: 0
@@ -148,8 +152,6 @@ spec:
             capabilities:
               drop:
                 - ALL
-              add:
-                - NET_ADMIN
             seccompProfile:
               type: RuntimeDefault
           resources:

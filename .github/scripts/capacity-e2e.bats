@@ -93,11 +93,13 @@ metadata:
   name: always-on
   namespace: $NS
 spec:
+  # The TimeBasedSpotSchedule schema (daysOfWeek / hoursOfDay); an earlier
+  # `windows:` form no longer exists and was never caught because this suite
+  # did not run in CI until the k0smotron e2e tier picked it up.
+  daysOfWeek: ["mon-sun"]
+  hoursOfDay: ["0-23"]
   timezone: UTC
-  windows:
-    - days: [Mon, Tue, Wed, Thu, Fri, Sat, Sun]
-      start: "00:00"
-      end: "23:59"
+  enabled: true
 YAML
 
   kc apply -f - <<YAML
@@ -325,9 +327,12 @@ YAML
 @test "a capacity field naming a reserved root is rejected" {
   # `spec.warmReplicas` here would construct `spec.spec.warmReplicas`, because
   # the field is already relative to the owned object's spec.
+  # The reconciler refuses it too, but only into its logs; admission is where
+  # the caller sees why.
   run kc -n "$NS" patch scheduledcapacity "$SCAP" --type=merge \
     -p '{"spec":{"capacity":{"field":"metadata.ownerReferences","activeValue":1}}}'
   [ "$status" -ne 0 ]
+  [[ "$output" == *"cannot start with spec, metadata, status"* ]] || { echo "$output"; false; }
 }
 
 # ---------------------------------------------------------------------------

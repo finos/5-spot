@@ -835,6 +835,14 @@ pub const CAPACITY_PATH_PATTERN: &str = r"^[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9]*
 /// `metadata` on a stranger's object, and has nothing left to defend.
 pub const CAPACITY_FIELD_PATTERN: &str = r"^[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9]*){0,6}$";
 
+/// First segments refused in `spec.capacity.field`, at admission (a CEL rule on
+/// the CRD) and again in the reconciler. Each is already implicit or out of
+/// reach, so naming one is a mistake that would build the wrong object
+/// (`spec.warmReplicas` becomes `spec.spec.warmReplicas`), not an attack that
+/// would reach a dangerous field: the path is rooted at `spec` either way
+/// (ADR 0016 decision 3).
+pub const CAPACITY_FIELD_RESERVED_ROOTS: &[&str] = &["spec", "metadata", "status"];
+
 /// Required prefix for `spec.handback.drainedPath`, a consumer's own report of
 /// how much of the slice is still in use.
 pub const CAPACITY_DRAINED_PATH_PREFIX: &str = "status.";

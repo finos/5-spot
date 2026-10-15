@@ -1,7 +1,7 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-10-14T21:10:58.900Z
-> Files: 332 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-10-14T22:37:58.756Z
+> Files: 334 tracked | Anatomy hits: 0 | Misses: 0
 
 > Project structure index. Auto-maintained by OpenWolf hooks and daemon.
 > Run `openwolf scan` to generate, or wait for the first Claude Code session.
@@ -92,6 +92,7 @@
 ## .github/scripts/
 
 - `admission-deny.bats` — shellcheck shell=bats (~2542 tok)
+- `agent-pod-security.bats` — shellcheck shell=bats (~1352 tok)
 - `calm-args.bats` — SPDX-License-Identifier: Apache-2.0 (~1775 tok)
 - `calm-args.sh` — SPDX-License-Identifier: Apache-2.0 (~788 tok)
 - `e2e-k0smotron.sh` — SPDX-License-Identifier: Apache-2.0 (~2843 tok)
@@ -228,6 +229,7 @@
 - `0018-replace-serde-yaml-with-serde-saphyr.md` — 0018: Replace `serde_yaml` with `serde-saphyr`, behind one output-style wrapper (~1442 tok)
 - `0019-k0smotron-end-to-end-tier-in-kind.md` — 0019: A k0smotron end-to-end tier in kind, with strict example validation (~1800 tok)
 - `0020-one-binary-one-image-with-subcommands.md` — 0020: One `5spot` binary with subcommands, shipped in one image (~1587 tok)
+- `0021-reclaim-agent-polls-proc-no-net-admin.md` — 0021: The reclaim agent polls `/proc`, and holds no `NET_ADMIN` (~1067 tok)
 - `README.md` — Project documentation (~809 tok)
 - `template.md` — NNNN — <short decision title> (~251 tok)
 

@@ -114,3 +114,5 @@ description: chronological action log per session, consolidated weekly
 | 16:54 | Created docs/adr/0020-one-binary-one-image-with-subcommands.md | — | ~1693 |
 | 16:59 | Created src/cmd/nsenter.rs | — | ~2030 |
 | 17:10 | Created docs/src/reference/cli.md | — | ~2260 |
+| 18:35 | Created docs/adr/0021-reclaim-agent-polls-proc-no-net-admin.md | — | ~1138 |
+| 18:37 | Created .github/scripts/agent-pod-security.bats | — | ~1352 |

@@ -83,6 +83,16 @@ pub(crate) struct Args {
     pub(crate) lease_renew_deadline_secs: u64,
 }
 
+/// The health state the capacity controller serves once its client is built:
+/// connected **and** ready. `/readyz` requires both; with only the first set it
+/// answered 503 forever, so the Deployment never became Ready (bug-013).
+fn startup_health_state() -> HealthState {
+    let state = HealthState::new();
+    state.set_k8s_connected(true);
+    state.set_ready(true);
+    state
+}
+
 pub(crate) async fn run(cli: Args) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -101,9 +111,7 @@ pub(crate) async fn run(cli: Args) -> Result<()> {
         .await
         .context("building in-cluster kube client")?;
 
-    let health_state = HealthState::new();
-    health_state.set_k8s_connected(true);
-    tokio::spawn(start_health_server(cli.health_port, health_state));
+    tokio::spawn(start_health_server(cli.health_port, startup_health_state()));
     tokio::spawn(metrics::serve_metrics(cli.metrics_port));
 
     // With leader election off, every replica acts as leader: the single-replica

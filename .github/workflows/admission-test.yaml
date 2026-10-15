@@ -19,6 +19,9 @@ on:
     paths:
       - 'deploy/admission/**'
       - '.github/scripts/admission-deny.bats'
+      - '.github/scripts/agent-pod-security.bats'
+      - 'deploy/node-agent/**'
+      - 'deploy/kata-config-agent/**'
       - '.github/workflows/admission-test.yaml'
   push:
     branches:
@@ -26,6 +29,9 @@ on:
     paths:
       - 'deploy/admission/**'
       - '.github/scripts/admission-deny.bats'
+      - '.github/scripts/agent-pod-security.bats'
+      - 'deploy/node-agent/**'
+      - 'deploy/kata-config-agent/**'
       - '.github/workflows/admission-test.yaml'
   workflow_dispatch:
 

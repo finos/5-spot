@@ -198,12 +198,14 @@ from the cluster and takes it out of rotation, bypassing the grace period.
 #### killIfCommands
 
 (optional, array of strings) Process patterns that trigger an emergency node reclaim.
-When non-empty, the 5-Spot controller installs the `5spot-reclaim-agent` DaemonSet
-on every Node backing this `ScheduledMachine`. The agent watches `/proc` for any
-process whose basename or argv matches one of these patterns and, on first match,
-annotates the Node to request immediate (non-graceful) removal from the cluster.
+When non-empty, the 5-Spot controller labels every Node backing this
+`ScheduledMachine` with `5spot.finos.org/reclaim-agent: enabled`, which schedules
+the `5spot-reclaim-agent` DaemonSet (installed on the workload cluster from
+`deploy/node-agent/`) onto it. The agent polls `/proc` for any process whose
+basename or argv matches one of these patterns and, on first match, annotates the
+Node to request immediate (non-graceful) removal from the cluster.
 
-When absent or empty, no agent is installed and behaviour is time-based scheduling only.
+When absent or empty, the Node is not labelled and behaviour is time-based scheduling only.
 Patterns are evaluated against both `/proc/<pid>/comm` (exact basename) and
 `/proc/<pid>/cmdline` (substring).
 

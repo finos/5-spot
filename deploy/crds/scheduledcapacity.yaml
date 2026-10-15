@@ -100,12 +100,17 @@ spec:
                       under the `spec` of an object 5-Spot built before anything is sent, so
                       there is no reachable `ownerReferences`, `finalizers` or label to write
                       and no JSON Pointer escape to attempt. What the schema still enforces is
-                      charset and depth, and the reconciler re-validates both because the
-                      schema only holds while the deployed CRD is current.
+                      charset, depth, and no reserved first segment (`spec`, `metadata`,
+                      `status`, a mistake that would build `spec.spec.…`); the reconciler
+                      re-validates all three because the schema only holds while the deployed
+                      CRD is current.
                     maxLength: 253
                     minLength: 1
                     pattern: ^[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9]*){0,6}$
                     type: string
+                    x-kubernetes-validations:
+                    - message: spec.capacity.field is relative to the owned object's spec and cannot start with spec, metadata, status
+                      rule: "!self.matches('^(spec|metadata|status)([.]|$)')"
                 required:
                 - activeValue
                 - field

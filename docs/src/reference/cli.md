@@ -101,15 +101,14 @@ emergency-reclaim flow. See the
 | Option | Environment variable | Default | Description |
 |---|---|---|---|
 | `--node-name` | `NODE_NAME` | _(required)_ | Node to annotate; from the downward API (`spec.nodeName`) |
-| `--detector` | `RECLAIM_DETECTOR` | `auto` | `auto`, `netlink` or `poll`. `auto` picks `netlink` on Linux |
+| `--detector` | `RECLAIM_DETECTOR` | `auto` | `auto`, `netlink` or `poll`. `auto` uses `netlink` if its socket opens, else `poll`. The shipped DaemonSet sets `poll` |
 | `--proc-root` | `RECLAIM_PROC_ROOT` | `/proc` | Filesystem root mapped to `/proc`; override for tests |
 | `--machine-id-path` | `MACHINE_ID_PATH` | `/etc/machine-id` | Host machine-id file for the host-identity check |
 | `--skip-host-id-check` | `SKIP_HOST_ID_CHECK` | off | Skip the `status.nodeInfo.machineID` cross-check. Leave off in production |
-| `--oneshot` | | | Run the detector once and exit |
+| `--oneshot` | | | Wait for the per-node ConfigMap watch to finish its initial list (up to 30 s), scan once, and exit |
 
 ```bash
-5spot agent reclaim --node-name "$(hostname)"                 # production default
-5spot agent reclaim --node-name node-01 --detector poll       # no CAP_NET_ADMIN
+5spot agent reclaim --node-name node-01 --detector poll       # what the DaemonSet runs
 5spot agent reclaim --node-name dev-01 --proc-root /tmp/fake-proc \
   --skip-host-id-check --oneshot                              # local smoke test
 ```
@@ -118,9 +117,10 @@ Exit codes: `0` when the reclaim annotation is written (or already present),
 `1` on an unrecoverable error (client initialisation, host-identity check,
 netlink subscriber).
 
-`--detector=netlink` requires `CAP_NET_ADMIN`, granted in
-`deploy/node-agent/daemonset.yaml`. `--detector=poll` needs no extra
-capability; see the [detector tradeoff table](../operations/configuration.md#detector).
+`--detector=netlink` needs both `CAP_NET_ADMIN` and the host's initial network
+namespace, neither of which the shipped DaemonSet has, so it sets `poll` and
+adds no capability (ADR 0021). See the
+[detector tradeoff table](../operations/configuration.md#detector).
 
 ## `5spot agent kata-config`
 

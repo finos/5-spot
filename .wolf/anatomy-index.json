@@ -1,13 +1,13 @@
 {
   "version": 1,
   "meta": {
-    "lastScanned": "2026-10-14T21:10:58.900Z",
-    "fileCount": 332,
+    "lastScanned": "2026-10-14T22:37:58.756Z",
+    "fileCount": 334,
     "hits": 0,
     "misses": 0,
-    "renderedHash": "3094084d3dccda931468187c8c08a9adc12288bd5e00cfb3bbdaced8cadee13e",
-    "storeUpdatedAt": "2026-10-14T21:10:58.906Z",
-    "rootHash": "07eabe92ac9fa4dc"
+    "renderedHash": "5d5adecc8d6e89f8b0b7be47abf98b71d4b4aebb9852c2f3c69bdff394d8124f",
+    "storeUpdatedAt": "2026-10-14T22:37:58.762Z",
+    "rootHash": "bdfeae954a454713"
   },
   "files": {
     ".github/actions/extract-version/action.yml": {
@@ -7159,6 +7159,24 @@
           "tokens": 81
         }
       ]
+    },
+    "docs/adr/0021-reclaim-agent-polls-proc-no-net-admin.md": {
+      "description": "0021: The reclaim agent polls `/proc`, and holds no `NET_ADMIN`",
+      "tokens": 1067,
+      "hash": "7d52e3e310a8945e",
+      "size": 4266,
+      "mtimeMs": 1792017305572.082,
+      "updatedAt": "2026-10-14T22:35:05.614Z",
+      "source": "hook"
+    },
+    ".github/scripts/agent-pod-security.bats": {
+      "description": "shellcheck shell=bats",
+      "tokens": 1352,
+      "hash": "9d2ee7c4820fc8e8",
+      "size": 5070,
+      "mtimeMs": 1792017478707.416,
+      "updatedAt": "2026-10-14T22:37:58.755Z",
+      "source": "hook"
     }
   },
   "preamble": [
