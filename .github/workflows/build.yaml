@@ -288,7 +288,7 @@ jobs:
       # PR and push artifacts expire after 1 day — they are not release assets.
       - name: Upload artifacts (PR / push)
         if: github.event_name != 'release'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.platform.artifact_name }}
           path: |
@@ -299,7 +299,7 @@ jobs:
       # Release artifacts keep the default retention so re-runs remain possible.
       - name: Upload artifacts (release)
         if: github.event_name == 'release'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.platform.artifact_name }}
           path: |
@@ -499,7 +499,7 @@ jobs:
 
       - name: Upload Docker SBOM as artifact
         if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: docker-sbom-${{ matrix.variant.name }}
           path: docker-sbom-${{ matrix.variant.name }}.json
@@ -605,7 +605,7 @@ jobs:
             --file grype-triage-${{ matrix.variant.name }}.json
 
       - name: Upload triage artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: grype-triage-${{ matrix.variant.name }}
           path: grype-triage-${{ matrix.variant.name }}.json
@@ -646,14 +646,14 @@ jobs:
         run: cargo build --release --bin auto-vex-presence
 
       - name: Download triage scan artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: grype-triage-*
           path: ./triage
           merge-multiple: true
 
       - name: Download Docker SBOM artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: docker-sbom-*
           path: ./sboms
@@ -706,7 +706,7 @@ jobs:
           cat vex.auto-presence.json
 
       - name: Upload auto-presence artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vex-auto-presence
           path: vex.auto-presence.json
@@ -756,13 +756,13 @@ jobs:
         run: cargo build --release --bin auto-vex-reachability
 
       - name: Download release binary (5spot-linux-amd64)
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: 5spot-linux-amd64
           path: ./bin
 
       - name: Download triage scan artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: grype-triage-*
           path: ./triage
@@ -826,7 +826,7 @@ jobs:
           cat vex.auto-reachability.json
 
       - name: Upload auto-reachability artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vex-auto-reachability
           path: vex.auto-reachability.json
@@ -837,7 +837,7 @@ jobs:
       # release-attested binary digest and confirm the auto-emitted
       # statements.
       - name: Upload symbol-imports evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vex-auto-reachability-evidence
           path: symbols.txt
@@ -887,13 +887,13 @@ jobs:
         run: make vexctl-install
 
       - name: Download auto-presence artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: vex-auto-presence
           path: ./auto
 
       - name: Download auto-reachability artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: vex-auto-reachability
           path: ./auto
@@ -929,7 +929,7 @@ jobs:
       # Always upload the assembled document so the `grype` scan job can
       # download it via actions/download-artifact@v4 regardless of event.
       - name: Upload OpenVEX document artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: openvex
           path: vex.openvex.json
@@ -987,7 +987,7 @@ jobs:
 
       - name: Upload OpenVEX bundle artifact (release)
         if: github.event_name == 'release'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: openvex-bundle
           path: vex.openvex.json.bundle
@@ -1060,7 +1060,7 @@ jobs:
           trivyignores: ./.trivyignore
 
       - name: Upload Trivy IaC SARIF to Code Scanning
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           sarif_file: trivy-iac.sarif
           category: trivy-iac
@@ -1141,7 +1141,7 @@ jobs:
       # push + release events — PR events have no document to consume.
       - name: Download OpenVEX document
         if: github.event_name != 'pull_request'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: openvex
           path: ./vex
@@ -1184,14 +1184,14 @@ jobs:
 
       - name: Upload Grype SARIF to Code Scanning
         if: always()
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           sarif_file: grype-${{ github.event_name }}-${{ matrix.variant.name }}.sarif
           category: grype-${{ github.event_name }}-${{ matrix.variant.name }}
 
       - name: Upload Grype SARIF artifact
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ github.event_name == 'release' && format('grype-release-{0}', matrix.variant.name) || format('grype-{0}-{1}-{2}', github.event_name, matrix.variant.name, github.run_number) }}
           path: grype-${{ github.event_name }}-${{ matrix.variant.name }}.sarif
@@ -1223,7 +1223,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download binary artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ matrix.platform.artifact_name }}
           path: ./artifacts/${{ matrix.platform.artifact_name }}
@@ -1246,7 +1246,7 @@ jobs:
           subject-path: artifacts/${{ matrix.platform.artifact_name }}/${{ matrix.platform.artifact_name }}.tar.gz
 
       - name: Upload signed artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.platform.artifact_name }}-signed
           path: |
@@ -1265,7 +1265,7 @@ jobs:
       hashes: ${{ steps.hash.outputs.hashes }}
     steps:
       - name: Download signed artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: 5spot-*-signed
           path: ./artifacts
@@ -1339,7 +1339,7 @@ jobs:
         run: tar czf deploy-manifests.tar.gz deploy/
 
       - name: Upload deploy manifests
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: deploy-manifests
           path: deploy-manifests.tar.gz
@@ -1356,7 +1356,7 @@ jobs:
       contents: write
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: ./artifacts
           pattern: "{5spot-*,docker-sbom-*,*.intoto.jsonl,deploy-manifests,openvex,openvex-bundle}"
