@@ -9,6 +9,36 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-10-23 21:40] - Release images: the sha tag loses its stray v and doubled suffix
+
+**Author:** Erick Bourgeois
+
+### Changed
+
+- `.github/workflows/build.yaml`: the release metadata step's raw
+  `sha-<commit>` tag sets its own `prefix=` (empty) and `suffix=`. The flavor's
+  `prefix=v` and `suffix=<variant>` apply to every tag that does not set its
+  own, so releases pushed `vsha-<commit>` (Chainguard) and
+  `vsha-<commit>-distroless-distroless` (Distroless), as v0.3.2 and v0.4.0 both
+  did. Now `sha-<commit>` and `sha-<commit>-distroless`, the names a push to
+  `main` already uses. Semver tags are unchanged.
+
+### Why
+
+A release's sha tag should name the same image under the same scheme as every
+other build of that commit. Behaviour confirmed in docker/metadata-action's
+source at the pinned commit (`setValue`: a tag's own prefix/suffix, even empty,
+replaces the flavor's; `type=raw` gets no default prefix).
+
+### Impact
+
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (CI)
+- [ ] Documentation only
+
+---
+
 ## [2026-10-15 10:30] - Emergency reclaim works end to end: two more defects found driving it live
 
 **Author:** Erick Bourgeois
