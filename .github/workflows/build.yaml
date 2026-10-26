@@ -421,7 +421,11 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=raw,value=sha-${{ needs.extract-version.outputs.short-sha }}${{ matrix.variant.suffix }}
+            # The flavor's prefix and suffix apply to every tag that does not set
+            # its own, raw ones included: this line used to come out as
+            # vsha-<commit> and vsha-<commit>-distroless-distroless. Both set
+            # here, so it matches the sha-<commit><suffix> pushed from main.
+            type=raw,value=sha-${{ needs.extract-version.outputs.short-sha }},prefix=,suffix=${{ matrix.variant.suffix }}
           flavor: |
             latest=false
             prefix=v
