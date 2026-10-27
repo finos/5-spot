@@ -1014,13 +1014,13 @@ jobs:
 
       - name: Run security scan (PR / push)
         if: github.event_name != 'release'
-        uses: firestoned/github-actions/rust/security-scan@e034489c3a17ffaaaf7f8fb799156ce768d899d5 # v1.3.9
+        uses: firestoned/github-actions/rust/security-scan@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
         with:
           cargo-audit-version: "0.22.0"
 
       - name: Run security scan (release)
         if: github.event_name == 'release'
-        uses: firestoned/github-actions/rust/security-scan@e034489c3a17ffaaaf7f8fb799156ce768d899d5 # v1.3.9
+        uses: firestoned/github-actions/rust/security-scan@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
         with:
           cargo-audit-version: "0.22.0"
           upload-artifact-name: cargo-audit-report-release
