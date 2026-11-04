@@ -58,7 +58,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Check license headers
-        uses: firestoned/github-actions/security/license-check@e034489c3a17ffaaaf7f8fb799156ce768d899d5 # v1.3.9
+        uses: firestoned/github-actions/security/license-check@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
         with:
           copyright-holder: "Erick Bourgeois, firestoned"
           license-id: "Apache-2.0"
@@ -77,7 +77,7 @@ jobs:
 
       - name: Verify commits (PR)
         if: github.event_name == 'pull_request'
-        uses: firestoned/github-actions/security/verify-signed-commits@e034489c3a17ffaaaf7f8fb799156ce768d899d5 # v1.3.9
+        uses: firestoned/github-actions/security/verify-signed-commits@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           base-ref: origin/${{ github.base_ref }}
@@ -85,14 +85,14 @@ jobs:
 
       - name: Verify commits (push to main)
         if: github.event_name == 'push'
-        uses: firestoned/github-actions/security/verify-signed-commits@e034489c3a17ffaaaf7f8fb799156ce768d899d5 # v1.3.9
+        uses: firestoned/github-actions/security/verify-signed-commits@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           verify-mode: push
 
       - name: Verify commits (release)
         if: github.event_name == 'release'
-        uses: firestoned/github-actions/security/verify-signed-commits@e034489c3a17ffaaaf7f8fb799156ce768d899d5 # v1.3.9
+        uses: firestoned/github-actions/security/verify-signed-commits@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           verify-mode: release
@@ -374,7 +374,7 @@ jobs:
         uses: ./.github/actions/prepare-docker-binaries
 
       - name: Setup Docker environment
-        uses: firestoned/github-actions/docker/setup-docker@e034489c3a17ffaaaf7f8fb799156ce768d899d5 # v1.3.9
+        uses: firestoned/github-actions/docker/setup-docker@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -539,7 +539,7 @@ jobs:
             digest: ${{ needs.docker.outputs.digest-distroless }}
     steps:
       - name: Log in to GHCR
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -582,7 +582,7 @@ jobs:
             image-repository: ${{ needs.extract-version.outputs.image-repository-distroless }}
     steps:
       - name: Log in to GHCR
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -943,7 +943,7 @@ jobs:
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - name: Log in to GHCR (for cosign attest)
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -1014,13 +1014,13 @@ jobs:
 
       - name: Run security scan (PR / push)
         if: github.event_name != 'release'
-        uses: firestoned/github-actions/rust/security-scan@e034489c3a17ffaaaf7f8fb799156ce768d899d5 # v1.3.9
+        uses: firestoned/github-actions/rust/security-scan@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
         with:
           cargo-audit-version: "0.22.0"
 
       - name: Run security scan (release)
         if: github.event_name == 'release'
-        uses: firestoned/github-actions/rust/security-scan@e034489c3a17ffaaaf7f8fb799156ce768d899d5 # v1.3.9
+        uses: firestoned/github-actions/rust/security-scan@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
         with:
           cargo-audit-version: "0.22.0"
           upload-artifact-name: cargo-audit-report-release
@@ -1064,7 +1064,7 @@ jobs:
           trivyignores: ./.trivyignore
 
       - name: Upload Trivy IaC SARIF to Code Scanning
-        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: trivy-iac.sarif
           category: trivy-iac
@@ -1135,7 +1135,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Log in to GHCR
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -1188,7 +1188,7 @@ jobs:
 
       - name: Upload Grype SARIF to Code Scanning
         if: always()
-        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: grype-${{ github.event_name }}-${{ matrix.variant.name }}.sarif
           category: grype-${{ github.event_name }}-${{ matrix.variant.name }}
