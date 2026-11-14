@@ -116,3 +116,9 @@ description: chronological action log per session, consolidated weekly
 | 17:10 | Created docs/src/reference/cli.md | — | ~2260 |
 | 18:35 | Created docs/adr/0021-reclaim-agent-polls-proc-no-net-admin.md | — | ~1138 |
 | 18:37 | Created .github/scripts/agent-pod-security.bats | — | ~1352 |
+| 19:25 | Session end: 19 writes across 18 files (0017-machine-reference-shape-follows-capi-contract.md, worker-resource-confinement.md, 06-k0smotron-e2e-and-worker-confinement.md, config.toml, confining-a-worker-with-cgroups.md) | 14 reads | ~48744 tok |
+
+## Session: 2026-11-04 19:25
+
+| Time | Action | File(s) | Outcome | ~Tokens |
+|------|--------|---------|---------|--------|

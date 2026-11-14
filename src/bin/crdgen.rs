@@ -28,6 +28,7 @@ use clap::{Parser, ValueEnum};
 use five_spot::crd::{
     CapitalMarketsSchedule, ScheduledCapacity, ScheduledMachine, TimeBasedSpotSchedule,
 };
+use five_spot::crd_schema::prepared;
 use kube::CustomResourceExt;
 
 /// The CRDs this tool can emit. Each selector's `value` matches the committed
@@ -53,19 +54,16 @@ impl CrdSelector {
         CrdSelector::CapitalMarketsSchedule,
     ];
 
-    /// Serialise this CRD to a YAML string.
+    /// Serialise this CRD to a YAML string, after the
+    /// [`five_spot::crd_schema::prepared`] fix-ups.
     fn render(self) -> String {
-        let yaml = match self {
-            CrdSelector::ScheduledMachine => five_spot::yaml::to_string(&ScheduledMachine::crd()),
-            CrdSelector::ScheduledCapacity => five_spot::yaml::to_string(&ScheduledCapacity::crd()),
-            CrdSelector::TimeBasedSpotSchedule => {
-                five_spot::yaml::to_string(&TimeBasedSpotSchedule::crd())
-            }
-            CrdSelector::CapitalMarketsSchedule => {
-                five_spot::yaml::to_string(&CapitalMarketsSchedule::crd())
-            }
+        let crd = match self {
+            CrdSelector::ScheduledMachine => ScheduledMachine::crd(),
+            CrdSelector::ScheduledCapacity => ScheduledCapacity::crd(),
+            CrdSelector::TimeBasedSpotSchedule => TimeBasedSpotSchedule::crd(),
+            CrdSelector::CapitalMarketsSchedule => CapitalMarketsSchedule::crd(),
         };
-        yaml.expect("serialise CRD to YAML")
+        five_spot::yaml::to_string(&prepared(crd)).expect("serialise CRD to YAML")
     }
 }
 

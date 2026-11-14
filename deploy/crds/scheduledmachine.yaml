@@ -374,7 +374,6 @@ spec:
               priority:
                 default: 50
                 description: Priority for machine scheduling (higher values = higher priority)
-                format: uint8
                 maximum: 255.0
                 minimum: 0.0
                 type: integer

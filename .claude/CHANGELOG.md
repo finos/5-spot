@@ -9,6 +9,45 @@ The format is based on the regulated environment requirements:
 
 ---
 
+## [2026-11-14 10:00] - CRDs carry no format the apiserver drops
+
+**Author:** Erick Bourgeois
+
+### Changed
+
+- `src/crd_schema.rs` (new): `prepared()` applies the post-generation
+  fix-ups to a CRD; `strip_unsupported_formats()` removes every schema
+  `format` the apiserver does not recognise (integers keep `int32`/`int64`,
+  numbers `float`/`double`, strings the Kubernetes set compared without
+  dashes, other types none), recursing through properties, items, the
+  combinators, additional and pattern properties, definitions and schema
+  dependencies. `all_crds()` lists the four CRDs, prepared.
+- `src/crd_schema_tests.rs` (new): keep/drop rules per type, nested schemas,
+  a property named `format` surviving, and a guard that no shipped CRD
+  carries an unsupported format (red before the strip was wired in:
+  `ScheduledMachine: integer/uint8`).
+- `src/bin/crdgen.rs`: renders every CRD through `prepared()`.
+- `src/lib.rs`: `pub mod crd_schema`.
+- `deploy/crds/scheduledmachine.yaml`: regenerated; the one
+  `format: uint8` line is gone, nothing else changed.
+
+### Why
+
+`schemars` names Rust's unsigned integers `uint8` to `uint64`. Kubernetes
+drops those formats from the stored schema, so they validate nothing, and
+`kubectl apply` warns `unrecognized format "uint8"` whenever an apply
+introduces one. The `minimum: 0` bound is a separate keyword and stays.
+Same fix as banlieue's `crdgen_support.rs`.
+
+### Impact
+
+- [ ] Breaking change
+- [ ] Requires cluster rollout (re-applying the CRD clears the stored format; optional)
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
 ## [2026-10-23 21:40] - Release images: the sha tag loses its stray v and doubled suffix
 
 **Author:** Erick Bourgeois

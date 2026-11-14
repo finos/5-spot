@@ -9,6 +9,7 @@
 //! - [`auto_vex_reachability`] — symbol-import reachability auto-VEX (CI-only, roadmap Phase 3)
 //! - [`constants`] — all named constants (timing, labels, phases, CAPI API strings)
 //! - [`crd`] — `ScheduledMachine` CRD type definitions (source of truth for YAML generation)
+//! - [`crd_schema`]: post-generation fix-ups every generated CRD goes through
 //! - [`health`] — HTTP health and readiness server
 //! - [`labels`] — standard Kubernetes label helpers
 //! - [`leader`] - shared Kubernetes Lease leader election for every controller binary
@@ -24,6 +25,7 @@ pub mod auto_vex_presence;
 pub mod auto_vex_reachability;
 pub mod constants;
 pub mod crd;
+pub mod crd_schema;
 pub mod health;
 pub mod kata_config_agent;
 pub mod labels;
